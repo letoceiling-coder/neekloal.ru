@@ -1,0 +1,46 @@
+"use strict";
+
+const crypto = require("crypto");
+const { append, listByUserId } = require("../services/assistantsStore");
+const { findById: findUserById } = require("../services/usersStore");
+const authMiddleware = require("../middleware/auth");
+
+/**
+ * @param {import('fastify').FastifyInstance} fastify
+ */
+module.exports = async function assistantsRoutes(fastify) {
+  fastify.get("/assistants", { preHandler: authMiddleware }, async (request) => {
+    return listByUserId(request.userId);
+  });
+
+  fastify.post("/assistants", { preHandler: authMiddleware }, async (request, reply) => {
+    const body = request.body && typeof request.body === "object" ? request.body : {};
+    const { name, model, systemPrompt } = body;
+
+    if (name == null || String(name).trim() === "") {
+      return reply.code(400).send({ error: "name is required" });
+    }
+    if (model == null || String(model).trim() === "") {
+      return reply.code(400).send({ error: "model is required" });
+    }
+    if (systemPrompt == null) {
+      return reply.code(400).send({ error: "systemPrompt is required" });
+    }
+
+    const uid = request.userId;
+    if (!findUserById(uid)) {
+      return reply.code(400).send({ error: "user not found" });
+    }
+
+    const assistant = {
+      id: crypto.randomUUID(),
+      name: String(name),
+      model: String(model),
+      systemPrompt: String(systemPrompt),
+      userId: uid,
+    };
+
+    append(assistant);
+    return reply.code(201).send(assistant);
+  });
+};
