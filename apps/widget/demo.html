@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Widget demo</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 2rem;
+        max-width: 40rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Widget demo</h1>
+    <p>Set the three globals below, then open this file over HTTP (e.g. <code>npx serve apps/widget</code>) so API CORS allows your origin.</p>
+    <script>
+      window.AI_WIDGET_API = "http://localhost:4000";
+      window.AI_WIDGET_KEY = "REPLACE_WITH_SK";
+      window.AI_WIDGET_ASSISTANT_ID = "REPLACE_WITH_ASSISTANT_UUID";
+    </script>
+    <script src="./widget.js" defer></script>
+  </body>
+</html>
