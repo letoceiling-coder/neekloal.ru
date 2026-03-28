@@ -58,7 +58,7 @@ async function ingestKnowledgeDocument(fastify, knowledge, assistantId) {
     return { chunksIndexed: 0, chunkIds: [] };
   }
 
-  const dim = await resolveEmbeddingDimension(embedText);
+  const dim = await resolveEmbeddingDimension((t) => embedText(t, assistantId));
   await qdrant.ensureCollection(dim);
 
   const modelName = getEmbeddingModelName();
@@ -66,7 +66,7 @@ async function ingestKnowledgeDocument(fastify, knowledge, assistantId) {
 
   for (let i = 0; i < parts.length; i++) {
     const piece = parts[i];
-    const vector = await embedText(piece);
+    const vector = await embedText(piece, assistantId);
     const id = randomUUID();
 
     const row = await prisma.knowledgeChunk.create({
@@ -123,60 +123,96 @@ async function retrieveForChat(fastify, assistantId, message, topK) {
     return { knowledgeBlock: "", chunkIds: [], scores: [] };
   }
 
-  const dim = await resolveEmbeddingDimension(embedText);
-  await qdrant.ensureCollection(dim);
+  const ragStart = Date.now();
+  let embeddingLatencyMs = 0;
+  let qdrantLatencyMs = 0;
 
-  const queryVector = await embedText(query);
-  const hitsRaw = await qdrant.searchSimilar(queryVector, assistantId, candidateLimit);
-
-  let minScoreUsed = minScore;
-  let passed = hitsRaw.filter((h) => Number(h.score) >= minScoreUsed);
-  let adaptiveScoreFallback = false;
-  if (passed.length === 0 && hitsRaw.length > 0) {
-    minScoreUsed = 0.5;
-    passed = hitsRaw.filter((h) => Number(h.score) >= minScoreUsed);
-    adaptiveScoreFallback = true;
-  }
-
-  const top = passed.slice(0, k);
-
-  const texts = [];
-  const chunkIds = [];
-  const scores = [];
-  for (const h of top) {
-    const content = typeof h.payload.content === "string" ? h.payload.content : "";
-    if (content) {
-      texts.push(content);
+  const wrapEmbed = async (t) => {
+    const s = Date.now();
+    try {
+      return await embedText(t, assistantId);
+    } finally {
+      embeddingLatencyMs += Date.now() - s;
     }
-    chunkIds.push(h.id);
-    scores.push(h.score);
+  };
+
+  try {
+    const dim = await resolveEmbeddingDimension(wrapEmbed);
+    await qdrant.ensureCollection(dim);
+
+    const queryVector = await wrapEmbed(query);
+
+    const { hits: hitsRaw, latencyMs: qL } = await qdrant.searchSimilar(queryVector, assistantId, candidateLimit);
+    qdrantLatencyMs = qL;
+
+    let minScoreUsed = minScore;
+    let passed = hitsRaw.filter((h) => Number(h.score) >= minScoreUsed);
+    let adaptiveScoreFallback = false;
+    if (passed.length === 0 && hitsRaw.length > 0) {
+      minScoreUsed = 0.5;
+      passed = hitsRaw.filter((h) => Number(h.score) >= minScoreUsed);
+      adaptiveScoreFallback = true;
+    }
+
+    const top = passed.slice(0, k);
+
+    const texts = [];
+    const chunkIds = [];
+    const scores = [];
+    for (const h of top) {
+      const content = typeof h.payload.content === "string" ? h.payload.content : "";
+      if (content) {
+        texts.push(content);
+      }
+      chunkIds.push(h.id);
+      scores.push(h.score);
+    }
+
+    let knowledgeBlock = texts.join("\n\n---\n\n");
+    const limited = limitKnowledgeBlock(knowledgeBlock);
+    knowledgeBlock = limited.text;
+
+    const totalTokensKnowledge = estimateTokensRough(knowledgeBlock);
+    const ragLatencyMs = Date.now() - ragStart;
+
+    fastify.log.info(
+      {
+        assistantId,
+        retrievalCandidates: hitsRaw.length,
+        filteredChunksCount: passed.length,
+        droppedByMinScore: hitsRaw.length - passed.length,
+        ragChunksUsed: top.length,
+        ragChunkIds: chunkIds,
+        scores,
+        minScoreInitial: minScore,
+        minScoreUsed,
+        adaptiveScoreFallback,
+        totalTokensKnowledge,
+        knowledgeBlockTruncated: limited.truncated,
+        ragLatencyMs,
+        embeddingLatencyMs,
+        qdrantLatencyMs,
+        ragFallback: false,
+      },
+      "rag retrieval"
+    );
+
+    return { knowledgeBlock, chunkIds, scores };
+  } catch (err) {
+    const ragLatencyMs = Date.now() - ragStart;
+    fastify.log.warn(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        errCode: err && typeof err === "object" && "code" in err ? err.code : undefined,
+        ragLatencyMs,
+        embeddingLatencyMs,
+        qdrantLatencyMs,
+        ragFallback: true,
+      },
+      "rag retrieval failed; using fallback knowledge"
+    );
+    return { knowledgeBlock: "", chunkIds: [], scores: [] };
   }
-
-  let knowledgeBlock = texts.join("\n\n---\n\n");
-  const limited = limitKnowledgeBlock(knowledgeBlock);
-  knowledgeBlock = limited.text;
-
-  const totalTokensKnowledge = estimateTokensRough(knowledgeBlock);
-
-  fastify.log.info(
-    {
-      assistantId,
-      retrievalCandidates: hitsRaw.length,
-      filteredChunksCount: passed.length,
-      droppedByMinScore: hitsRaw.length - passed.length,
-      ragChunksUsed: top.length,
-      ragChunkIds: chunkIds,
-      scores,
-      minScoreInitial: minScore,
-      minScoreUsed,
-      adaptiveScoreFallback,
-      totalTokensKnowledge,
-      knowledgeBlockTruncated: limited.truncated,
-    },
-    "rag retrieval"
-  );
-
-  return { knowledgeBlock, chunkIds, scores };
 }
 
 module.exports = {

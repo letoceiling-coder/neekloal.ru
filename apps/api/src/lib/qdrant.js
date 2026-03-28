@@ -15,6 +15,11 @@ function getCollectionName() {
   return process.env.QDRANT_COLLECTION || "knowledge_chunks";
 }
 
+function getQdrantTimeoutMs() {
+  const n = parseInt(process.env.RAG_QDRANT_TIMEOUT_MS || "3000", 10);
+  return Number.isNaN(n) || n < 1 ? 3000 : n;
+}
+
 function isRagEnabled() {
   return Boolean(getQdrantUrl());
 }
@@ -87,32 +92,51 @@ async function upsertChunkPoint(pointId, vector, payload) {
  * @param {number[]} queryVector
  * @param {string} assistantId
  * @param {number} limit
- * @returns {Promise<Array<{ id: string; score: number; payload: Record<string, unknown> }>>}
+ * @returns {Promise<{ hits: Array<{ id: string; score: number; payload: Record<string, unknown> }>; latencyMs: number }>}
  */
 async function searchSimilar(queryVector, assistantId, limit) {
   const qc = getClient();
   if (!qc) {
-    throw new Error("QDRANT_URL is not set");
+    return { hits: [], latencyMs: 0 };
   }
   const name = getCollectionName();
-  const res = await qc.search(name, {
-    vector: queryVector,
-    limit,
-    filter: {
-      must: [
-        {
-          key: "assistantId",
-          match: { value: assistantId },
-        },
-      ],
-    },
-    with_payload: true,
-  });
-  return res.map((r) => ({
-    id: String(r.id),
-    score: r.score ?? 0,
-    payload: r.payload || {},
-  }));
+  const timeoutMs = getQdrantTimeoutMs();
+  const started = Date.now();
+
+  try {
+    const searchPromise = qc.search(name, {
+      vector: queryVector,
+      limit,
+      filter: {
+        must: [
+          {
+            key: "assistantId",
+            match: { value: assistantId },
+          },
+        ],
+      },
+      with_payload: true,
+    });
+
+    const res = await Promise.race([
+      searchPromise,
+      new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(Object.assign(new Error("qdrant search timeout"), { code: "QDRANT_TIMEOUT" }));
+        }, timeoutMs);
+      }),
+    ]);
+
+    const latencyMs = Date.now() - started;
+    const hits = res.map((r) => ({
+      id: String(r.id),
+      score: r.score ?? 0,
+      payload: r.payload || {},
+    }));
+    return { hits, latencyMs };
+  } catch {
+    return { hits: [], latencyMs: Date.now() - started };
+  }
 }
 
 module.exports = {

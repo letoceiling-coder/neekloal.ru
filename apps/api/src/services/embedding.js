@@ -8,6 +8,20 @@ function getEmbedCacheMax() {
   return Number.isNaN(n) || n < 1 ? 500 : n;
 }
 
+function getEmbedTimeoutMs() {
+  const n = parseInt(process.env.RAG_EMBED_TIMEOUT_MS || "3000", 10);
+  return Number.isNaN(n) || n < 1 ? 3000 : n;
+}
+
+/**
+ * @param {string} assistantId
+ * @param {string} text
+ */
+function cacheKey(assistantId, text) {
+  const aid = assistantId != null && String(assistantId).trim() !== "" ? String(assistantId) : "global";
+  return `${aid}:${String(text)}`;
+}
+
 /**
  * LRU-ish: refresh key on hit; evict oldest when over capacity.
  * @param {string} key
@@ -44,12 +58,33 @@ function getEmbeddingModelName() {
 }
 
 /**
- * Ollama embeddings: POST /api/embeddings (in-memory cache keyed by exact message text).
+ * @param {string} url
+ * @param {object} body
+ * @param {number} timeoutMs
+ */
+async function fetchEmbeddingsPost(url, body, timeoutMs) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+/**
+ * Ollama embeddings with timeout + cache key `assistantId:message`.
  * @param {string} text
+ * @param {string} [assistantId]
  * @returns {Promise<number[]>}
  */
-async function embedText(text) {
-  const key = String(text);
+async function embedText(text, assistantId) {
+  const key = cacheKey(assistantId, text);
   const hit = cacheGet(key);
   if (hit) {
     return hit.slice();
@@ -57,36 +92,59 @@ async function embedText(text) {
 
   const base = process.env.OLLAMA_URL;
   if (!base) {
-    throw new Error("OLLAMA_URL is not set");
+    const err = new Error("OLLAMA_URL is not set");
+    err.code = "EMBEDDING_FAILED";
+    throw err;
   }
   const model = getEmbeddingModelName();
   const url = `${base.replace(/\/$/, "")}/api/embeddings`;
+  const timeoutMs = getEmbedTimeoutMs();
+  const str = String(text);
 
-  const bodyPrimary = { model, prompt: key };
-  let res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(bodyPrimary),
-  });
-
-  if (!res.ok) {
-    const bodyAlt = { model, input: key };
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(bodyAlt),
-    });
+  const bodyPrimary = { model, prompt: str };
+  let res;
+  try {
+    res = await fetchEmbeddingsPost(url, bodyPrimary, timeoutMs);
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      const err = new Error("embedding timeout");
+      err.code = "EMBEDDING_TIMEOUT";
+      throw err;
+    }
+    const err = new Error(e instanceof Error ? e.message : String(e));
+    err.code = "EMBEDDING_FAILED";
+    throw err;
   }
 
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Ollama embeddings failed: ${res.status} ${errText}`);
+    const bodyAlt = { model, input: str };
+    try {
+      res = await fetchEmbeddingsPost(url, bodyAlt, timeoutMs);
+    } catch (e) {
+      if (e && e.name === "AbortError") {
+        const err = new Error("embedding timeout");
+        err.code = "EMBEDDING_TIMEOUT";
+        throw err;
+      }
+      const err = new Error(e instanceof Error ? e.message : String(e));
+      err.code = "EMBEDDING_FAILED";
+      throw err;
+    }
+  }
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    const err = new Error(`Ollama embeddings failed: ${res.status} ${errText}`);
+    err.code = "EMBEDDING_FAILED";
+    throw err;
   }
 
   const data = await res.json();
   const embedding = data.embedding;
   if (!Array.isArray(embedding) || embedding.length === 0) {
-    throw new Error("Ollama embeddings returned empty embedding");
+    const err = new Error("Ollama embeddings returned empty embedding");
+    err.code = "EMBEDDING_FAILED";
+    throw err;
   }
   const vec = embedding.map((x) => Number(x));
   cacheSet(key, vec);
