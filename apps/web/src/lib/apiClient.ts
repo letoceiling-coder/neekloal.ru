@@ -45,7 +45,7 @@ async function parseErrorBody(res: Response): Promise<unknown> {
 type RequestOpts = RequestInit & { jsonBody?: unknown };
 
 /**
- * Единственная точка HTTP: только через этот модуль (не использовать fetch напрямую).
+ * Единая точка HTTP: только через этот модуль (не использовать fetch напрямую).
  */
 async function request<T>(method: string, path: string, init?: RequestOpts): Promise<T> {
   const base = getBaseUrl();
@@ -55,9 +55,9 @@ async function request<T>(method: string, path: string, init?: RequestOpts): Pro
   const { jsonBody, body: initBody, headers: initHeaders, ...restInit } = init || {};
   const headers = new Headers(initHeaders);
 
-  const apiKey = useAuthStore.getState().apiKey;
-  if (apiKey) {
-    headers.set("Authorization", `Bearer ${apiKey}`);
+  const accessToken = useAuthStore.getState().accessToken;
+  if (accessToken) {
+    headers.set("Authorization", `Bearer ${accessToken}`);
   }
 
   let body: BodyInit | null | undefined = initBody as BodyInit | undefined;
@@ -68,6 +68,8 @@ async function request<T>(method: string, path: string, init?: RequestOpts): Pro
     }
   }
 
+  const sentAuth = headers.has("Authorization");
+
   const res = await fetch(url, {
     ...restInit,
     method,
@@ -76,7 +78,9 @@ async function request<T>(method: string, path: string, init?: RequestOpts): Pro
   });
 
   if (res.status === 401) {
-    handleUnauthorized();
+    if (sentAuth) {
+      handleUnauthorized();
+    }
     throw new ApiError("Не авторизован", 401);
   }
 

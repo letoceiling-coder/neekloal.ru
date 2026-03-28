@@ -5,11 +5,11 @@ import { useAuthStore } from "../stores/authStore";
 import type { Agent } from "./types";
 
 export function useAgents() {
-  const apiKey = useAuthStore((s) => s.apiKey);
+  const accessToken = useAuthStore((s) => s.accessToken);
   return useQuery({
     queryKey: queryKeys.agents.all,
     queryFn: () => apiClient.get<Agent[]>("/agents"),
-    enabled: Boolean(apiKey),
+    enabled: Boolean(accessToken),
   });
 }
 

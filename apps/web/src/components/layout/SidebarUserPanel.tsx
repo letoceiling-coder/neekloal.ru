@@ -4,14 +4,15 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 
-function maskKey(key: string): string {
-  if (key.length <= 8) return "••••••••";
-  return `${key.slice(0, 4)}…${key.slice(-4)}`;
+function initialsFromEmail(email: string | null): string {
+  if (!email || email.trim() === "") return "?";
+  const ch = email.trim()[0];
+  return ch.toUpperCase();
 }
 
 export function SidebarUserPanel() {
   const navigate = useNavigate();
-  const apiKey = useAuthStore((s) => s.apiKey);
+  const email = useAuthStore((s) => s.email);
   const logout = useAuthStore((s) => s.logout);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const [open, setOpen] = useState(false);
@@ -29,9 +30,9 @@ export function SidebarUserPanel() {
     return () => document.removeEventListener("mousedown", handleMouseDown);
   }, [open]);
 
-  if (!apiKey) return null;
+  if (!email) return null;
 
-  const initial = apiKey.slice(0, 1).toUpperCase();
+  const initial = initialsFromEmail(email);
 
   return (
     <div
@@ -47,7 +48,7 @@ export function SidebarUserPanel() {
         ].join(" ")}
         aria-expanded={open}
         aria-haspopup="menu"
-        title={maskKey(apiKey)}
+        title={email}
       >
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neutral-200 text-sm font-medium text-neutral-800 transition-all duration-200">
@@ -59,9 +60,7 @@ export function SidebarUserPanel() {
               sidebarCollapsed ? "max-md:block md:hidden" : "block",
             ].join(" ")}
           >
-            <p className="truncate font-mono text-xs font-medium text-neutral-900">
-              {maskKey(apiKey)}
-            </p>
+            <p className="truncate text-xs font-medium text-neutral-900">{email}</p>
           </div>
         </div>
         <ChevronUp

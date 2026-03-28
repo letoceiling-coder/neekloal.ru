@@ -9,11 +9,11 @@ import type { Conversation, CreateConversationInput } from "./types";
  * До появления API запрос вернёт ошибку; обработайте её на странице.
  */
 export function useConversations() {
-  const apiKey = useAuthStore((s) => s.apiKey);
+  const accessToken = useAuthStore((s) => s.accessToken);
   return useQuery({
     queryKey: queryKeys.conversations.all,
     queryFn: () => apiClient.get<Conversation[]>("/conversations"),
-    enabled: Boolean(apiKey),
+    enabled: Boolean(accessToken),
   });
 }
 

@@ -5,10 +5,10 @@ import { useAuthStore } from "../stores/authStore";
 import type { UsageAggregate } from "./types";
 
 export function useUsage() {
-  const apiKey = useAuthStore((s) => s.apiKey);
+  const accessToken = useAuthStore((s) => s.accessToken);
   return useQuery({
     queryKey: queryKeys.usage.all,
     queryFn: () => apiClient.get<UsageAggregate>("/usage"),
-    enabled: Boolean(apiKey),
+    enabled: Boolean(accessToken),
   });
 }

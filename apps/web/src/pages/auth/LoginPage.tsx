@@ -1,56 +1,106 @@
 import { type FormEvent, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { AuthCard } from "../../components/auth/AuthCard";
+import { apiClient, ApiError } from "../../lib/apiClient";
 import { useAuthStore } from "../../stores/authStore";
+
+type LoginResponse = {
+  accessToken: string;
+  user: { id: string; email: string };
+  organizationId: string;
+};
 
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const setApiKey = useAuthStore((s) => s.setApiKey);
-  const [apiKey, setApiKeyInput] = useState("");
+  const setSession = useAuthStore((s) => s.setSession);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   const from =
     (location.state as { from?: string } | null)?.from ?? "/dashboard";
 
-  function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    const trimmed = apiKey.trim();
-    if (!trimmed) return;
-    setApiKey(trimmed);
-    navigate(from, { replace: true });
+    setError(null);
+    const em = email.trim().toLowerCase();
+    if (!em || !password) return;
+    setLoading(true);
+    try {
+      const data = await apiClient.post<LoginResponse>("/auth/login", {
+        email: em,
+        password,
+      });
+      setSession({
+        accessToken: data.accessToken,
+        email: data.user.email,
+        userId: data.user.id,
+        organizationId: data.organizationId,
+      });
+      navigate(from, { replace: true });
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : "Не удалось войти. Проверьте данные.";
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
     <AuthCard title="Вход">
       <form className="space-y-4" onSubmit={handleSubmit}>
+        {error ? (
+          <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+            {error}
+          </p>
+        ) : null}
         <div className="space-y-1.5">
           <label
-            htmlFor="login-api-key"
+            htmlFor="login-email"
             className="block text-sm font-medium text-neutral-700"
           >
-            API ключ
+            Email
           </label>
           <input
-            id="login-api-key"
-            name="apiKey"
-            type="password"
-            autoComplete="off"
+            id="login-email"
+            name="email"
+            type="email"
+            autoComplete="email"
             required
-            value={apiKey}
-            onChange={(e) => setApiKeyInput(e.target.value)}
-            placeholder="sk-…"
-            className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-sm text-neutral-900 transition-all duration-200 outline-none focus:border-neutral-400 focus:ring-2 focus:ring-neutral-200"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 transition-all duration-200 outline-none focus:border-neutral-400 focus:ring-2 focus:ring-neutral-200"
           />
-          <p className="text-xs text-neutral-500">
-            Ключ передаётся в заголовке{" "}
-            <span className="font-mono">Authorization: Bearer</span>
-          </p>
+        </div>
+        <div className="space-y-1.5">
+          <label
+            htmlFor="login-password"
+            className="block text-sm font-medium text-neutral-700"
+          >
+            Пароль
+          </label>
+          <input
+            id="login-password"
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 transition-all duration-200 outline-none focus:border-neutral-400 focus:ring-2 focus:ring-neutral-200"
+          />
         </div>
         <button
           type="submit"
-          className="w-full rounded-md bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-neutral-800"
+          disabled={loading}
+          className="w-full rounded-md bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-neutral-800 disabled:opacity-60"
         >
-          Войти
+          {loading ? "Вход…" : "Войти"}
         </button>
       </form>
       <div className="mt-6 flex flex-col gap-2 text-center text-sm transition-all duration-200">
@@ -61,7 +111,7 @@ export function LoginPage() {
           Забыли пароль?
         </Link>
         <p className="text-neutral-500">
-          Нет ключа?{" "}
+          Нет аккаунта?{" "}
           <Link
             to="/register"
             className="font-medium text-neutral-900 underline-offset-2 transition-all duration-200 hover:underline"

@@ -1,25 +1,44 @@
 import { type FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { AuthCard } from "../../components/auth/AuthCard";
+import { apiClient, ApiError } from "../../lib/apiClient";
 
 export function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    setSent(true);
+    setError(null);
+    const em = email.trim().toLowerCase();
+    if (!em) return;
+    setLoading(true);
+    try {
+      await apiClient.post("/auth/forgot-password", { email: em });
+      setSent(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Ошибка запроса");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
     <AuthCard title="Забыли пароль?">
       {sent ? (
         <p className="text-center text-sm text-neutral-600 transition-all duration-200">
-          Если такой адрес есть в системе, мы отправим ссылку для сброса пароля
-          (демо: API позже).
+          Если такой адрес есть в системе, мы отправим ссылку для сброса пароля.
+          Проверьте почту и папку «Спам». Ссылка действует ограниченное время.
         </p>
       ) : (
         <form className="space-y-4" onSubmit={handleSubmit}>
+          {error ? (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {error}
+            </p>
+          ) : null}
           <div className="space-y-1.5">
             <label
               htmlFor="forgot-email"
@@ -40,9 +59,10 @@ export function ForgotPasswordPage() {
           </div>
           <button
             type="submit"
-            className="w-full rounded-md bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-neutral-800"
+            disabled={loading}
+            className="w-full rounded-md bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-neutral-800 disabled:opacity-60"
           >
-            Отправить ссылку
+            {loading ? "Отправка…" : "Отправить ссылку"}
           </button>
         </form>
       )}

@@ -5,11 +5,11 @@ import { useAuthStore } from "../stores/authStore";
 import type { Assistant, CreateAssistantInput } from "./types";
 
 export function useAssistants() {
-  const apiKey = useAuthStore((s) => s.apiKey);
+  const accessToken = useAuthStore((s) => s.accessToken);
   return useQuery({
     queryKey: queryKeys.assistants.all,
     queryFn: () => apiClient.get<Assistant[]>("/assistants"),
-    enabled: Boolean(apiKey),
+    enabled: Boolean(accessToken),
   });
 }
 
