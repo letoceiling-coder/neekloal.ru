@@ -3,6 +3,7 @@
 const prisma = require("../lib/prisma");
 const qdrant = require("../lib/qdrant");
 const { retrieveForChat } = require("../services/rag");
+const { runAgent } = require("../services/agent");
 const { resolveModel, ensureModelAvailable } = require("../services/modelRouter");
 const authMiddleware = require("../middleware/auth");
 const rateLimitMiddleware = require("../middleware/rateLimit");
@@ -102,10 +103,36 @@ module.exports = async function chatRoutes(fastify) {
       }
     }
 
-    const prompt = buildStructuredPrompt(assistant.systemPrompt, knowledgeBlock, message);
-    fastify.log.info({ prompt }, "chat prompt");
+    const agentRecord = await prisma.agent.findFirst({
+      where: { userId: uid, assistantId: assistant.id },
+      include: { tools: true },
+    });
 
     try {
+      if (agentRecord) {
+        const { reply: replyText, model: modelOut } = await runAgent({
+          assistant,
+          message,
+          knowledgeBlock,
+          model,
+          agent: agentRecord,
+        });
+
+        await prisma.usage.create({
+          data: {
+            userId: uid,
+            apiKeyId: request.apiKeyId,
+            model: modelOut,
+            tokens: estimateTokensFromMessage(message),
+          },
+        });
+
+        return { reply: replyText, model: modelOut };
+      }
+
+      const prompt = buildStructuredPrompt(assistant.systemPrompt, knowledgeBlock, message);
+      fastify.log.info({ prompt }, "chat prompt");
+
       const url = getGenerateUrl();
       const res = await fetch(url, {
         method: "POST",
