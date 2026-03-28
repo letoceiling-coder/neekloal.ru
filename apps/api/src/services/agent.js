@@ -2,6 +2,8 @@
 
 const { executeTool } = require("./tools");
 
+const VALID_ACTIONS = new Set(["reply", "tool"]);
+
 function getGenerateUrl() {
   const base = process.env.OLLAMA_URL;
   if (!base) {
@@ -38,19 +40,47 @@ async function ollamaGenerate(model, prompt) {
  * @returns {unknown}
  */
 function parseAgentJson(raw) {
-  const t = String(raw).trim();
-  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fence ? fence[1].trim() : t;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start === -1 || end <= start) {
-    return null;
-  }
   try {
-    return JSON.parse(candidate.slice(start, end + 1));
+    const t = String(raw).trim();
+    const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = fence ? fence[1].trim() : t;
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start === -1 || end <= start) {
+      return null;
+    }
+    try {
+      return JSON.parse(candidate.slice(start, end + 1));
+    } catch {
+      return null;
+    }
   } catch {
     return null;
   }
+}
+
+/**
+ * @param {string} rules
+ * @param {string} kb
+ * @param {string} userMsg
+ * @param {string} assistantName
+ * @param {string} reason
+ */
+function buildFallbackPrompt(rules, kb, userMsg, assistantName, reason) {
+  return `SYSTEM (agent rules):
+${rules}
+
+KNOWLEDGE:
+${kb || "(none)"}
+
+ASSISTANT: ${assistantName}
+
+USER:
+${userMsg}
+
+Note: ${reason}
+
+Reply helpfully in plain text for the user. Do not output JSON.`;
 }
 
 /**
@@ -69,6 +99,21 @@ function formatToolsBlock(tools) {
       return `- id: ${t.id}\n  type: ${t.type}\n  config: ${cfg}`;
     })
     .join("\n");
+}
+
+/**
+ * @param {string} toolResultJson
+ */
+function toolExecutionLooksFailed(toolResultJson) {
+  try {
+    const j = JSON.parse(toolResultJson);
+    if (j && typeof j === "object") {
+      return j.ok !== true;
+    }
+    return true;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -116,38 +161,94 @@ OR
   const parsed = parseAgentJson(firstRaw);
 
   if (!parsed || typeof parsed !== "object") {
+    console.log({
+      agentAction: "parse_fallback",
+      toolSuccess: false,
+      toolFailed: false,
+    });
     return { reply: firstRaw.trim() || "(empty model response)", model };
   }
 
-  const action = parsed.action != null ? String(parsed.action) : "";
+  const action = parsed.action != null ? String(parsed.action).trim() : "";
 
-  if (action !== "tool") {
+  if (!VALID_ACTIONS.has(action)) {
     const text = parsed.text != null ? String(parsed.text) : firstRaw;
+    console.log({
+      agentAction: "invalid_action",
+      agentActionRaw: action,
+      toolSuccess: false,
+      toolFailed: false,
+    });
+    return { reply: text, model };
+  }
+
+  if (action === "reply") {
+    const text = parsed.text != null ? String(parsed.text) : firstRaw;
+    console.log({
+      agentAction: "reply",
+      toolSuccess: false,
+      toolFailed: false,
+    });
     return { reply: text, model };
   }
 
   const toolId = parsed.toolId != null ? String(parsed.toolId) : "";
   const tool = (agent.tools || []).find((x) => x.id === toolId);
   if (!tool) {
-    const secondPrompt = `SYSTEM (agent rules):
-${rules}
-
-KNOWLEDGE:
-${kb || "(none)"}
-
-USER:
-${userMsg}
-
-The model requested an invalid toolId. Explain briefly that the tool was not found and answer if you can without tools.`;
-
-    const fallback = await ollamaGenerate(model, secondPrompt);
-    return { reply: fallback, model };
+    const fallbackPrompt = buildFallbackPrompt(
+      rules,
+      kb,
+      userMsg,
+      assistant.name,
+      "The model requested a toolId that does not exist in TOOLS."
+    );
+    const fallback = await ollamaGenerate(model, fallbackPrompt);
+    console.log({
+      agentAction: "tool",
+      toolSuccess: false,
+      toolFailed: true,
+      reason: "tool_not_found",
+    });
+    return { reply: fallback.trim() || firstRaw, model };
   }
 
   console.log("tool called", toolId);
 
-  const toolResult = await executeTool(tool, parsed.input);
+  let toolResult = "";
+  let executeThrew = false;
+  try {
+    toolResult = await executeTool(tool, parsed.input);
+  } catch (e) {
+    executeThrew = true;
+    toolResult = JSON.stringify({
+      ok: false,
+      error: e instanceof Error ? e.message : String(e),
+      body: "",
+    });
+  }
+
+  if (executeThrew || toolExecutionLooksFailed(toolResult)) {
+    const reason = executeThrew
+      ? "Tool execution threw an error; apologize briefly and answer if you can."
+      : `Tool returned failure or invalid payload: ${toolResult.slice(0, 500)}`;
+    const fallbackPrompt = buildFallbackPrompt(rules, kb, userMsg, assistant.name, reason);
+    const fallback = await ollamaGenerate(model, fallbackPrompt);
+    console.log({
+      agentAction: "tool",
+      toolSuccess: false,
+      toolFailed: true,
+      reason: executeThrew ? "execute_threw" : "tool_payload_failed",
+    });
+    console.log("tool result", toolResult.slice(0, 2000));
+    return { reply: fallback.trim() || "Sorry, the tool could not complete.", model };
+  }
+
   console.log("tool result", toolResult.slice(0, 2000));
+  console.log({
+    agentAction: "tool",
+    toolSuccess: true,
+    toolFailed: false,
+  });
 
   const secondPrompt = `SYSTEM (agent rules):
 ${rules}
