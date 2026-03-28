@@ -1,22 +1,27 @@
 "use strict";
 
 /**
- * Last `overlap` chars of `str`, trimmed to start after the last space in that window
- * so the next chunk does not begin mid-word.
+ * Carry last 1–2 sentences into the next chunk (sentence overlap).
  * @param {string} str
- * @param {number} overlap
+ * @param {number} maxSentences 1 or 2
+ * @param {number} maxCharsBudget soft cap so overlap does not dominate the next chunk
  */
-function takeOverlapTail(str, overlap) {
-  if (!str || overlap <= 0) return "";
-  const t = String(str);
-  if (t.length <= overlap) return t.trim();
-  const start = Math.max(0, t.length - overlap);
-  const window = t.slice(start);
-  const lastSpace = window.lastIndexOf(" ");
-  if (lastSpace > 0) {
-    return t.slice(start + lastSpace + 1).trimStart();
+function takeLastSentencesForOverlap(str, maxSentences, maxCharsBudget) {
+  const t = String(str ?? "").trim();
+  if (!t) return "";
+  const sents = splitIntoSentences(t);
+  if (sents.length === 0) return t;
+  const ms = Math.min(Math.max(1, maxSentences), 2);
+  let n = Math.min(ms, sents.length);
+  let joined = sents.slice(-n).join(" ");
+  while (joined.length > maxCharsBudget && n > 1) {
+    n -= 1;
+    joined = sents.slice(-n).join(" ");
   }
-  return window.trimStart();
+  if (joined.length > maxCharsBudget) {
+    return sents[sents.length - 1].trim();
+  }
+  return joined.trim();
 }
 
 /**
@@ -33,13 +38,13 @@ function splitIntoSentences(text) {
 }
 
 /**
- * Fixed-size windows with overlap (fallback for very long “sentences”).
+ * Fixed-size windows (fallback for very long “sentences”).
  * @param {string} s
  * @param {number} maxChars
- * @param {number} overlap
+ * @param {number} overlapChars
  * @returns {string[]}
  */
-function charChunks(s, maxChars, overlap) {
+function charChunks(s, maxChars, overlapChars) {
   const t = String(s);
   const out = [];
   let start = 0;
@@ -47,20 +52,22 @@ function charChunks(s, maxChars, overlap) {
     const end = Math.min(start + maxChars, t.length);
     out.push(t.slice(start, end));
     if (end >= t.length) break;
-    start = Math.max(0, end - overlap);
+    start = Math.max(0, end - overlapChars);
   }
   return out;
 }
 
 /**
- * Sentence-aware chunks: split by . ? !, merge up to maxChars, overlap between chunks.
+ * Sentence-aware chunks: merge up to maxChars; overlap = last 1–2 sentences into next chunk.
  * @param {string} text
- * @param {{ maxChars?: number; overlap?: number }} [opts]
+ * @param {{ maxChars?: number; overlapSentences?: number; overlapChars?: number }} [opts]
  * @returns {string[]}
  */
 function chunkText(text, opts = {}) {
   const maxChars = opts.maxChars ?? (parseInt(process.env.RAG_CHUNK_MAX_CHARS || "900", 10) || 900);
-  const overlap = opts.overlap ?? (parseInt(process.env.RAG_CHUNK_OVERLAP || "120", 10) || 120);
+  const overlapSentences =
+    opts.overlapSentences ?? (parseInt(process.env.RAG_OVERLAP_SENTENCES || "2", 10) || 2);
+  const overlapChars = opts.overlapChars ?? (parseInt(process.env.RAG_CHUNK_OVERLAP || "120", 10) || 120);
 
   const normalized = String(text ?? "").replace(/\s+/g, " ").trim();
   if (!normalized) return [];
@@ -73,31 +80,36 @@ function chunkText(text, opts = {}) {
     if (s.length > maxChars) {
       if (buf) {
         chunks.push(buf);
-        buf = "";
+        buf = takeLastSentencesForOverlap(buf, overlapSentences, maxChars);
       }
-      const parts = charChunks(s, maxChars, overlap);
+      const parts = charChunks(s, maxChars, overlapChars);
       for (const p of parts) {
         chunks.push(p);
       }
-      buf = takeOverlapTail(parts[parts.length - 1], overlap);
+      buf = takeLastSentencesForOverlap(parts[parts.length - 1], overlapSentences, maxChars);
       continue;
     }
 
     const candidate = buf ? `${buf} ${s}` : s;
     if (candidate.length <= maxChars) {
       buf = candidate;
+      continue;
+    }
+
+    if (buf) {
+      chunks.push(buf);
+      const carry = takeLastSentencesForOverlap(buf, overlapSentences, maxChars);
+      buf = carry ? `${carry} ${s}`.trim() : s;
     } else {
-      if (buf) {
-        chunks.push(buf);
-        const tail = takeOverlapTail(buf, overlap);
-        buf = tail ? `${tail} ${s}`.trim() : s;
-      } else {
-        buf = s;
-      }
-      while (buf.length > maxChars) {
-        chunks.push(buf.slice(0, maxChars));
-        buf = buf.slice(Math.max(0, maxChars - overlap));
-      }
+      buf = s;
+    }
+
+    while (buf.length > maxChars) {
+      const pushed = buf.slice(0, maxChars);
+      chunks.push(pushed);
+      const rest = buf.slice(maxChars);
+      const carry = takeLastSentencesForOverlap(pushed, overlapSentences, maxChars);
+      buf = carry ? `${carry} ${rest}`.trim() : rest;
     }
   }
 
@@ -111,4 +123,5 @@ function chunkText(text, opts = {}) {
 module.exports = {
   chunkText,
   splitIntoSentences,
+  takeLastSentencesForOverlap,
 };

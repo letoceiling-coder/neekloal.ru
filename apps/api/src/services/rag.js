@@ -14,26 +14,32 @@ function estimateTokensRough(text) {
   return Math.max(0, Math.ceil(String(text).length / 4));
 }
 
+/** Reserve 20% headroom vs configured caps (token-safe). */
+const TOKEN_BUDGET_SAFETY = 0.8;
+
 /**
  * Cap KNOWLEDGE block size (chars + optional token budget).
  * @param {string} text
  * @returns {{ text: string; truncated: boolean }}
  */
 function limitKnowledgeBlock(text) {
-  const maxChars = parseInt(process.env.RAG_KNOWLEDGE_MAX_CHARS || "12000", 10) || 12000;
+  const maxCharsCfg = parseInt(process.env.RAG_KNOWLEDGE_MAX_CHARS || "12000", 10) || 12000;
   const maxTokensEnv = process.env.RAG_KNOWLEDGE_MAX_TOKENS;
-  let maxCharsEff = maxChars;
+
+  let maxCharsEff = Math.floor(maxCharsCfg * TOKEN_BUDGET_SAFETY);
   if (maxTokensEnv) {
     const mt = parseInt(maxTokensEnv, 10);
     if (!Number.isNaN(mt) && mt > 0) {
-      maxCharsEff = Math.min(maxCharsEff, mt * 4);
+      const effectiveTokens = Math.floor(mt * TOKEN_BUDGET_SAFETY);
+      maxCharsEff = Math.min(maxCharsEff, effectiveTokens * 4);
     }
   }
+
   const t = String(text);
   if (t.length <= maxCharsEff) {
     return { text: t, truncated: false };
   }
-  return { text: t.slice(0, maxCharsEff) + "\n\n[…]", truncated: true };
+  return { text: t.slice(0, maxCharsEff) + "\n\n[TRUNCATED]", truncated: true };
 }
 
 /**
@@ -123,7 +129,15 @@ async function retrieveForChat(fastify, assistantId, message, topK) {
   const queryVector = await embedText(query);
   const hitsRaw = await qdrant.searchSimilar(queryVector, assistantId, candidateLimit);
 
-  const passed = hitsRaw.filter((h) => Number(h.score) >= minScore);
+  let minScoreUsed = minScore;
+  let passed = hitsRaw.filter((h) => Number(h.score) >= minScoreUsed);
+  let adaptiveScoreFallback = false;
+  if (passed.length === 0 && hitsRaw.length > 0) {
+    minScoreUsed = 0.5;
+    passed = hitsRaw.filter((h) => Number(h.score) >= minScoreUsed);
+    adaptiveScoreFallback = true;
+  }
+
   const top = passed.slice(0, k);
 
   const texts = [];
@@ -153,7 +167,9 @@ async function retrieveForChat(fastify, assistantId, message, topK) {
       ragChunksUsed: top.length,
       ragChunkIds: chunkIds,
       scores,
-      minScore,
+      minScoreInitial: minScore,
+      minScoreUsed,
+      adaptiveScoreFallback,
       totalTokensKnowledge,
       knowledgeBlockTruncated: limited.truncated,
     },
