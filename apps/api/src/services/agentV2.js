@@ -6,6 +6,13 @@ const { executeTool } = require("./tools");
 const MAX_LOOPS = 5;
 const VALID_ACTIONS = new Set(["tool", "final"]);
 
+function getToolContextMax() {
+  const n = parseInt(process.env.AGENT_V2_TOOL_CONTEXT_MAX || "1500", 10);
+  if (Number.isNaN(n) || n < 1000) return 1000;
+  if (n > 2000) return 2000;
+  return n;
+}
+
 function getGenerateUrl() {
   const base = process.env.OLLAMA_URL;
   if (!base) {
@@ -62,6 +69,55 @@ function parseAgentJson(raw) {
 }
 
 /**
+ * @param {unknown} decision — parsed JSON from LLM
+ * @returns {{ valid: boolean; reason?: string; normalized?: { action: string; text?: string; toolId?: string; input?: unknown } }}
+ */
+function validateDecision(decision) {
+  if (!decision || typeof decision !== "object") {
+    return { valid: false, reason: "not_object" };
+  }
+  const action = decision.action != null ? String(decision.action).trim() : "";
+  if (!VALID_ACTIONS.has(action)) {
+    return { valid: false, reason: "invalid_action" };
+  }
+  if (action === "final") {
+    const text = decision.text;
+    if (text == null || String(text).trim() === "") {
+      return { valid: false, reason: "final_requires_text" };
+    }
+    return {
+      valid: true,
+      normalized: { action: "final", text: String(text) },
+    };
+  }
+  const toolId = decision.toolId != null ? String(decision.toolId).trim() : "";
+  if (!toolId) {
+    return { valid: false, reason: "tool_requires_toolId" };
+  }
+  return {
+    valid: true,
+    normalized: { action: "tool", toolId, input: decision.input },
+  };
+}
+
+/**
+ * @param {unknown} parsed
+ */
+function decisionSignature(parsed) {
+  if (!parsed || typeof parsed !== "object") {
+    return "";
+  }
+  const a = String(parsed.action || "").trim();
+  if (a === "final") {
+    return `final:${String(parsed.text || "").slice(0, 240)}`;
+  }
+  if (a === "tool") {
+    return `tool:${String(parsed.toolId || "").trim()}`;
+  }
+  return `other:${a}`;
+}
+
+/**
  * @param {string} toolResultJson
  */
 function toolExecutionLooksFailed(toolResultJson) {
@@ -74,6 +130,38 @@ function toolExecutionLooksFailed(toolResultJson) {
   } catch {
     return true;
   }
+}
+
+/**
+ * @param {string} toolId
+ * @param {string} toolResultJson
+ * @param {boolean} success
+ */
+function buildStructuredToolResult(toolId, toolResultJson, success) {
+  const maxInner = Math.max(200, getToolContextMax() - 200);
+  let data;
+  try {
+    data = JSON.parse(toolResultJson);
+  } catch {
+    data = { raw: toolResultJson.slice(0, maxInner) };
+  }
+  const obj = {
+    tool: toolId,
+    success,
+    data,
+  };
+  let s = JSON.stringify(obj);
+  if (s.length > getToolContextMax()) {
+    s = JSON.stringify({
+      tool: toolId,
+      success,
+      data: {
+        truncated: true,
+        preview: s.slice(0, getToolContextMax() - 120),
+      },
+    });
+  }
+  return `TOOL RESULT:\n${s}`;
 }
 
 /**
@@ -94,12 +182,24 @@ function formatToolsBlock(tools) {
     .join("\n");
 }
 
-/**
- * @param {string} rules
- * @param {string} kb
- * @param {string} userMsg
- * @param {string} assistantName
- */
+async function llmFallbackPlain(model, rules, kb, userMsg, assistantName, note) {
+  const prompt = `SYSTEM (agent rules):
+${rules}
+
+KNOWLEDGE:
+${kb || "(none)"}
+
+ASSISTANT: ${assistantName}
+
+USER:
+${userMsg}
+
+Note: ${note}
+
+Answer in plain text only. Do not output JSON.`;
+  return ollamaGenerate(model, prompt);
+}
+
 function buildMaxStepsFallbackPrompt(rules, kb, userMsg, assistantName) {
   return `SYSTEM (agent rules):
 ${rules}
@@ -134,6 +234,12 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent }) 
 
   const toolsBlock = formatToolsBlock(agent.tools || []);
 
+  const tExec0 = Date.now();
+  /** @type {number[]} */
+  const stepLatencyMs = [];
+  /** @type {number[]} */
+  const toolLatencyMs = [];
+
   const execution = await prisma.agentExecution.create({
     data: {
       agentId: agent.id,
@@ -150,13 +256,17 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent }) 
   const toolHistory = [];
   let finalText = "";
   let finished = false;
+  /** @type {string | null} */
+  let prevSig = null;
+  let lastToolIdExecuted = null;
 
-  const persistStep = async (type, payload) => {
+  const persistStep = async (type, status, payload) => {
     await prisma.agentStep.create({
       data: {
         executionId: execution.id,
         stepIndex: seq,
         type,
+        status,
         payload: payload === undefined ? undefined : payload,
       },
     });
@@ -166,7 +276,9 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent }) 
   try {
     for (let i = 0; i < MAX_LOOPS; i++) {
       const historyBlock =
-        toolHistory.length === 0 ? "(none yet)" : toolHistory.map((h, idx) => `[${idx + 1}] ${h}`).join("\n\n");
+        toolHistory.length === 0
+          ? "(none yet)"
+          : toolHistory.map((h, idx) => `[${idx + 1}] ${h}`).join("\n\n");
 
       const prompt = `SYSTEM (agent rules):
 ${rules}
@@ -182,7 +294,7 @@ ASSISTANT: ${assistant.name}
 USER:
 ${userMsg}
 
-PREVIOUS TOOL RESULTS:
+PREVIOUS TOOL RESULTS (structured JSON per entry, size-capped):
 ${historyBlock}
 
 Respond with exactly one JSON object:
@@ -190,13 +302,19 @@ Respond with exactly one JSON object:
 OR
 {"action":"tool","toolId":"<uuid>","input":<optional object>}`;
 
+      const tStep0 = Date.now();
       const raw = await ollamaGenerate(model, prompt);
-      const parsed = parseAgentJson(raw);
+      stepLatencyMs.push(Date.now() - tStep0);
 
-      await persistStep("decision", {
+      const parsed = parseAgentJson(raw);
+      const vd =
+        parsed && typeof parsed === "object" ? validateDecision(parsed) : { valid: false, reason: "parse" };
+
+      await persistStep("decision", vd.valid ? "success" : "failed", {
         loopIndex: i,
         raw: raw.slice(0, 12000),
         parsed: parsed && typeof parsed === "object" ? parsed : null,
+        validation: vd.valid ? undefined : vd.reason,
       });
 
       console.log({
@@ -207,52 +325,106 @@ OR
         tool: parsed && typeof parsed === "object" ? parsed.toolId : null,
       });
 
-      if (!parsed || typeof parsed !== "object") {
-        finalText = raw.trim() || "I could not parse the next step.";
-        await persistStep("response", { reason: "parse_fallback", text: finalText });
+      if (!parsed || typeof parsed !== "object" || !vd.valid || !vd.normalized) {
+        finalText = await llmFallbackPlain(
+          model,
+          rules,
+          kb,
+          userMsg,
+          assistant.name,
+          !parsed || typeof parsed !== "object"
+            ? "The planner output was not valid JSON. Answer the user helpfully from KNOWLEDGE and context."
+            : `Invalid decision (${vd.reason || "unknown"}). Answer the user directly without tools.`
+        );
+        await persistStep("response", "failed", {
+          reason: !parsed || typeof parsed !== "object" ? "parse_fallback" : "validation_fallback",
+          validation: vd.reason,
+          text: finalText,
+        });
         finished = true;
         break;
       }
 
-      const action = parsed.action != null ? String(parsed.action).trim() : "";
+      const norm = vd.normalized;
+      const sig = decisionSignature(parsed);
+      if (prevSig !== null && prevSig === sig && i > 0) {
+        finalText = await llmFallbackPlain(
+          model,
+          rules,
+          kb,
+          userMsg,
+          assistant.name,
+          "The same decision repeated. Stop looping and answer the user in plain text."
+        );
+        await persistStep("response", "failed", { reason: "stagnation", text: finalText });
+        finished = true;
+        break;
+      }
+      prevSig = sig;
 
-      if (!VALID_ACTIONS.has(action)) {
-        finalText = parsed.text != null ? String(parsed.text) : raw;
-        await persistStep("response", { reason: "invalid_action_fallback", text: finalText });
+      if (norm.action === "final") {
+        finalText = norm.text != null ? String(norm.text) : "";
+        await persistStep("response", "success", { text: finalText });
         finished = true;
         break;
       }
 
-      if (action === "final") {
-        finalText = parsed.text != null ? String(parsed.text) : raw;
-        await persistStep("response", { text: finalText });
-        finished = true;
-        break;
-      }
-
-      const toolId = parsed.toolId != null ? String(parsed.toolId) : "";
+      const toolId = norm.toolId;
       const tool = (agent.tools || []).find((x) => x.id === toolId);
 
       if (!tool) {
-        toolHistory.push(`ERROR: tool not found for id=${toolId}`);
-        await persistStep("tool", { toolId, error: "not_found" });
-        continue;
+        await persistStep("tool", "failed", { toolId, error: "not_found" });
+        toolHistory.push(
+          buildStructuredToolResult(
+            toolId,
+            JSON.stringify({ ok: false, error: "tool_not_found" }),
+            false
+          )
+        );
+        finalText = await llmFallbackPlain(
+          model,
+          rules,
+          kb,
+          userMsg,
+          assistant.name,
+          "Requested tool was not found. Answer without it."
+        );
+        await persistStep("response", "failed", { reason: "missing_tool", text: finalText });
+        finished = true;
+        break;
       }
 
+      if (toolId === lastToolIdExecuted) {
+        finalText = await llmFallbackPlain(
+          model,
+          rules,
+          kb,
+          userMsg,
+          assistant.name,
+          "The same tool was selected twice in a row. Summarize and answer the user."
+        );
+        await persistStep("response", "failed", { reason: "repeat_tool_guard", text: finalText });
+        finished = true;
+        break;
+      }
+
+      const tTool0 = Date.now();
       let toolResult = "";
       try {
-        toolResult = await executeTool(tool, parsed.input);
+        toolResult = await executeTool(tool, norm.input);
       } catch (e) {
         toolResult = JSON.stringify({
           ok: false,
           error: e instanceof Error ? e.message : String(e),
         });
       }
+      toolLatencyMs.push(Date.now() - tTool0);
 
-      await persistStep("tool", {
+      const failed = toolExecutionLooksFailed(toolResult);
+      await persistStep("tool", failed ? "failed" : "success", {
         toolId,
         result: toolResult.slice(0, 8000),
-        failed: toolExecutionLooksFailed(toolResult),
+        failed,
       });
 
       console.log({
@@ -263,23 +435,52 @@ OR
         tool: toolId,
       });
 
-      if (toolExecutionLooksFailed(toolResult)) {
-        toolHistory.push(`TOOL ${toolId} FAILED: ${toolResult.slice(0, 2000)}`);
-      } else {
-        toolHistory.push(`TOOL ${toolId} OK: ${toolResult.slice(0, 2000)}`);
+      lastToolIdExecuted = toolId;
+
+      toolHistory.push(
+        buildStructuredToolResult(toolId, toolResult, !failed)
+      );
+
+      if (failed) {
+        finalText = await llmFallbackPlain(
+          model,
+          rules,
+          kb,
+          userMsg,
+          assistant.name,
+          "A tool did not return a useful result. Answer using KNOWLEDGE and context only."
+        );
+        await persistStep("response", "failed", { reason: "tool_not_useful", text: finalText });
+        finished = true;
+        break;
       }
     }
 
     if (!finished) {
+      const tFb = Date.now();
       finalText = await ollamaGenerate(model, buildMaxStepsFallbackPrompt(rules, kb, userMsg, assistant.name));
-      await persistStep("response", { reason: "max_loops_fallback", text: finalText });
+      stepLatencyMs.push(Date.now() - tFb);
+      await persistStep("response", "failed", { reason: "max_loops_fallback", text: finalText });
     }
+
+    const totalExecutionMs = Date.now() - tExec0;
+    const metrics = {
+      totalExecutionMs,
+      stepLatencyMs,
+      toolLatencyMs,
+    };
+
+    console.log({
+      executionId: execution.id,
+      ...metrics,
+    });
 
     await prisma.agentExecution.update({
       where: { id: execution.id },
       data: {
         status: "done",
         output: finalText,
+        metrics,
       },
     });
 
@@ -299,4 +500,6 @@ OR
 module.exports = {
   runAgentV2,
   MAX_LOOPS,
+  validateDecision,
+  getToolContextMax,
 };

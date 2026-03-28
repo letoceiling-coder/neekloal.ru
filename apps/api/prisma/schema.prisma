@@ -78,6 +78,7 @@ model AgentExecution {
   status    String
   input     String      @db.Text
   output    String?     @db.Text
+  metrics   Json?
   createdAt DateTime    @default(now()) @map("created_at")
   updatedAt DateTime    @updatedAt @map("updated_at")
   steps     AgentStep[]
@@ -93,6 +94,7 @@ model AgentStep {
   execution   AgentExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
   stepIndex   Int            @map("step_index")
   type        String
+  status      String
   payload     Json?
   createdAt   DateTime       @default(now()) @map("created_at")
 
