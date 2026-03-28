@@ -43,12 +43,6 @@ fi
 
 npm install --no-fund
 
-mkdir -p prisma/migrations/20260328100000_init
-npx prisma migrate diff \
-  --from-empty \
-  --to-schema prisma/schema.prisma \
-  --script > prisma/migrations/20260328100000_init/migration.sql
-
 npx prisma migrate deploy
 npx prisma generate
 node src/test-db.js
