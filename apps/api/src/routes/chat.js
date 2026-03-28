@@ -1,6 +1,8 @@
 "use strict";
 
 const prisma = require("../lib/prisma");
+const qdrant = require("../lib/qdrant");
+const { retrieveForChat } = require("../services/rag");
 const { resolveModel, ensureModelAvailable } = require("../services/modelRouter");
 const authMiddleware = require("../middleware/auth");
 const rateLimitMiddleware = require("../middleware/rateLimit");
@@ -77,13 +79,29 @@ module.exports = async function chatRoutes(fastify) {
     model = await ensureModelAvailable(model, process.env.OLLAMA_URL);
     console.log("MODEL SELECTED:", model);
 
-    const knowledgeRows = await prisma.knowledge.findMany({
-      where: { assistantId: assistant.id },
-      orderBy: { createdAt: "asc" },
-      take: 3,
-    });
-    const knowledgeBlock =
-      knowledgeRows.length > 0 ? knowledgeRows.map((k) => k.content).join("\n\n") : "";
+    let knowledgeBlock = "";
+
+    if (qdrant.isRagEnabled()) {
+      const retrieved = await retrieveForChat(fastify, assistant.id, message, 5);
+      knowledgeBlock = retrieved.knowledgeBlock;
+    }
+
+    if (!knowledgeBlock.trim()) {
+      const knowledgeRows = await prisma.knowledge.findMany({
+        where: { assistantId: assistant.id },
+        orderBy: { createdAt: "asc" },
+        take: 3,
+      });
+      knowledgeBlock =
+        knowledgeRows.length > 0 ? knowledgeRows.map((k) => k.content).join("\n\n") : "";
+      if (knowledgeRows.length > 0 && qdrant.isRagEnabled()) {
+        fastify.log.info(
+          { assistantId: assistant.id, knowledgeDocumentsUsed: knowledgeRows.length },
+          "chat knowledge: RAG empty, using raw knowledge document text fallback"
+        );
+      }
+    }
+
     const prompt = buildStructuredPrompt(assistant.systemPrompt, knowledgeBlock, message);
     fastify.log.info({ prompt }, "chat prompt");
 

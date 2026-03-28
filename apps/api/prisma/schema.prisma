@@ -132,6 +132,7 @@ model KnowledgeChunk {
   position    Int       @default(0)
   createdAt   DateTime  @default(now()) @map("created_at")
 
+  @@index([knowledgeId, position])
   @@map("knowledge_chunks")
 }
 
