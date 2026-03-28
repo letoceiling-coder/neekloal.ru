@@ -17,7 +17,7 @@ module.exports = async function agentsRoutes(fastify) {
 
   fastify.post("/agents", { preHandler: authMiddleware }, async (request, reply) => {
     const body = request.body && typeof request.body === "object" ? request.body : {};
-    const { name, type, assistantId, rules, trigger, flow, memory } = body;
+    const { name, type, mode, assistantId, rules, trigger, flow, memory } = body;
 
     if (name == null || String(name).trim() === "") {
       return reply.code(400).send({ error: "name is required" });
@@ -37,11 +37,17 @@ module.exports = async function agentsRoutes(fastify) {
       }
     }
 
+    const modeStr =
+      mode != null && String(mode).trim() !== ""
+        ? String(mode).trim().toLowerCase()
+        : "v1";
+
     const row = await prisma.agent.create({
       data: {
         userId: uid,
         name: String(name),
         type: String(type),
+        mode: modeStr === "v2" ? "v2" : "v1",
         assistantId:
           assistantId != null && String(assistantId).trim() !== "" ? String(assistantId) : null,
         rules: rules != null ? String(rules) : null,

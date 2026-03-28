@@ -4,6 +4,7 @@ const prisma = require("../lib/prisma");
 const qdrant = require("../lib/qdrant");
 const { retrieveForChat } = require("../services/rag");
 const { runAgent } = require("../services/agent");
+const { runAgentV2 } = require("../services/agentV2");
 const { resolveModel, ensureModelAvailable } = require("../services/modelRouter");
 const authMiddleware = require("../middleware/auth");
 const rateLimitMiddleware = require("../middleware/rateLimit");
@@ -110,7 +111,9 @@ module.exports = async function chatRoutes(fastify) {
 
     try {
       if (agentRecord) {
-        const { reply: replyText, model: modelOut } = await runAgent({
+        const useV2 = String(agentRecord.mode || "v1").toLowerCase() === "v2";
+        const runner = useV2 ? runAgentV2 : runAgent;
+        const { reply: replyText, model: modelOut } = await runner({
           assistant,
           message,
           knowledgeBlock,

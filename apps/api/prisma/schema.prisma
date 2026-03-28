@@ -8,14 +8,15 @@ datasource db {
 }
 
 model User {
-  id           String         @id @default(uuid()) @db.Uuid
-  email        String         @unique
-  createdAt    DateTime       @default(now()) @map("created_at")
-  apiKeys      ApiKey[]
-  assistants   Assistant[]
-  agents       Agent[]
-  conversations Conversation[]
-  usages       Usage[]
+  id               String            @id @default(uuid()) @db.Uuid
+  email            String            @unique
+  createdAt        DateTime          @default(now()) @map("created_at")
+  apiKeys          ApiKey[]
+  assistants       Assistant[]
+  agents           Agent[]
+  agentExecutions  AgentExecution[]
+  conversations    Conversation[]
+  usages           Usage[]
 
   @@map("users")
 }
@@ -48,22 +49,55 @@ model Assistant {
 }
 
 model Agent {
-  id          String     @id @default(uuid()) @db.Uuid
-  userId      String     @map("user_id") @db.Uuid
-  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  assistantId String?    @map("assistant_id") @db.Uuid
-  assistant   Assistant? @relation(fields: [assistantId], references: [id], onDelete: SetNull)
+  id          String             @id @default(uuid()) @db.Uuid
+  userId      String             @map("user_id") @db.Uuid
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assistantId String?            @map("assistant_id") @db.Uuid
+  assistant   Assistant?         @relation(fields: [assistantId], references: [id], onDelete: SetNull)
   name        String
   type        String
+  mode        String             @default("v1") @map("mode")
   trigger     String?
   flow        Json?
   memory      Json?
-  rules       String?    @db.Text
-  createdAt   DateTime   @default(now()) @map("created_at")
+  rules       String?            @db.Text
+  createdAt   DateTime           @default(now()) @map("created_at")
   tools       Tool[]
+  executions  AgentExecution[]
 
   @@index([assistantId])
   @@map("agents")
+}
+
+model AgentExecution {
+  id        String      @id @default(uuid()) @db.Uuid
+  agentId   String      @map("agent_id") @db.Uuid
+  agent     Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  userId    String      @map("user_id") @db.Uuid
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status    String
+  input     String      @db.Text
+  output    String?     @db.Text
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+  steps     AgentStep[]
+
+  @@index([agentId])
+  @@index([userId])
+  @@map("agent_executions")
+}
+
+model AgentStep {
+  id          String         @id @default(uuid()) @db.Uuid
+  executionId String         @map("execution_id") @db.Uuid
+  execution   AgentExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  stepIndex   Int            @map("step_index")
+  type        String
+  payload     Json?
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  @@index([executionId, stepIndex])
+  @@map("agent_steps")
 }
 
 model Tool {
