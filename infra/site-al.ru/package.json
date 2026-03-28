@@ -1,0 +1,13 @@
+{
+  "name": "site-al-deploy-webhook",
+  "private": true,
+  "version": "1.0.0",
+  "description": "GitHub → POST /deploy → deploy.sh",
+  "main": "webhook.js",
+  "scripts": {
+    "start": "node webhook.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
