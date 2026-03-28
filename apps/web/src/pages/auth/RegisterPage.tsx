@@ -21,6 +21,7 @@ export function RegisterPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    console.log("SUBMIT CLICKED");
     setError(null);
     const em = email.trim().toLowerCase();
     if (!em || !password) return;
@@ -34,6 +35,7 @@ export function RegisterPage() {
     }
     setLoading(true);
     try {
+      console.log("REQUEST SENDING", em);
       const data = await apiClient.post<RegisterResponse>("/auth/register", {
         email: em,
         password,
@@ -46,6 +48,7 @@ export function RegisterPage() {
       });
       navigate("/dashboard", { replace: true });
     } catch (err) {
+      console.error(err);
       const msg =
         err instanceof ApiError
           ? err.message

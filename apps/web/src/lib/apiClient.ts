@@ -12,11 +12,14 @@ export class ApiError extends Error {
 }
 
 function getBaseUrl(): string {
-  const u = import.meta.env.VITE_API_URL;
-  if (u == null || String(u).trim() === "") {
-    throw new Error("VITE_API_URL не задан. Укажите URL API в .env");
+  const fromEnv = import.meta.env.VITE_API_URL;
+  if (fromEnv != null && String(fromEnv).trim() !== "") {
+    return String(fromEnv).replace(/\/$/, "");
   }
-  return String(u).replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return `${window.location.origin}/api`;
+  }
+  throw new Error("VITE_API_URL не задан и window.location недоступен.");
 }
 
 function authPaths(): string[] {

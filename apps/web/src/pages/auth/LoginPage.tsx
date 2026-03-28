@@ -24,11 +24,13 @@ export function LoginPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    console.log("SUBMIT CLICKED");
     setError(null);
     const em = email.trim().toLowerCase();
     if (!em || !password) return;
     setLoading(true);
     try {
+      console.log("REQUEST SENDING", em);
       const data = await apiClient.post<LoginResponse>("/auth/login", {
         email: em,
         password,
@@ -41,6 +43,7 @@ export function LoginPage() {
       });
       navigate(from, { replace: true });
     } catch (err) {
+      console.error(err);
       const msg =
         err instanceof ApiError
           ? err.message
