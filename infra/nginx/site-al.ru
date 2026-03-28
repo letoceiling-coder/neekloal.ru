@@ -1,33 +1,12 @@
-# Production template: site-al.ru
-# Скопировать в /etc/nginx/sites-available/ и включить sites-enabled.
-# Проверка: sudo nginx -t && sudo systemctl reload nginx
-#
-# SSL: обычно отдельный server { listen 443 ssl; ... } — не ломайте существующий certbot.
+# Активный прод: /etc/nginx/sites-enabled/site-al.ru (Certbot SSL).
+# SPA: root + try_files. После правок: nginx -t && systemctl reload nginx
 
 server {
-    listen 80;
     server_name site-al.ru;
-
-    root /var/www/site-al.ru/apps/web/dist;
-    index index.html;
 
     location /api/ {
         proxy_pass http://127.0.0.1:4000/;
-        proxy_http_version 1.1;
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # GitHub webhook → локальный Express (deploy-webhook, PM2)
-    location /deploy {
-        proxy_pass http://127.0.0.1:9001/deploy;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location = /widget.js {
@@ -35,6 +14,27 @@ server {
     }
 
     location / {
+        root /var/www/site-al.ru/apps/web/dist;
+        index index.html;
         try_files $uri $uri/ /index.html;
     }
+
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/site-al.ru/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/site-al.ru/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+}
+server {
+    if ($host = site-al.ru) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    listen 80;
+    server_name site-al.ru;
+    return 404; # managed by Certbot
+
+
 }
