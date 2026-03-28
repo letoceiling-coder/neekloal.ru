@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const prisma = require("../lib/prisma");
 const authMiddleware = require("../middleware/auth");
 
@@ -43,9 +44,16 @@ module.exports = async function toolsHttpRoutes(fastify) {
       return reply.code(404).send({ error: "Agent not found" });
     }
 
+    const nameStr =
+      name != null && String(name).trim() !== ""
+        ? String(name).trim()
+        : `${String(type)}-${crypto.randomUUID().slice(0, 8)}`;
+
     const row = await prisma.tool.create({
       data: {
+        organizationId: agent.organizationId,
         agentId: agent.id,
+        name: nameStr,
         type: String(type),
         config,
       },

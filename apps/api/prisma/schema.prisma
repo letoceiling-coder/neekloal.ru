@@ -7,176 +7,390 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// --- Enums ---
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum LeadPipelineStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  WON
+  LOST
+}
+
+enum ConversationThreadStatus {
+  OPEN
+  ACTIVE
+  ARCHIVED
+  CLOSED
+}
+
+enum ConversationSource {
+  WIDGET
+  API
+  DASHBOARD
+}
+
+// --- Core identity & tenancy ---
+
 model User {
-  id               String            @id @default(uuid()) @db.Uuid
-  email            String            @unique
-  createdAt        DateTime          @default(now()) @map("created_at")
-  apiKeys          ApiKey[]
-  assistants       Assistant[]
-  agents           Agent[]
-  agentExecutions  AgentExecution[]
-  conversations    Conversation[]
-  usages           Usage[]
+  id        String    @id @default(uuid()) @db.Uuid
+  email     String    @unique
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  memberships              Membership[]
+  usages                     Usage[]
+  initiatedAgentExecutions   AgentExecution[] @relation("ExecutionInitiator")
+  leadStatusChanges          LeadStatusHistory[]
+  conversationsCreated       Conversation[]   @relation("ConversationCreatedBy")
 
   @@map("users")
 }
 
-model ApiKey {
-  id        String   @id @default(uuid()) @db.Uuid
-  keyHash   String   @unique @map("key_hash")
-  userId    String   @map("user_id") @db.Uuid
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now()) @map("created_at")
-  usages    Usage[]
+model Organization {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String    @unique
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
 
+  memberships       Membership[]
+  apiKeys           ApiKey[]
+  assistants        Assistant[]
+  agents            Agent[]
+  tools             Tool[]
+  leads             Lead[]
+  leadStatusHistory LeadStatusHistory[]
+  conversations     Conversation[]
+  messages          Message[]
+  agentExecutions   AgentExecution[]
+  agentSteps        AgentStep[]
+  knowledge         Knowledge[]
+  knowledgeChunks   KnowledgeChunk[]
+  usages            Usage[]
+
+  @@map("organizations")
+}
+
+model Membership {
+  id             String           @id @default(uuid()) @db.Uuid
+  userId         String           @map("user_id") @db.Uuid
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String           @map("organization_id") @db.Uuid
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role           MembershipRole
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+  deletedAt      DateTime?        @map("deleted_at")
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("memberships")
+}
+
+model ApiKey {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  keyHash        String    @unique @map("key_hash")
+  name           String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+
+  usages Usage[]
+
+  @@index([organizationId])
   @@map("api_keys")
 }
 
+// --- AI resources (org-scoped) ---
+
 model Assistant {
-  id             String          @id @default(uuid()) @db.Uuid
-  userId         String          @map("user_id") @db.Uuid
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   name           String
   model          String
-  systemPrompt   String          @map("system_prompt") @db.Text
+  systemPrompt   String    @map("system_prompt") @db.Text
   settings       Json?
-  createdAt      DateTime        @default(now()) @map("created_at")
-  knowledges     Knowledge[]
-  conversations  Conversation[]
-  agents         Agent[]
+  /// Bumped on breaking prompt/model/RAG changes; conversations may record which version they started under.
+  version        Int       @default(1)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
 
+  knowledges    Knowledge[]
+  conversations Conversation[]
+  agents        Agent[]
+  usages        Usage[]
+
+  @@index([organizationId])
   @@map("assistants")
 }
 
 model Agent {
-  id          String             @id @default(uuid()) @db.Uuid
-  userId      String             @map("user_id") @db.Uuid
-  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  assistantId String?            @map("assistant_id") @db.Uuid
-  assistant   Assistant?         @relation(fields: [assistantId], references: [id], onDelete: SetNull)
-  name        String
-  type        String
-  mode        String             @default("v1") @map("mode")
-  trigger     String?
-  flow        Json?
-  memory      Json?
-  rules       String?            @db.Text
-  createdAt   DateTime           @default(now()) @map("created_at")
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistantId    String?   @map("assistant_id") @db.Uuid
+  assistant      Assistant? @relation(fields: [assistantId], references: [id], onDelete: SetNull)
+  name           String
+  type           String
+  mode           String    @default("v1") @map("mode")
+  trigger        String?
+  flow           Json?
+  memory         Json?
+  rules          String?   @db.Text
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+
   tools       Tool[]
   executions  AgentExecution[]
+  conversations Conversation[]
 
+  @@index([organizationId])
   @@index([assistantId])
   @@map("agents")
 }
 
-model AgentExecution {
-  id        String      @id @default(uuid()) @db.Uuid
-  agentId   String      @map("agent_id") @db.Uuid
-  agent     Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  userId    String      @map("user_id") @db.Uuid
-  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  status    String
-  input     String      @db.Text
-  output    String?     @db.Text
-  metrics   Json?
-  createdAt DateTime    @default(now()) @map("created_at")
-  updatedAt DateTime    @updatedAt @map("updated_at")
-  steps     AgentStep[]
-
-  @@index([agentId])
-  @@index([userId])
-  @@map("agent_executions")
-}
-
-model AgentStep {
-  id          String         @id @default(uuid()) @db.Uuid
-  executionId String         @map("execution_id") @db.Uuid
-  execution   AgentExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
-  stepIndex   Int            @map("step_index")
-  type        String
-  status      String
-  payload     Json?
-  createdAt   DateTime       @default(now()) @map("created_at")
-
-  @@index([executionId, stepIndex])
-  @@map("agent_steps")
-}
-
 model Tool {
-  id        String   @id @default(uuid()) @db.Uuid
-  agentId   String   @map("agent_id") @db.Uuid
-  agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  type      String
-  config    Json
-  createdAt DateTime @default(now()) @map("created_at")
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agentId        String    @map("agent_id") @db.Uuid
+  agent          Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  /// Stable handle per agent for planner, UI, and audits (unique with agentId).
+  name           String    @default(cuid())
+  type           String
+  config         Json
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
 
+  @@unique([agentId, name])
+  @@index([organizationId])
+  @@index([agentId])
   @@map("tools")
 }
 
-model Conversation {
-  id          String    @id @default(uuid()) @db.Uuid
-  userId      String    @map("user_id") @db.Uuid
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  assistantId String    @map("assistant_id") @db.Uuid
-  assistant   Assistant @relation(fields: [assistantId], references: [id], onDelete: Cascade)
-  createdAt   DateTime  @default(now()) @map("created_at")
-  messages    Message[]
+// --- CRM ---
 
+model Lead {
+  id             String             @id @default(uuid()) @db.Uuid
+  organizationId String             @map("organization_id") @db.Uuid
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  email          String?
+  phone          String?
+  source         String
+  status         LeadPipelineStatus
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+  deletedAt      DateTime?          @map("deleted_at")
+
+  conversations Conversation[]
+  statusHistory LeadStatusHistory[]
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@map("leads")
+}
+
+model LeadStatusHistory {
+  id             String             @id @default(uuid()) @db.Uuid
+  organizationId String             @map("organization_id") @db.Uuid
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  leadId         String             @map("lead_id") @db.Uuid
+  lead           Lead               @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  fromStatus     LeadPipelineStatus? @map("from_status")
+  toStatus       LeadPipelineStatus  @map("to_status")
+  changedByUserId String            @map("changed_by_user_id") @db.Uuid
+  changedBy      User               @relation(fields: [changedByUserId], references: [id], onDelete: Restrict)
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+
+  @@index([organizationId])
+  @@index([leadId, createdAt])
+  @@map("lead_status_history")
+}
+
+model Conversation {
+  id             String                   @id @default(uuid()) @db.Uuid
+  organizationId String                   @map("organization_id") @db.Uuid
+  organization   Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistantId    String                   @map("assistant_id") @db.Uuid
+  assistant      Assistant                @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  leadId         String?                  @map("lead_id") @db.Uuid
+  lead           Lead?                    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  agentId        String?                  @map("agent_id") @db.Uuid
+  agent          Agent?                   @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  status         ConversationThreadStatus
+  source         ConversationSource
+  createdByUserId String?                 @map("created_by_user_id") @db.Uuid
+  createdBy      User?                    @relation("ConversationCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdAt      DateTime                 @default(now()) @map("created_at")
+  updatedAt      DateTime                 @updatedAt @map("updated_at")
+  deletedAt      DateTime?                @map("deleted_at")
+
+  messages Message[]
+  usages   Usage[]
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, createdAt])
+  @@index([leadId])
+  @@index([assistantId])
   @@map("conversations")
 }
 
 model Message {
-  id             String       @id @default(uuid()) @db.Uuid
-  conversationId String       @map("conversation_id") @db.Uuid
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversationId String    @map("conversation_id") @db.Uuid
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   role           String
-  content        String       @db.Text
-  tokens         Int          @default(0)
-  createdAt      DateTime     @default(now()) @map("created_at")
+  content        String    @db.Text
+  tokens         Int       @default(0)
+  executionId    String?   @map("execution_id") @db.Uuid
+  execution      AgentExecution? @relation("ExecutionOutput", fields: [executionId], references: [id], onDelete: SetNull)
+  triggeredExecutions AgentExecution[] @relation("ExecutionTrigger")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
 
+  @@index([organizationId])
+  @@index([conversationId, createdAt])
+  @@index([executionId])
   @@map("messages")
 }
 
-model Usage {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  apiKeyId  String?  @map("api_key_id") @db.Uuid
-  apiKey    ApiKey?  @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
-  model     String
-  tokens    Int
-  cost      Decimal? @db.Decimal(12, 6)
-  createdAt DateTime @default(now()) @map("created_at")
+// --- Agent runtime ---
 
-  @@map("usage")
+model AgentExecution {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agentId        String    @map("agent_id") @db.Uuid
+  agent          Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  initiatedByUserId String @map("initiated_by_user_id") @db.Uuid
+  initiatedBy    User      @relation("ExecutionInitiator", fields: [initiatedByUserId], references: [id], onDelete: Restrict)
+  status         String
+  input          String    @db.Text
+  output         String?   @db.Text
+  metrics        Json?
+  triggerMessageId String? @map("trigger_message_id") @db.Uuid
+  triggerMessage Message?  @relation("ExecutionTrigger", fields: [triggerMessageId], references: [id], onDelete: SetNull)
+  outputMessages Message[] @relation("ExecutionOutput")
+  steps          AgentStep[]
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+
+  @@index([organizationId])
+  @@index([agentId])
+  @@index([initiatedByUserId])
+  @@index([triggerMessageId])
+  @@map("agent_executions")
 }
 
-model Knowledge {
-  id          String            @id @default(uuid()) @db.Uuid
-  assistantId String            @map("assistant_id") @db.Uuid
-  assistant   Assistant         @relation(fields: [assistantId], references: [id], onDelete: Cascade)
-  type        String
-  content     String            @db.Text
-  embeddingId String?           @map("embedding_id")
-  createdAt   DateTime          @default(now()) @map("created_at")
-  chunks      KnowledgeChunk[]
+model AgentStep {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  executionId    String         @map("execution_id") @db.Uuid
+  execution      AgentExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  stepIndex      Int            @map("step_index")
+  type           String
+  status         String
+  payload        Json?
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
 
+  @@index([organizationId])
+  @@index([executionId, stepIndex])
+  @@map("agent_steps")
+}
+
+// --- RAG ---
+
+model Knowledge {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistantId    String    @map("assistant_id") @db.Uuid
+  assistant      Assistant @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  type           String
+  content        String    @db.Text
+  embeddingId    String?   @map("embedding_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+
+  chunks KnowledgeChunk[]
+
+  @@index([organizationId])
+  @@index([assistantId])
   @@map("knowledge")
 }
 
 model KnowledgeChunk {
-  id              String    @id @default(uuid()) @db.Uuid
-  knowledgeId     String    @map("knowledge_id") @db.Uuid
-  knowledge       Knowledge @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
-  content         String    @db.Text
-  embeddingId     String?   @map("embedding_id")
-  embeddingModel  String    @map("embedding_model")
-  embeddingDim    Int       @map("embedding_dim")
-  position        Int       @default(0)
-  createdAt       DateTime  @default(now()) @map("created_at")
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  knowledgeId    String    @map("knowledge_id") @db.Uuid
+  knowledge      Knowledge @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
+  content        String    @db.Text
+  embeddingId    String?   @map("embedding_id")
+  embeddingModel String    @map("embedding_model")
+  embeddingDim   Int       @map("embedding_dim")
+  position       Int       @default(0)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
+  @@index([organizationId])
   @@index([knowledgeId, position])
   @@map("knowledge_chunks")
+}
+
+// --- Metering ---
+
+model Usage {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String?   @map("user_id") @db.Uuid
+  user           User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  apiKeyId       String?   @map("api_key_id") @db.Uuid
+  apiKey         ApiKey?   @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  conversationId String?   @map("conversation_id") @db.Uuid
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  assistantId    String?   @map("assistant_id") @db.Uuid
+  assistant      Assistant? @relation(fields: [assistantId], references: [id], onDelete: SetNull)
+  model          String
+  tokens         Int
+  cost           Decimal?  @db.Decimal(12, 6)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([organizationId])
+  @@index([organizationId, createdAt])
+  @@index([conversationId])
+  @@index([assistantId])
+  @@index([userId])
+  @@map("usage")
 }
 
 /// Per API key hash — rate limiting (PostgreSQL row per key hash)

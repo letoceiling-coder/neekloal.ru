@@ -6,6 +6,26 @@ const { executeTool } = require("./tools");
 const MAX_LOOPS = 5;
 const VALID_ACTIONS = new Set(["tool", "final"]);
 
+/** Injected into every planner / fallback SYSTEM block */
+const SYSTEM_HARD_RULE = "Only use tools listed. Never invent tools.";
+
+function getGlobalContextMax() {
+  const n = parseInt(process.env.AGENT_V2_GLOBAL_CONTEXT_MAX || "14000", 10);
+  if (Number.isNaN(n) || n < 12000) return 12000;
+  if (n > 15000) return 15000;
+  return n;
+}
+
+function getExecutionTimeoutMs() {
+  const n = parseInt(process.env.AGENT_V2_EXECUTION_TIMEOUT_MS || "10000", 10);
+  return Number.isNaN(n) || n < 1000 ? 10000 : n;
+}
+
+function getMaxToolCalls() {
+  const n = parseInt(process.env.AGENT_V2_MAX_TOOL_CALLS || "3", 10);
+  return Number.isNaN(n) || n < 1 ? 3 : n;
+}
+
 function getToolContextMax() {
   const n = parseInt(process.env.AGENT_V2_TOOL_CONTEXT_MAX || "1500", 10);
   if (Number.isNaN(n) || n < 1000) return 1000;
@@ -182,8 +202,74 @@ function formatToolsBlock(tools) {
     .join("\n");
 }
 
+/**
+ * Full planner prompt length includes rules, tools, knowledge, user, history.
+ */
+function buildPlannerPrompt(rules, toolsBlock, kb, userMsg, assistantName, historyLines) {
+  const historyBlock =
+    historyLines.length === 0
+      ? "(none yet)"
+      : historyLines.map((h, idx) => `[${idx + 1}] ${h}`).join("\n\n");
+
+  return `SYSTEM (agent rules):
+${SYSTEM_HARD_RULE}
+
+${rules}
+
+TOOLS (available):
+${toolsBlock}
+
+KNOWLEDGE:
+${kb || "(none)"}
+
+ASSISTANT: ${assistantName}
+
+USER:
+${userMsg}
+
+PREVIOUS TOOL RESULTS (structured JSON per entry, size-capped):
+${historyBlock}
+
+Respond with exactly one JSON object:
+{"action":"final","text":"<answer to user>"}
+OR
+{"action":"tool","toolId":"<uuid>","input":<optional object>}`;
+}
+
+/**
+ * Drop oldest tool result rows first; keep last 1–2 when possible; then truncate last line.
+ * Knowledge block is never removed (only PREVIOUS TOOL RESULTS shrink).
+ * @returns {{ lines: string[]; truncated: boolean }}
+ */
+function trimHistoryForBudget(rules, toolsBlock, kb, userMsg, assistantName, toolHistory, maxChars) {
+  const lines = [...toolHistory];
+  let truncated = false;
+
+  function promptLen() {
+    return buildPlannerPrompt(rules, toolsBlock, kb, userMsg, assistantName, lines).length;
+  }
+
+  while (lines.length > 2 && promptLen() > maxChars) {
+    lines.shift();
+    truncated = true;
+  }
+  while (lines.length > 1 && promptLen() > maxChars) {
+    lines.shift();
+    truncated = true;
+  }
+  if (lines.length === 1 && promptLen() > maxChars) {
+    const cap = Math.max(400, Math.floor(maxChars / 4));
+    const before = lines[0];
+    lines[0] = before.length > cap ? `${before.slice(0, cap)}…` : before;
+    if (lines[0] !== before) truncated = true;
+  }
+  return { lines, truncated };
+}
+
 async function llmFallbackPlain(model, rules, kb, userMsg, assistantName, note) {
   const prompt = `SYSTEM (agent rules):
+${SYSTEM_HARD_RULE}
+
 ${rules}
 
 KNOWLEDGE:
@@ -202,6 +288,8 @@ Answer in plain text only. Do not output JSON.`;
 
 function buildMaxStepsFallbackPrompt(rules, kb, userMsg, assistantName) {
   return `SYSTEM (agent rules):
+${SYSTEM_HARD_RULE}
+
 ${rules}
 
 KNOWLEDGE:
@@ -259,6 +347,9 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent }) 
   /** @type {string | null} */
   let prevSig = null;
   let lastToolIdExecuted = null;
+  let toolCallsCount = 0;
+  const maxToolCalls = getMaxToolCalls();
+  let contextTruncatedFlag = false;
 
   const persistStep = async (type, status, payload) => {
     await prisma.agentStep.create({
@@ -275,32 +366,35 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent }) 
 
   try {
     for (let i = 0; i < MAX_LOOPS; i++) {
-      const historyBlock =
-        toolHistory.length === 0
-          ? "(none yet)"
-          : toolHistory.map((h, idx) => `[${idx + 1}] ${h}`).join("\n\n");
+      if (Date.now() - tExec0 > getExecutionTimeoutMs()) {
+        finalText = await llmFallbackPlain(
+          model,
+          rules,
+          kb,
+          userMsg,
+          assistant.name,
+          "Execution time limit reached. Answer briefly from KNOWLEDGE."
+        );
+        await persistStep("response", "failed", { reason: "execution_timeout", text: finalText });
+        finished = true;
+        break;
+      }
 
-      const prompt = `SYSTEM (agent rules):
-${rules}
+      const ctxMax = getGlobalContextMax();
+      const { lines: linesForPrompt, truncated: historyTrimmed } = trimHistoryForBudget(
+        rules,
+        toolsBlock,
+        kb,
+        userMsg,
+        assistant.name,
+        toolHistory,
+        ctxMax
+      );
+      if (historyTrimmed) {
+        contextTruncatedFlag = true;
+      }
 
-TOOLS (available):
-${toolsBlock}
-
-KNOWLEDGE:
-${kb || "(none)"}
-
-ASSISTANT: ${assistant.name}
-
-USER:
-${userMsg}
-
-PREVIOUS TOOL RESULTS (structured JSON per entry, size-capped):
-${historyBlock}
-
-Respond with exactly one JSON object:
-{"action":"final","text":"<answer to user>"}
-OR
-{"action":"tool","toolId":"<uuid>","input":<optional object>}`;
+      const prompt = buildPlannerPrompt(rules, toolsBlock, kb, userMsg, assistant.name, linesForPrompt);
 
       const tStep0 = Date.now();
       const raw = await ollamaGenerate(model, prompt);
@@ -408,6 +502,34 @@ OR
         break;
       }
 
+      if (toolCallsCount >= maxToolCalls) {
+        finalText = await llmFallbackPlain(
+          model,
+          rules,
+          kb,
+          userMsg,
+          assistant.name,
+          "Maximum number of tool calls reached. Answer from KNOWLEDGE only."
+        );
+        await persistStep("response", "failed", { reason: "tool_limit_reached", text: finalText });
+        finished = true;
+        break;
+      }
+
+      if (Date.now() - tExec0 > getExecutionTimeoutMs()) {
+        finalText = await llmFallbackPlain(
+          model,
+          rules,
+          kb,
+          userMsg,
+          assistant.name,
+          "Execution time limit reached before running the tool. Answer from KNOWLEDGE."
+        );
+        await persistStep("response", "failed", { reason: "execution_timeout", text: finalText });
+        finished = true;
+        break;
+      }
+
       const tTool0 = Date.now();
       let toolResult = "";
       try {
@@ -419,6 +541,7 @@ OR
         });
       }
       toolLatencyMs.push(Date.now() - tTool0);
+      toolCallsCount += 1;
 
       const failed = toolExecutionLooksFailed(toolResult);
       await persistStep("tool", failed ? "failed" : "success", {
@@ -458,7 +581,18 @@ OR
 
     if (!finished) {
       const tFb = Date.now();
-      finalText = await ollamaGenerate(model, buildMaxStepsFallbackPrompt(rules, kb, userMsg, assistant.name));
+      if (Date.now() - tExec0 > getExecutionTimeoutMs()) {
+        finalText = await llmFallbackPlain(
+          model,
+          rules,
+          kb,
+          userMsg,
+          assistant.name,
+          "Step limit reached under time pressure. Summarize from KNOWLEDGE."
+        );
+      } else {
+        finalText = await ollamaGenerate(model, buildMaxStepsFallbackPrompt(rules, kb, userMsg, assistant.name));
+      }
       stepLatencyMs.push(Date.now() - tFb);
       await persistStep("response", "failed", { reason: "max_loops_fallback", text: finalText });
     }
@@ -468,6 +602,11 @@ OR
       totalExecutionMs,
       stepLatencyMs,
       toolLatencyMs,
+      toolCallsCount,
+      maxToolCalls,
+      contextTruncated: contextTruncatedFlag,
+      globalContextMaxChars: getGlobalContextMax(),
+      executionTimeoutMs: getExecutionTimeoutMs(),
     };
 
     console.log({
@@ -502,4 +641,7 @@ module.exports = {
   MAX_LOOPS,
   validateDecision,
   getToolContextMax,
+  getGlobalContextMax,
+  getExecutionTimeoutMs,
+  getMaxToolCalls,
 };

@@ -1,0 +1,39 @@
+# Copy to: /etc/nginx/sites-available/ai-platform
+# Replace YOUR_DOMAIN with your real hostname (e.g. api.neekloal.ru).
+# Does not modify other vhosts — only this server_name block.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name YOUR_DOMAIN;
+
+    # Public API (Fastify on 127.0.0.1:4000) — /api/health → upstream /health
+    location /api/ {
+        proxy_pass http://127.0.0.1:4000/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Widget bundle (static)
+    location = /widget.js {
+        alias /var/www/ai-platform/apps/widget/widget.js;
+        default_type application/javascript;
+        charset utf-8;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # Optional: short help
+    location = / {
+        default_type text/plain;
+        return 200 'ai-platform: /api/*  /widget.js\n';
+    }
+}
+
+# After this file works on HTTP:
+#   sudo ln -sf /etc/nginx/sites-available/ai-platform /etc/nginx/sites-enabled/ai-platform
+#   sudo nginx -t && sudo systemctl reload nginx
+# SSL:
+#   sudo certbot --nginx -d YOUR_DOMAIN
