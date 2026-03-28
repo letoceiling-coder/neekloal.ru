@@ -4,7 +4,10 @@
   "description": "HTTP/WebSocket API, gateway, orchestration.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:push": "prisma db push"
   },
   "keywords": [],
   "author": "",
@@ -12,7 +15,9 @@
   "type": "commonjs",
   "dependencies": {
     "@fastify/cors": "^11.2.0",
+    "@prisma/client": "^7.6.0",
     "dotenv": "^17.3.1",
-    "fastify": "^5.8.4"
+    "fastify": "^5.8.4",
+    "prisma": "^7.6.0"
   }
 }

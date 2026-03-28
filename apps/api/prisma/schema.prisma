@@ -1,0 +1,136 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String         @id @default(uuid()) @db.Uuid
+  email        String         @unique
+  createdAt    DateTime       @default(now()) @map("created_at")
+  apiKeys      ApiKey[]
+  assistants   Assistant[]
+  agents       Agent[]
+  conversations Conversation[]
+  usages       Usage[]
+
+  @@map("users")
+}
+
+model ApiKey {
+  id        String   @id @default(uuid()) @db.Uuid
+  keyHash   String   @map("key_hash")
+  userId    String   @map("user_id") @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+  usages    Usage[]
+
+  @@map("api_keys")
+}
+
+model Assistant {
+  id             String          @id @default(uuid()) @db.Uuid
+  userId         String          @map("user_id") @db.Uuid
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  model          String
+  systemPrompt   String          @map("system_prompt") @db.Text
+  settings       Json?
+  createdAt      DateTime        @default(now()) @map("created_at")
+  knowledges     Knowledge[]
+  conversations  Conversation[]
+
+  @@map("assistants")
+}
+
+model Agent {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  type      String
+  trigger   String?
+  flow      Json?
+  memory    Json?
+  createdAt DateTime @default(now()) @map("created_at")
+  tools     Tool[]
+
+  @@map("agents")
+}
+
+model Tool {
+  id        String   @id @default(uuid()) @db.Uuid
+  agentId   String   @map("agent_id") @db.Uuid
+  agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  type      String
+  config    Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("tools")
+}
+
+model Conversation {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assistantId String    @map("assistant_id") @db.Uuid
+  assistant   Assistant @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  messages    Message[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id             String       @id @default(uuid()) @db.Uuid
+  conversationId String       @map("conversation_id") @db.Uuid
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String
+  content        String       @db.Text
+  tokens         Int          @default(0)
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@map("messages")
+}
+
+model Usage {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKeyId  String?  @map("api_key_id") @db.Uuid
+  apiKey    ApiKey?  @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  model     String
+  tokens    Int
+  cost      Decimal? @db.Decimal(12, 6)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("usage")
+}
+
+model Knowledge {
+  id          String            @id @default(uuid()) @db.Uuid
+  assistantId String            @map("assistant_id") @db.Uuid
+  assistant   Assistant         @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  type        String
+  content     String            @db.Text
+  embeddingId String?           @map("embedding_id")
+  createdAt   DateTime          @default(now()) @map("created_at")
+  chunks      KnowledgeChunk[]
+
+  @@map("knowledge")
+}
+
+model KnowledgeChunk {
+  id          String    @id @default(uuid()) @db.Uuid
+  knowledgeId String    @map("knowledge_id") @db.Uuid
+  knowledge   Knowledge @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
+  content     String    @db.Text
+  embeddingId String?   @map("embedding_id")
+  position    Int       @default(0)
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@map("knowledge_chunks")
+}
