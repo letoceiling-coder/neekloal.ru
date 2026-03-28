@@ -37,19 +37,18 @@ export function Sidebar() {
       <div
         className={[
           "flex h-14 shrink-0 items-center border-b border-neutral-200 transition-all duration-200 ease-out",
-          sidebarCollapsed ? "justify-center px-2 md:justify-center" : "px-4",
+          sidebarCollapsed ? "justify-center px-2" : "px-4",
         ].join(" ")}
       >
-        <span
-          className={[
-            "text-xs font-medium uppercase tracking-wider text-neutral-400 transition-all duration-200 ease-out",
-            sidebarCollapsed ? "max-md:block md:hidden" : "block",
-          ].join(" ")}
-        >
-          Разделы
-        </span>
+        {!sidebarCollapsed ? (
+          <span className="text-xs font-medium uppercase tracking-wider text-neutral-400 transition-all duration-200 ease-out">
+            Разделы
+          </span>
+        ) : (
+          <span className="sr-only">Разделы</span>
+        )}
       </div>
-      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2 transition-all duration-200 ease-out">
+      <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overflow-x-hidden p-2 transition-all duration-200 ease-out">
         {sidebarNav.map(({ to, label, Icon }) => (
           <NavLink
             key={to}
@@ -58,9 +57,7 @@ export function Sidebar() {
             className={({ isActive }) =>
               [
                 "flex items-center gap-3 rounded-md py-2 text-sm transition-all duration-200 ease-out",
-                sidebarCollapsed
-                  ? "justify-center px-2 max-md:px-3 md:justify-center"
-                  : "px-3",
+                sidebarCollapsed ? "justify-center px-2" : "px-3",
                 isActive
                   ? "bg-neutral-900 font-medium text-white"
                   : "text-neutral-700 hover:bg-neutral-100",
@@ -69,14 +66,9 @@ export function Sidebar() {
             onClick={() => setSidebarOpen(false)}
           >
             <Icon className="h-5 w-5 shrink-0" aria-hidden />
-            <span
-              className={[
-                "min-w-0 truncate transition-all duration-200 ease-out",
-                sidebarCollapsed ? "max-md:inline md:hidden" : "inline",
-              ].join(" ")}
-            >
-              {label}
-            </span>
+            {!sidebarCollapsed && (
+              <span className="min-w-0 truncate transition-all duration-200 ease-out">{label}</span>
+            )}
           </NavLink>
         ))}
       </nav>

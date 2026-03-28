@@ -11,29 +11,30 @@ export function AppShell() {
   const toggleSidebarCollapsed = useUiStore((s) => s.toggleSidebarCollapsed);
 
   return (
-    <div className="flex min-h-screen bg-neutral-50 text-neutral-900">
+    <div className="flex h-screen w-full overflow-hidden bg-neutral-50 text-neutral-900">
       {sidebarOpen && (
         <button
           type="button"
           aria-label="Закрыть меню"
-          className="fixed inset-0 z-10 bg-black/20 transition-opacity duration-200 ease-out md:hidden"
+          className="fixed inset-0 z-10 bg-black/20 md:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
       <aside
         className={[
-          "fixed inset-y-0 left-0 z-20 flex shrink-0 flex-col border-r border-neutral-200 bg-white transition-all duration-200 ease-out",
-          "w-60",
+          "flex h-full shrink-0 flex-col border-r border-neutral-200 bg-white transition-all duration-200 ease-out",
+          "fixed inset-y-0 left-0 z-20 w-60 md:static md:inset-auto md:z-0",
+          sidebarOpen ? "translate-x-0" : "-translate-x-full",
+          "md:translate-x-0",
           sidebarCollapsed ? "md:w-16" : "md:w-60",
-          sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0",
         ].join(" ")}
       >
         <Sidebar />
       </aside>
 
-      <div className="flex min-h-screen min-w-0 flex-1 flex-col transition-all duration-200 ease-out md:pl-0">
-        <header className="sticky top-0 z-[5] border-b border-neutral-200/80 bg-white/90 backdrop-blur-sm transition-all duration-200 ease-out">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="sticky top-0 z-[5] shrink-0 border-b border-neutral-200/80 bg-white/90 backdrop-blur-sm">
           <div className="flex h-14 items-center gap-3 px-4 md:px-6">
             <button
               type="button"
@@ -59,11 +60,11 @@ export function AppShell() {
               )}
             </button>
             <h1 className="min-w-0 text-sm font-semibold tracking-tight text-neutral-900 transition-all duration-200">
-              Панель CRM
+              DEPLOY OK 777
             </h1>
           </div>
         </header>
-        <main className="flex-1 p-4 transition-all duration-200 ease-out md:p-6">
+        <main className="min-h-0 flex-1 overflow-auto bg-white p-4 md:p-6">
           <Outlet />
         </main>
       </div>

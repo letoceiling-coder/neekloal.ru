@@ -37,7 +37,7 @@ export function SidebarUserPanel() {
   return (
     <div
       ref={rootRef}
-      className="relative border-t border-neutral-200 p-2 transition-all duration-200 ease-out"
+      className="relative shrink-0 border-t border-neutral-200 p-2 transition-all duration-200 ease-out"
     >
       <button
         type="button"
@@ -50,27 +50,30 @@ export function SidebarUserPanel() {
         aria-haspopup="menu"
         title={email}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div
+          className={[
+            "flex min-w-0 items-center gap-2",
+            sidebarCollapsed ? "justify-center" : "flex-1",
+          ].join(" ")}
+        >
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neutral-200 text-sm font-medium text-neutral-800 transition-all duration-200">
             {initial}
           </div>
-          <div
-            className={[
-              "min-w-0 flex-1 transition-all duration-200 ease-out",
-              sidebarCollapsed ? "max-md:block md:hidden" : "block",
-            ].join(" ")}
-          >
-            <p className="truncate text-xs font-medium text-neutral-900">{email}</p>
-          </div>
+          {!sidebarCollapsed && (
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium text-neutral-900">{email}</p>
+            </div>
+          )}
         </div>
-        <ChevronUp
-          className={[
-            "h-4 w-4 shrink-0 text-neutral-500 transition-transform duration-200 ease-out",
-            open ? "rotate-180" : "rotate-0",
-            sidebarCollapsed ? "md:hidden" : "",
-          ].join(" ")}
-          aria-hidden
-        />
+        {!sidebarCollapsed && (
+          <ChevronUp
+            className={[
+              "h-4 w-4 shrink-0 text-neutral-500 transition-transform duration-200 ease-out",
+              open ? "rotate-180" : "rotate-0",
+            ].join(" ")}
+            aria-hidden
+          />
+        )}
       </button>
 
       {open && (
