@@ -1,5 +1,9 @@
 "use strict";
 
+function getEmbeddingModelName() {
+  return process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+}
+
 /**
  * Ollama embeddings: POST /api/embeddings
  * @param {string} text
@@ -10,7 +14,7 @@ async function embedText(text) {
   if (!base) {
     throw new Error("OLLAMA_URL is not set");
   }
-  const model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+  const model = getEmbeddingModelName();
   const url = `${base.replace(/\/$/, "")}/api/embeddings`;
 
   const bodyPrimary = { model, prompt: String(text) };
@@ -68,4 +72,5 @@ async function resolveEmbeddingDimension(embedFn) {
 module.exports = {
   embedText,
   resolveEmbeddingDimension,
+  getEmbeddingModelName,
 };

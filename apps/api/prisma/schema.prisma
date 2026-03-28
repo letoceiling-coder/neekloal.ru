@@ -124,13 +124,15 @@ model Knowledge {
 }
 
 model KnowledgeChunk {
-  id          String    @id @default(uuid()) @db.Uuid
-  knowledgeId String    @map("knowledge_id") @db.Uuid
-  knowledge   Knowledge @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
-  content     String    @db.Text
-  embeddingId String?   @map("embedding_id")
-  position    Int       @default(0)
-  createdAt   DateTime  @default(now()) @map("created_at")
+  id              String    @id @default(uuid()) @db.Uuid
+  knowledgeId     String    @map("knowledge_id") @db.Uuid
+  knowledge       Knowledge @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
+  content         String    @db.Text
+  embeddingId     String?   @map("embedding_id")
+  embeddingModel  String    @map("embedding_model")
+  embeddingDim    Int       @map("embedding_dim")
+  position        Int       @default(0)
+  createdAt       DateTime  @default(now()) @map("created_at")
 
   @@index([knowledgeId, position])
   @@map("knowledge_chunks")

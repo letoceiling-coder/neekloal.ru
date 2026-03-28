@@ -1,9 +1,40 @@
 "use strict";
 
+const { randomUUID } = require("crypto");
 const prisma = require("../lib/prisma");
 const qdrant = require("../lib/qdrant");
-const { embedText, resolveEmbeddingDimension } = require("./embedding");
+const { embedText, resolveEmbeddingDimension, getEmbeddingModelName } = require("./embedding");
 const { chunkText } = require("./chunking");
+
+/**
+ * Rough token estimate (~4 chars per token) for logging / limits.
+ * @param {string} text
+ */
+function estimateTokensRough(text) {
+  return Math.max(0, Math.ceil(String(text).length / 4));
+}
+
+/**
+ * Cap KNOWLEDGE block size (chars + optional token budget).
+ * @param {string} text
+ * @returns {{ text: string; truncated: boolean }}
+ */
+function limitKnowledgeBlock(text) {
+  const maxChars = parseInt(process.env.RAG_KNOWLEDGE_MAX_CHARS || "12000", 10) || 12000;
+  const maxTokensEnv = process.env.RAG_KNOWLEDGE_MAX_TOKENS;
+  let maxCharsEff = maxChars;
+  if (maxTokensEnv) {
+    const mt = parseInt(maxTokensEnv, 10);
+    if (!Number.isNaN(mt) && mt > 0) {
+      maxCharsEff = Math.min(maxCharsEff, mt * 4);
+    }
+  }
+  const t = String(text);
+  if (t.length <= maxCharsEff) {
+    return { text: t, truncated: false };
+  }
+  return { text: t.slice(0, maxCharsEff) + "\n\n[…]", truncated: true };
+}
 
 /**
  * Full ingest: chunks → embeddings → Qdrant + KnowledgeChunk rows.
@@ -24,17 +55,23 @@ async function ingestKnowledgeDocument(fastify, knowledge, assistantId) {
   const dim = await resolveEmbeddingDimension(embedText);
   await qdrant.ensureCollection(dim);
 
+  const modelName = getEmbeddingModelName();
   const chunkIds = [];
 
   for (let i = 0; i < parts.length; i++) {
     const piece = parts[i];
     const vector = await embedText(piece);
+    const id = randomUUID();
 
     const row = await prisma.knowledgeChunk.create({
       data: {
+        id,
         knowledgeId: knowledge.id,
         content: piece,
         position: i,
+        embeddingModel: modelName,
+        embeddingDim: vector.length,
+        embeddingId: id,
       },
     });
 
@@ -45,16 +82,11 @@ async function ingestKnowledgeDocument(fastify, knowledge, assistantId) {
       content: piece,
     });
 
-    await prisma.knowledgeChunk.update({
-      where: { id: row.id },
-      data: { embeddingId: row.id },
-    });
-
     chunkIds.push(row.id);
   }
 
   fastify.log.info(
-    { knowledgeId: knowledge.id, chunksIndexed: chunkIds.length, chunkIds },
+    { knowledgeId: knowledge.id, chunksIndexed: chunkIds.length, chunkIds, embeddingModel: modelName, embeddingDim: dim },
     "rag ingest complete"
   );
 
@@ -70,6 +102,11 @@ async function ingestKnowledgeDocument(fastify, knowledge, assistantId) {
  */
 async function retrieveForChat(fastify, assistantId, message, topK) {
   const k = topK != null ? topK : parseInt(process.env.RAG_TOP_K || "5", 10) || 5;
+  const candidateLimit = parseInt(process.env.RAG_SEARCH_CANDIDATES || "24", 10) || 24;
+  let minScore = parseFloat(process.env.RAG_MIN_SCORE || "0.7");
+  if (Number.isNaN(minScore)) {
+    minScore = 0.7;
+  }
 
   if (!qdrant.isRagEnabled()) {
     return { knowledgeBlock: "", chunkIds: [], scores: [] };
@@ -84,12 +121,15 @@ async function retrieveForChat(fastify, assistantId, message, topK) {
   await qdrant.ensureCollection(dim);
 
   const queryVector = await embedText(query);
-  const hits = await qdrant.searchSimilar(queryVector, assistantId, k);
+  const hitsRaw = await qdrant.searchSimilar(queryVector, assistantId, candidateLimit);
+
+  const passed = hitsRaw.filter((h) => Number(h.score) >= minScore);
+  const top = passed.slice(0, k);
 
   const texts = [];
   const chunkIds = [];
   const scores = [];
-  for (const h of hits) {
+  for (const h of top) {
     const content = typeof h.payload.content === "string" ? h.payload.content : "";
     if (content) {
       texts.push(content);
@@ -98,14 +138,24 @@ async function retrieveForChat(fastify, assistantId, message, topK) {
     scores.push(h.score);
   }
 
-  const knowledgeBlock = texts.join("\n\n---\n\n");
+  let knowledgeBlock = texts.join("\n\n---\n\n");
+  const limited = limitKnowledgeBlock(knowledgeBlock);
+  knowledgeBlock = limited.text;
+
+  const totalTokensKnowledge = estimateTokensRough(knowledgeBlock);
 
   fastify.log.info(
     {
       assistantId,
-      ragChunksFound: hits.length,
+      retrievalCandidates: hitsRaw.length,
+      filteredChunksCount: passed.length,
+      droppedByMinScore: hitsRaw.length - passed.length,
+      ragChunksUsed: top.length,
       ragChunkIds: chunkIds,
       scores,
+      minScore,
+      totalTokensKnowledge,
+      knowledgeBlockTruncated: limited.truncated,
     },
     "rag retrieval"
   );
@@ -116,4 +166,6 @@ async function retrieveForChat(fastify, assistantId, message, topK) {
 module.exports = {
   ingestKnowledgeDocument,
   retrieveForChat,
+  estimateTokensRough,
+  limitKnowledgeBlock,
 };
