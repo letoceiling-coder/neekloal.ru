@@ -12,6 +12,7 @@ async function build() {
   await app.register(require("./routes/apiKeys"));
   await app.register(require("./routes/assistants"));
   await app.register(require("./routes/knowledge"));
+  await app.register(require("./routes/usage"));
   await app.register(require("./routes/chat"));
   return app;
 }

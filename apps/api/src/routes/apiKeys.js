@@ -1,8 +1,8 @@
 "use strict";
 
 const crypto = require("crypto");
-const { append } = require("../services/apiKeysStore");
-const { findById: findUserById } = require("../services/usersStore");
+const prisma = require("../lib/prisma");
+const { hashApiKey } = require("../lib/apiKeyHash");
 
 /**
  * @param {import('fastify').FastifyInstance} fastify
@@ -17,12 +17,18 @@ module.exports = async function apiKeysRoutes(fastify) {
     }
 
     const uid = String(userId);
-    if (!findUserById(uid)) {
+    const user = await prisma.user.findUnique({ where: { id: uid } });
+    if (!user) {
       return reply.code(400).send({ error: "user not found" });
     }
 
     const key = `sk-${crypto.randomBytes(16).toString("hex")}`;
-    append({ key, userId: uid });
+    const keyHash = hashApiKey(key);
+
+    await prisma.apiKey.create({
+      data: { keyHash, userId: uid },
+    });
+
     return reply.code(201).send({ key, userId: uid });
   });
 };

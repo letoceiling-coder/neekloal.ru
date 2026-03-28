@@ -1,9 +1,0 @@
-[
-  {
-    "id": "715f77ff-c7e5-4dfa-a3c8-f64f9719d16b",
-    "name": "Demo",
-    "model": "mistral",
-    "systemPrompt": "You are concise. ",
-    "userId": "133679e5-ae8c-476c-8db6-5fe10c6c5be2"
-  }
-]

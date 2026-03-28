@@ -1,8 +1,6 @@
 "use strict";
 
-const crypto = require("crypto");
-const { append } = require("../services/knowledgeStore");
-const { findById } = require("../services/assistantsStore");
+const prisma = require("../lib/prisma");
 const authMiddleware = require("../middleware/auth");
 
 /**
@@ -21,20 +19,20 @@ module.exports = async function knowledgeRoutes(fastify) {
       return reply.code(400).send({ error: "content is required" });
     }
 
-    const assistant = findById(String(assistantId));
+    const assistant = await prisma.assistant.findFirst({
+      where: { id: String(assistantId), userId: request.userId },
+    });
     if (!assistant) {
       return reply.code(404).send({ error: "Assistant not found" });
     }
-    if (assistant.userId !== request.userId) {
-      return reply.code(403).send({ error: "Forbidden" });
-    }
 
-    const row = {
-      id: crypto.randomUUID(),
-      assistantId: String(assistantId),
-      content: String(content),
-    };
-    append(row);
+    const row = await prisma.knowledge.create({
+      data: {
+        assistantId: assistant.id,
+        type: "text",
+        content: String(content),
+      },
+    });
     return reply.code(201).send(row);
   });
 };

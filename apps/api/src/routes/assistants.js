@@ -1,8 +1,6 @@
 "use strict";
 
-const crypto = require("crypto");
-const { append, listByUserId } = require("../services/assistantsStore");
-const { findById: findUserById } = require("../services/usersStore");
+const prisma = require("../lib/prisma");
 const authMiddleware = require("../middleware/auth");
 
 /**
@@ -10,7 +8,10 @@ const authMiddleware = require("../middleware/auth");
  */
 module.exports = async function assistantsRoutes(fastify) {
   fastify.get("/assistants", { preHandler: authMiddleware }, async (request) => {
-    return listByUserId(request.userId);
+    return prisma.assistant.findMany({
+      where: { userId: request.userId },
+      orderBy: { createdAt: "asc" },
+    });
   });
 
   fastify.post("/assistants", { preHandler: authMiddleware }, async (request, reply) => {
@@ -28,19 +29,19 @@ module.exports = async function assistantsRoutes(fastify) {
     }
 
     const uid = request.userId;
-    if (!findUserById(uid)) {
+    const user = await prisma.user.findUnique({ where: { id: uid } });
+    if (!user) {
       return reply.code(400).send({ error: "user not found" });
     }
 
-    const assistant = {
-      id: crypto.randomUUID(),
-      name: String(name),
-      model: String(model),
-      systemPrompt: String(systemPrompt),
-      userId: uid,
-    };
-
-    append(assistant);
+    const assistant = await prisma.assistant.create({
+      data: {
+        name: String(name),
+        model: String(model),
+        systemPrompt: String(systemPrompt),
+        userId: uid,
+      },
+    });
     return reply.code(201).send(assistant);
   });
 };
