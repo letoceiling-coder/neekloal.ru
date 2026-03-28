@@ -72,6 +72,7 @@ async function ingestKnowledgeDocument(fastify, knowledge, assistantId) {
     const row = await prisma.knowledgeChunk.create({
       data: {
         id,
+        organizationId: knowledge.organizationId,
         knowledgeId: knowledge.id,
         content: piece,
         position: i,

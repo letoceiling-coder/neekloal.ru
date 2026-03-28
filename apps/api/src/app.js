@@ -6,7 +6,11 @@ const cors = require("@fastify/cors");
 
 async function build() {
   const app = fastify({ logger: true });
-  await app.register(cors);
+  await app.register(cors, {
+    origin: true,
+    allowedHeaders: ["Content-Type", "Authorization", "X-Api-Key"],
+  });
+  await app.register(require("./routes/auth"));
   await app.register(require("./routes/health"));
   await app.register(require("./routes/users"));
   await app.register(require("./routes/apiKeys"));

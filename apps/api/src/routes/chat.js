@@ -6,7 +6,7 @@ const { retrieveForChat } = require("../services/rag");
 const { runAgent } = require("../services/agent");
 const { runAgentV2 } = require("../services/agentV2");
 const { resolveModel, ensureModelAvailable } = require("../services/modelRouter");
-const authMiddleware = require("../middleware/auth");
+const chatAuthMiddleware = require("../middleware/chatAuth");
 const rateLimitMiddleware = require("../middleware/rateLimit");
 
 function estimateTokensFromMessage(message) {
@@ -56,7 +56,7 @@ ${userMsg}`;
  * @param {import('fastify').FastifyInstance} fastify
  */
 module.exports = async function chatRoutes(fastify) {
-  fastify.post("/chat", { preHandler: [authMiddleware, rateLimitMiddleware] }, async (request, reply) => {
+  fastify.post("/chat", { preHandler: [chatAuthMiddleware, rateLimitMiddleware] }, async (request, reply) => {
     const body = request.body && typeof request.body === "object" ? request.body : {};
     const message = body.message;
     const assistantId = body.assistantId;
@@ -65,8 +65,16 @@ module.exports = async function chatRoutes(fastify) {
       return reply.code(400).send({ error: "assistantId is required" });
     }
 
+    if (request.userId == null) {
+      return reply.code(403).send({ error: "No acting user for this organization" });
+    }
+
     const assistant = await prisma.assistant.findFirst({
-      where: { id: String(assistantId), userId: request.userId },
+      where: {
+        id: String(assistantId),
+        organizationId: request.organizationId,
+        deletedAt: null,
+      },
     });
     if (!assistant) {
       return reply.code(404).send({ error: "Assistant not found" });
@@ -90,7 +98,7 @@ module.exports = async function chatRoutes(fastify) {
 
     if (!knowledgeBlock.trim()) {
       const knowledgeRows = await prisma.knowledge.findMany({
-        where: { assistantId: assistant.id },
+        where: { assistantId: assistant.id, organizationId: assistant.organizationId },
         orderBy: { createdAt: "asc" },
         take: 3,
       });
@@ -105,7 +113,11 @@ module.exports = async function chatRoutes(fastify) {
     }
 
     const agentRecord = await prisma.agent.findFirst({
-      where: { userId: uid, assistantId: assistant.id },
+      where: {
+        organizationId: assistant.organizationId,
+        assistantId: assistant.id,
+        deletedAt: null,
+      },
       include: { tools: true },
     });
 
@@ -119,12 +131,15 @@ module.exports = async function chatRoutes(fastify) {
           knowledgeBlock,
           model,
           agent: agentRecord,
+          initiatedByUserId: uid,
         });
 
         await prisma.usage.create({
           data: {
+            organizationId: assistant.organizationId,
             userId: uid,
             apiKeyId: request.apiKeyId,
+            assistantId: assistant.id,
             model: modelOut,
             tokens: estimateTokensFromMessage(message),
           },
@@ -158,8 +173,10 @@ module.exports = async function chatRoutes(fastify) {
 
       await prisma.usage.create({
         data: {
+          organizationId: assistant.organizationId,
           userId: uid,
           apiKeyId: request.apiKeyId,
+          assistantId: assistant.id,
           model,
           tokens: estimateTokensFromMessage(message),
         },

@@ -9,7 +9,7 @@ const authMiddleware = require("../middleware/auth");
 module.exports = async function agentsRoutes(fastify) {
   fastify.get("/agents", { preHandler: authMiddleware }, async (request) => {
     return prisma.agent.findMany({
-      where: { userId: request.userId },
+      where: { organizationId: request.organizationId, deletedAt: null },
       orderBy: { createdAt: "asc" },
       include: { tools: true },
     });
@@ -26,14 +26,16 @@ module.exports = async function agentsRoutes(fastify) {
       return reply.code(400).send({ error: "type is required" });
     }
 
-    const uid = request.userId;
-
     if (assistantId != null && String(assistantId).trim() !== "") {
       const a = await prisma.assistant.findFirst({
-        where: { id: String(assistantId), userId: uid },
+        where: {
+          id: String(assistantId),
+          organizationId: request.organizationId,
+          deletedAt: null,
+        },
       });
       if (!a) {
-        return reply.code(400).send({ error: "assistant not found or not owned" });
+        return reply.code(400).send({ error: "assistant not found or not in organization" });
       }
     }
 
@@ -44,7 +46,7 @@ module.exports = async function agentsRoutes(fastify) {
 
     const row = await prisma.agent.create({
       data: {
-        userId: uid,
+        organizationId: request.organizationId,
         name: String(name),
         type: String(type),
         mode: modeStr === "v2" ? "v2" : "v1",

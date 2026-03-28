@@ -3,32 +3,45 @@
 const crypto = require("crypto");
 const prisma = require("../lib/prisma");
 const { hashApiKey } = require("../lib/apiKeyHash");
+const authMiddleware = require("../middleware/auth");
 
 /**
  * @param {import('fastify').FastifyInstance} fastify
  */
 module.exports = async function apiKeysRoutes(fastify) {
-  fastify.post("/api-keys", async (request, reply) => {
+  fastify.get("/api-keys", { preHandler: authMiddleware }, async (request) => {
+    const rows = await prisma.apiKey.findMany({
+      where: { organizationId: request.organizationId, deletedAt: null },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        name: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+    return rows;
+  });
+
+  fastify.post("/api-keys", { preHandler: authMiddleware }, async (request, reply) => {
     const body = request.body && typeof request.body === "object" ? request.body : {};
-    const userId = body.userId;
-
-    if (userId == null || String(userId).trim() === "") {
-      return reply.code(400).send({ error: "userId is required" });
-    }
-
-    const uid = String(userId);
-    const user = await prisma.user.findUnique({ where: { id: uid } });
-    if (!user) {
-      return reply.code(400).send({ error: "user not found" });
-    }
+    const name = body.name != null ? String(body.name).trim() : null;
 
     const key = `sk-${crypto.randomBytes(16).toString("hex")}`;
     const keyHash = hashApiKey(key);
 
-    await prisma.apiKey.create({
-      data: { keyHash, userId: uid },
+    const row = await prisma.apiKey.create({
+      data: {
+        organizationId: request.organizationId,
+        keyHash,
+        name: name && name !== "" ? name : null,
+      },
     });
 
-    return reply.code(201).send({ key, userId: uid });
+    return reply.code(201).send({
+      id: row.id,
+      key,
+      organizationId: request.organizationId,
+    });
   });
 };

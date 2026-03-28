@@ -311,8 +311,9 @@ The agent reached the maximum number of steps without a final answer. Summarize 
  * @param {string} params.knowledgeBlock
  * @param {string} params.model
  * @param {object} params.agent — Prisma agent with tools[]
+ * @param {string} params.initiatedByUserId
  */
-async function runAgentV2({ assistant, message, knowledgeBlock, model, agent }) {
+async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, initiatedByUserId }) {
   const userMsg = message == null ? "" : String(message).trim();
   const kb = knowledgeBlock ? String(knowledgeBlock).trim() : "";
   const rules =
@@ -330,8 +331,9 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent }) 
 
   const execution = await prisma.agentExecution.create({
     data: {
+      organizationId: agent.organizationId,
       agentId: agent.id,
-      userId: agent.userId,
+      initiatedByUserId,
       status: "running",
       input: userMsg,
     },
@@ -354,6 +356,7 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent }) 
   const persistStep = async (type, status, payload) => {
     await prisma.agentStep.create({
       data: {
+        organizationId: agent.organizationId,
         executionId: execution.id,
         stepIndex: seq,
         type,

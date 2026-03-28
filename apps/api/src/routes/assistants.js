@@ -9,7 +9,7 @@ const authMiddleware = require("../middleware/auth");
 module.exports = async function assistantsRoutes(fastify) {
   fastify.get("/assistants", { preHandler: authMiddleware }, async (request) => {
     return prisma.assistant.findMany({
-      where: { userId: request.userId },
+      where: { organizationId: request.organizationId, deletedAt: null },
       orderBy: { createdAt: "asc" },
     });
   });
@@ -28,18 +28,12 @@ module.exports = async function assistantsRoutes(fastify) {
       return reply.code(400).send({ error: "systemPrompt is required" });
     }
 
-    const uid = request.userId;
-    const user = await prisma.user.findUnique({ where: { id: uid } });
-    if (!user) {
-      return reply.code(400).send({ error: "user not found" });
-    }
-
     const assistant = await prisma.assistant.create({
       data: {
+        organizationId: request.organizationId,
         name: String(name),
         model: String(model),
         systemPrompt: String(systemPrompt),
-        userId: uid,
       },
     });
     return reply.code(201).send(assistant);

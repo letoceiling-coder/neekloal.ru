@@ -1,7 +1,7 @@
 /**
  * AI Chat Widget — load after setting:
  *   window.AI_WIDGET_API = "https://api.example.com";
- *   window.AI_WIDGET_KEY = "sk-...";
+ *   window.AI_WIDGET_KEY = "sk-...";  // sent as X-Api-Key (not Authorization)
  *   window.AI_WIDGET_ASSISTANT_ID = "uuid";
  */
 (function () {
@@ -95,7 +95,7 @@
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer " + KEY,
+        "X-Api-Key": KEY,
       },
       body: JSON.stringify({
         message: text,

@@ -4,11 +4,11 @@ const prisma = require("../lib/prisma");
 const authMiddleware = require("../middleware/auth");
 
 /**
- * @param {string} userId
+ * @param {string} organizationId
  */
-async function aggregateForUser(userId) {
+async function aggregateForOrganization(organizationId) {
   const rows = await prisma.usage.findMany({
-    where: { userId },
+    where: { organizationId },
     orderBy: { createdAt: "asc" },
   });
   const totalRequests = rows.length;
@@ -30,6 +30,6 @@ async function aggregateForUser(userId) {
  */
 module.exports = async function usageRoutes(fastify) {
   fastify.get("/usage", { preHandler: authMiddleware }, async (request) => {
-    return aggregateForUser(request.userId);
+    return aggregateForOrganization(request.organizationId);
   });
 };

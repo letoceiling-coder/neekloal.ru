@@ -22,7 +22,11 @@ module.exports = async function knowledgeRoutes(fastify) {
     }
 
     const assistant = await prisma.assistant.findFirst({
-      where: { id: String(assistantId), userId: request.userId },
+      where: {
+        id: String(assistantId),
+        organizationId: request.organizationId,
+        deletedAt: null,
+      },
     });
     if (!assistant) {
       return reply.code(404).send({ error: "Assistant not found" });
@@ -32,6 +36,7 @@ module.exports = async function knowledgeRoutes(fastify) {
 
     const row = await prisma.knowledge.create({
       data: {
+        organizationId: request.organizationId,
         assistantId: assistant.id,
         type: "text",
         content: text,

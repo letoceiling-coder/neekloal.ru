@@ -5,7 +5,7 @@ const prisma = require("../lib/prisma");
 const authMiddleware = require("../middleware/auth");
 
 /**
- * GET /tools, POST /tools — tools belong to user's agents.
+ * GET /tools, POST /tools — tools belong to org agents.
  * @param {import('fastify').FastifyInstance} fastify
  */
 module.exports = async function toolsHttpRoutes(fastify) {
@@ -13,7 +13,7 @@ module.exports = async function toolsHttpRoutes(fastify) {
     const agentId = request.query && request.query.agentId ? String(request.query.agentId) : null;
     return prisma.tool.findMany({
       where: {
-        agent: { userId: request.userId },
+        organizationId: request.organizationId,
         ...(agentId ? { agentId } : {}),
       },
       orderBy: { createdAt: "asc" },
@@ -25,7 +25,7 @@ module.exports = async function toolsHttpRoutes(fastify) {
 
   fastify.post("/tools", { preHandler: authMiddleware }, async (request, reply) => {
     const body = request.body && typeof request.body === "object" ? request.body : {};
-    const { agentId, type, config } = body;
+    const { agentId, type, config, name } = body;
 
     if (agentId == null || String(agentId).trim() === "") {
       return reply.code(400).send({ error: "agentId is required" });
@@ -38,7 +38,11 @@ module.exports = async function toolsHttpRoutes(fastify) {
     }
 
     const agent = await prisma.agent.findFirst({
-      where: { id: String(agentId), userId: request.userId },
+      where: {
+        id: String(agentId),
+        organizationId: request.organizationId,
+        deletedAt: null,
+      },
     });
     if (!agent) {
       return reply.code(404).send({ error: "Agent not found" });

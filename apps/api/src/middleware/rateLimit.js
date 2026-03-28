@@ -10,14 +10,14 @@ const WINDOW_MS = 60 * 1000;
  * @param {import('fastify').FastifyReply} reply
  */
 module.exports = async function rateLimitMiddleware(request, reply) {
-  const apiKey = request.apiKey;
-  if (!apiKey) {
-    return reply.code(500).send({ error: "Rate limit requires apiKey" });
-  }
+  const rateKey =
+    request.apiKey != null && String(request.apiKey).trim() !== ""
+      ? request.apiKey
+      : `jwt:${request.userId ?? "anon"}:${request.organizationId ?? ""}`;
 
-  const result = await incrementAndCheck(apiKey, LIMIT_PER_MINUTE, WINDOW_MS);
+  const result = await incrementAndCheck(rateKey, LIMIT_PER_MINUTE, WINDOW_MS);
   console.log("[rateLimit]", {
-    apiKeyPrefix: `${apiKey.slice(0, 12)}…`,
+    prefix: `${String(rateKey).slice(0, 16)}…`,
     count: result.count,
     resetAt: result.resetAt,
     exceeded: result.exceeded,
