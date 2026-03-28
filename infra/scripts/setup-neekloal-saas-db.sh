@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run on MAIN SERVER as root. Project: /var/www/site-al.ru
 # Creates PostgreSQL role ai_user, database neekloal_saas (legacy ai_platform is left untouched).
-set -euo pipefail
+set -eu
 
 ROOT="/var/www/site-al.ru"
 API="${ROOT}/apps/api"
