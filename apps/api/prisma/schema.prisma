@@ -135,7 +135,7 @@ model KnowledgeChunk {
   @@map("knowledge_chunks")
 }
 
-/// Per API key hash — rate limiting (replaces JSON rateLimit.json)
+/// Per API key hash — rate limiting (PostgreSQL row per key hash)
 model RateLimitState {
   keyHash String   @id @map("key_hash")
   count   Int
