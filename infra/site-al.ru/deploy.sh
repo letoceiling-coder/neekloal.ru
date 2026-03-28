@@ -1,27 +1,34 @@
-#!/usr/bin/env bash
-# Разместить на сервере: /var/www/site-al.ru/deploy.sh
+#!/bin/bash
+# SSOT: копия для сервера — /var/www/site-al.ru/deploy.sh
 # chmod +x /var/www/site-al.ru/deploy.sh
+# Запуск на MAIN SERVER из корня: /var/www/site-al.ru/deploy.sh
 
 set -euo pipefail
 
-PROJECT_ROOT="/var/www/site-al.ru"
-LOG_PREFIX="[deploy]"
+ROOT="/var/www/site-al.ru"
 
 log() {
-  echo "$(date -Iseconds) ${LOG_PREFIX} $*"
+  echo "$(date -Iseconds) [deploy] $*"
 }
 
 log "======== START DEPLOY ========"
 
-cd "${PROJECT_ROOT}"
-log "pwd: $(pwd)"
+cd "${ROOT}"
 
-log "git pull origin main"
-git pull origin main
+if [ "$(pwd -P)" != "${ROOT}" ]; then
+  log "FATAL: pwd is not ${ROOT}, got: $(pwd -P)"
+  exit 1
+fi
 
-log "API: npm install"
-cd "${PROJECT_ROOT}/apps/api"
-npm install
+log "ROOT OK: ${ROOT}"
+
+log "git fetch origin && reset --hard origin/main"
+git fetch origin
+git reset --hard origin/main
+
+log "API: npm ci"
+cd "${ROOT}/apps/api"
+npm ci
 
 log "prisma migrate deploy"
 npx prisma migrate deploy
@@ -29,24 +36,36 @@ npx prisma migrate deploy
 log "prisma generate"
 npx prisma generate
 
-log "pm2 restart ai-api (or start)"
+log "PM2 ai-api"
 if pm2 describe ai-api >/dev/null 2>&1; then
-  pm2 restart ai-api
+  log "ai-api exists"
 else
-  log "ai-api not in pm2 — starting from server.js"
-  cd "${PROJECT_ROOT}/apps/api"
-  pm2 start server.js --name ai-api --cwd "${PROJECT_ROOT}/apps/api"
+  log "starting ai-api from src/app.js"
+  pm2 start src/app.js --name ai-api
 fi
+pm2 restart ai-api
+pm2 save
 
-log "Frontend: npm install + build"
-cd "${PROJECT_ROOT}/apps/web"
-npm install
+log "Frontend: npm ci + build"
+cd "${ROOT}/apps/web"
+npm ci
 npm run build
 
-log "nginx config test"
-sudo nginx -t
+log "VERIFY dist"
+ls -la dist
+if [ ! -f dist/index.html ]; then
+  log "FATAL: dist/index.html missing"
+  exit 1
+fi
 
-log "nginx reload"
-sudo systemctl reload nginx
+log "nginx test + reload"
+nginx -t
+systemctl reload nginx
+
+log "FINAL curl checks"
+curl -sS "https://site-al.ru/api/health" || true
+echo ""
+curl -sS "https://site-al.ru" | head -n 3 || true
+echo ""
 
 log "======== DEPLOY DONE ========"
