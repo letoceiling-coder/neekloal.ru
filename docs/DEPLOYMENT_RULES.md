@@ -250,6 +250,21 @@ curl -v https://site-al.ru/api/health
 - тело — **JSON** (например `content-type: application/json`)
 - **не** HTML-страница ошибки nginx / не редирект на чужой контент
 
+### Backend напрямую (без nginx)
+
+Проверка процесса на `127.0.0.1:4000` **минуя** домен и vhost:
+
+```bash
+curl -sS http://127.0.0.1:4000/health
+```
+
+**Ожидание:**
+
+- HTTP **`200`**
+- тело — **JSON** с `"status":"ok"` (и прочие поля по факту API)
+
+Если здесь ошибка, а через `https://site-al.ru/api/health` работает — искать проблему в **nginx** / **слушателе** на MAIN SERVER, не в DNS/домене.
+
 ### Виджет (alias)
 
 ```bash
@@ -268,6 +283,32 @@ pm2 describe ai-api
 
 `cwd` = `/var/www/site-al.ru/apps/api`
 
+### PM2 VERIFY (cwd, жёстко)
+
+Быстрая проверка поля рабочего каталога в выводе PM2:
+
+```bash
+pm2 describe ai-api | grep cwd
+```
+
+**Ожидание:**
+
+- в строке присутствует путь **`/var/www/site-al.ru/apps/api`**  
+- в выводе `pm2 describe` поле отображается как **`exec cwd`** (подстрока `cwd` попадает под `grep cwd`)
+
+### PROCESS VERIFY
+
+Подтвердить, что процесс Node с `app.js` реально запущен (дополнительно к PM2):
+
+```bash
+ps aux | grep node | grep app.js
+```
+
+**Ожидание:**
+
+- есть строка с **`node`** и путём к скрипту, содержащим **`site-al.ru/apps/api`** и **`app.js`**
+- на хосте с несколькими Node-проектами трактовать совместно с **`pm2 describe ai-api`**: путь должен совпадать с корнем API этого проекта
+
 ### PORT
 
 ```bash
@@ -277,6 +318,19 @@ ss -tulnp | grep 4000
 **Ожидание:**
 
 `LISTEN` `0.0.0.0:4000`
+
+### NGINX DOMAIN VERIFY
+
+Убедиться, что в **загруженной** конфигурации фигурирует нужный домен и vhost:
+
+```bash
+nginx -T 2>/dev/null | grep site-al.ru
+```
+
+**Ожидание:**
+
+- есть строки с **`server_name site-al.ru`**
+- в дампе виден путь к файлу, из которого подключён конфиг (например комментарий `# configuration file .../site-al.ru`)
 
 ### NGINX
 
@@ -288,6 +342,21 @@ nginx -t
 
 - `syntax is ok`  
 - `test is successful`  
+
+### OLLAMA VERIFY (GPU)
+
+Проверка доступности API Ollama на GPU-сервере:
+
+```bash
+curl -sS http://188.124.55.89:11434/api/tags
+```
+
+**Ожидание:**
+
+- HTTP **`200`**
+- тело — **JSON** со списком моделей (ключ `"models"` или эквивалентная структура ответа Ollama `/api/tags`)
+
+Выполнять с MAIN SERVER или с машины с сетевым доступом к `188.124.55.89:11434`. Таймаут или отказ соединения фиксировать как ошибку доступности Ollama; при проверке `https://site-al.ru/api/health` с полем `ollama` в ответе отсутствие связи с GPU отражается в этом поле.
 
 ---
 
