@@ -1,86 +1,115 @@
-# Deployment & infrastructure — single source of truth
+# AI PLATFORM — DEPLOYMENT RULES (STRICT / SSOT)
 
-Документ задаёт **проверенные** правила для production: сервер, пути, домены, nginx, PM2, деплой, проверки.  
-Если факт на сервере расходится с этим файлом — **сначала обновить документ фактами**, потом действовать.
+⚠️ **ЭТО ЕДИНСТВЕННЫЙ ИСТОЧНИК ПРАВДЫ ДЛЯ ДЕПЛОЯ**  
+⚠️ **ЛЮБОЕ ОТКЛОНЕНИЕ = ОШИБКА**  
+⚠️ **СНАЧАЛА АУДИТ → ПОТОМ ДЕЙСТВИЯ**
+
+---
+
+## 0. Главное правило
+
+👉 **СЕРВЕР = ИСТИНА**  
+👉 **GIT = ИСТИНА**  
+👉 **ДОКУМЕНТ = ИСТИНА**
+
+Если они не совпадают →  
+❗ **СНАЧАЛА СИНХРОНИЗАЦИЯ**  
+❗ **ПОТОМ ДЕЙСТВИЯ**
 
 ---
 
 ## 1. Servers
 
-### MAIN SERVER
+### MAIN SERVER (PRODUCTION)
 
-| Field | Value |
-|--------|--------|
+| | |
+|--|--|
 | **IP** | `89.169.39.244` |
-| **Role** | production (AI platform) |
-| **Access** | `ssh root@89.169.39.244` |
 
-### GPU SERVER (Ollama)
+**ACCESS:**
 
-| Field | Value |
-|--------|--------|
+```bash
+ssh root@89.169.39.244
+```
+
+**ROLE:**
+
+- API  
+- Nginx  
+- PM2  
+
+### GPU SERVER (OLLAMA)
+
+| | |
+|--|--|
 | **IP** | `188.124.55.89` |
-| **Role** | Ollama / LLM |
-| **Port** | `11434` |
+| **PORT** | `11434` |
+
+**ROLE:**
+
+- LLM inference  
 
 ---
 
-## 2. Project structure (единая)
-
-**Единственный корень кода этого репозитория на MAIN SERVER:**
+## 2. Project root (единственный)
 
 ```
 /var/www/site-al.ru
 ```
 
-### Внутри
+❗ **ДРУГИХ КОРНЕЙ ДЛЯ ЭТОГО ПРОЕКТА НЕ СУЩЕСТВУЕТ**
 
-| Path | Назначение |
-|------|------------|
-| `/var/www/site-al.ru/apps/api` | Backend (Fastify) |
-| `/var/www/site-al.ru/apps/widget` | Widget |
-| `/var/www/site-al.ru/apps/web` | Frontend (планируется) |
-| `/var/www/site-al.ru/packages` | Shared packages |
-| `/var/www/site-al.ru/infra` | Шаблоны/референсы конфигов |
-| `/var/www/site-al.ru/docs` | Документация |
+### Структура
 
-### Запрещено для этого проекта
+```
+/var/www/site-al.ru/
+  apps/
+    api/
+    widget/
+    web/
+  packages/
+  infra/
+  docs/
+```
 
-Не использовать как целевой путь деплоя **`ai-api` / репозитория site-al.ru:**
+### Запрещённые пути
 
-- `/var/www/neekloal-repo` — legacy, не использовать.
-- `/var/www/ai-platform` — не этот проект; на хосте могут быть другие сервисы, **не** смешивать с деплоем `site-al.ru`.
+**НЕ ИСПОЛЬЗОВАТЬ:**
+
+- `/var/www/neekloal-repo`  
+- `/var/www/ai-platform`  
+
+❗ **ЭТО НЕ ЭТОТ ПРОЕКТ**  
+❗ **НЕ ДЕПЛОИТЬ ТУДА**  
+❗ **НЕ ЗАПУСКАТЬ ОТТУДА**  
 
 ---
 
-## 3. Domains
+## 3. Domain
 
-### `site-al.ru`
+**`site-al.ru`**
 
-**Назначение:** основной домен платформы.
+### Реальное поведение
 
-| Route | Поведение (факт из nginx) |
-|-------|---------------------------|
-| `/api/*` | Reverse proxy → backend `http://127.0.0.1:4000/` |
-| `/widget.js` | Файл с диска: `/var/www/site-al.ru/apps/widget/widget.js` |
-| `/` | Временная заглушка: `return 200 "AI PLATFORM site-al.ru WORKING"` |
+| URL | Действие |
+|-----|----------|
+| `/api/*` | → `127.0.0.1:4000` |
+| `/widget.js` | файл с диска |
+| `/` | `return 200` |
 
 ---
 
 ## 4. Nginx
 
-**Активный конфиг vhost:**
+**CONFIG:**
 
-```
-/etc/nginx/sites-enabled/site-al.ru
-```
+`/etc/nginx/sites-enabled/site-al.ru`
 
-### Логика (как в конфиге)
+### Логика
 
 ```nginx
 location /api/ {
     proxy_pass http://127.0.0.1:4000/;
-    proxy_set_header Host $host;
 }
 
 location = /widget.js {
@@ -92,93 +121,176 @@ location / {
 }
 ```
 
-### Ограничения
+### Запрещено
 
-- Не менять **другие** vhost без необходимости.
-- Не трогать **`default_server`** и файлы вроде `00-default-443-reject.conf` без отдельной задачи.
-- SSL: правки только осознанно (Certbot / существующие `ssl_certificate`).
+- менять другие сайты  
+- трогать `default_server`  
+- удалять SSL-сертификаты  
 
 ---
 
 ## 5. PM2
 
-| Field | Value |
-|--------|--------|
-| **Process name** | `ai-api` |
-| **Working directory** | `/var/www/site-al.ru/apps/api` |
-| **Entry** | `src/app.js` (из этого cwd) |
+| | |
+|--|--|
+| **PROCESS** | `ai-api` |
+| **cwd** | `/var/www/site-al.ru/apps/api` |
+| **script** | `src/app.js` |
 
-**Пример запуска с нуля (из каталога api):**
+### Запуск
 
 ```bash
 cd /var/www/site-al.ru/apps/api
 pm2 start src/app.js --name ai-api
+pm2 save
 ```
-
-После изменений процесса: `pm2 save` по политике сервера.
 
 ---
 
-## 6. Ollama (GPU)
-
-**Base URL (в конфиге API):**
+## 6. Ollama
 
 ```
 http://188.124.55.89:11434
 ```
 
-(Точное имя переменной окружения — в `apps/api`, например `OLLAMA_URL`.)
+**ENV:**
+
+```env
+OLLAMA_URL=http://188.124.55.89:11434
+```
 
 ---
 
-## 7. Deploy rules
+## 7. Deploy (единственный сценарий)
 
-**Порядок на MAIN SERVER после обновления кода:**
+```bash
+ssh root@89.169.39.244
 
-1. `cd /var/www/site-al.ru`
-2. `git pull` (ветка `main`, без расхождений с `origin`)
-3. `cd apps/api && npm ci` или `npm install` (как принято в репозитории)
-4. `pm2 restart ai-api`
-5. **Nginx не трогать** без причины (после правок — `nginx -t` и только `reload`).
+cd /var/www/site-al.ru
 
-### Запрещено
+git pull origin main
 
-- Деплой через `cp` / `rsync` вместо git для этого репозитория.
-- Создавать произвольные каталоги вне описанной структуры под этот продукт.
-- Менять **cwd** у `ai-api` на другой путь.
-- Запускать backend с другого дерева, чем `/var/www/site-al.ru/apps/api`.
+cd apps/api
+npm ci
+
+pm2 restart ai-api
+pm2 save
+```
+
+### Строго запрещено
+
+❌ `cp`  
+❌ `rsync`  
+❌ ручное копирование  
+❌ запуск с другого пути  
+❌ создание новых директорий  
 
 ---
 
-## 8. Verification (после каждого деплоя)
+## 8. Проверка (обязательно)
+
+### API
 
 ```bash
 curl -sS https://site-al.ru/api/health
 ```
 
-**Ожидание:** JSON с `"status":"ok"` (и при необходимости поля `uptime`, `ollama`, и т.д.).
+**Ожидание:**
+
+```json
+{"status":"ok"}
+```
+
+### PM2
 
 ```bash
 pm2 describe ai-api
 ```
 
-**Ожидание:** `exec cwd` = `/var/www/site-al.ru/apps/api`.
+**Ожидание:**
+
+`cwd` = `/var/www/site-al.ru/apps/api`
+
+### PORT
+
+```bash
+ss -tulnp | grep 4000
+```
+
+**Ожидание:**
+
+`LISTEN` `0.0.0.0:4000`
+
+### NGINX
 
 ```bash
 nginx -t
 ```
 
-**Ожидание:** `syntax is ok`, `test is successful`.
+**Ожидание:**
+
+- `syntax is ok`  
+- `test is successful`  
 
 ---
 
-## 9. Single source of truth
+## 9. Git sync
 
-- **Production:** фактическое состояние на MAIN SERVER и этот документ в актуальной версии в git.
-- **Локальная машина:** только разработка; не считать её эталоном путей и процессов.
+```bash
+git fetch origin
+git rev-parse HEAD
+git rev-parse origin/main
+```
+
+**Ожидание:**
+
+👉 **одинаковые хэши**
 
 ---
 
-## 10. Anti-chaos rule
+## 10. Анти-хаос
 
-Если путь, домен или процесс **не совпадают** с этим документом — для деплоя **этого** проекта они **не используются**, пока документ и сервер не приведены к одному виду осознанно.
+**Если:**
+
+- другой путь  
+- другой домен  
+- другой cwd  
+- другой порт  
+
+👉 **ЭТО ОШИБКА**
+
+---
+
+## 11. Critical rule
+
+**НИКОГДА:**
+
+❌ не угадывать  
+❌ не «примерно»  
+❌ не «вроде работает»  
+
+**ТОЛЬКО:**
+
+✔ проверка  
+✔ факты  
+✔ команды  
+
+---
+
+## 12. Cursor rule
+
+**CURSOR обязан:**
+
+**Сначала:** проверить сервер, показать факты  
+**Потом:** предложить действия  
+**После:** дать доказательства  
+
+---
+
+## Final
+
+👉 У нас **один** проект  
+👉 **один** сервер  
+👉 **одна** директория  
+
+Всё остальное — мусор.
