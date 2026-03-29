@@ -90,6 +90,8 @@ model Plan {
   maxRequestsPerMonth Int?      @map("max_requests_per_month")
   maxTokensPerMonth   Int?      @map("max_tokens_per_month")
   allowedModels       Json      @map("allowed_models")
+  /// Cost in USD per 1 000 tokens. null = free / metered elsewhere.
+  costPer1kTokens     Decimal?  @map("cost_per_1k_tokens") @db.Decimal(12, 6)
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
   deletedAt           DateTime? @map("deleted_at")

@@ -437,6 +437,9 @@ module.exports = async function chatRoutes(fastify) {
   });
 
   // ─── SSE streaming endpoint ───────────────────────────────────────────────
+  const STREAM_TIMEOUT_MS = 30_000;
+  const STREAM_MAX_TOKENS = 2_000; // ~8 000 chars; hard cap to protect server
+
   fastify.post("/chat/stream", {
     preHandler: [chatAuthMiddleware, rateLimitMiddleware, widgetChatRateLimit],
   }, async (request, reply) => {
@@ -458,13 +461,36 @@ module.exports = async function chatRoutes(fastify) {
       "Access-Control-Allow-Origin": request.headers.origin || "*",
     });
 
-    /** Send one SSE event */
+    /** Send one SSE event (safe: no-op after end) */
     function send(event, data) {
-      raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      if (!streamEnded) raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     }
+
+    let streamEnded = false;
+    const ollamaController = new AbortController();
+
+    // Hard timeout — close stream after 30 s regardless
+    const timeoutId = setTimeout(() => {
+      if (!streamEnded) {
+        streamEnded = true;
+        ollamaController.abort();
+        try { raw.write(`event: error\ndata: ${JSON.stringify({ error: "Stream timeout (30s)" })}\n\n`); } catch { /* */ }
+        raw.end();
+      }
+    }, STREAM_TIMEOUT_MS);
+
+    // Abort when client closes the connection early
+    request.raw.on("close", () => {
+      if (!streamEnded) {
+        streamEnded = true;
+        ollamaController.abort();
+        clearTimeout(timeoutId);
+      }
+    });
 
     try {
       let fullText = "";
+      let streamedTokens = 0;
 
       if (agentForChat) {
         // Agent: run synchronously (no per-token streaming), then emit whole reply
@@ -482,7 +508,12 @@ module.exports = async function chatRoutes(fastify) {
         // Emit word by word to simulate streaming UX
         const words = fullText.split(/(\s+)/);
         for (const w of words) {
-          if (w) send("token", { token: w });
+          if (streamEnded) break;
+          if (w) {
+            send("token", { token: w });
+            streamedTokens += Math.round(w.length / 4);
+            if (streamedTokens >= STREAM_MAX_TOKENS) break;
+          }
         }
       } else {
         // Direct Ollama — real token streaming
@@ -500,24 +531,29 @@ module.exports = async function chatRoutes(fastify) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model, prompt, stream: true }),
+          signal: ollamaController.signal,
         });
 
         if (!ollamaRes.ok || !ollamaRes.body) {
           const errText = await ollamaRes.text().catch(() => "");
           fastify.log.error({ status: ollamaRes.status, body: errText }, "ollama stream failed");
           send("error", { error: "Ollama stream failed" });
+          streamEnded = true;
           raw.end();
+          clearTimeout(timeoutId);
           return;
         }
 
         // Read NDJSON stream line by line
         const decoder = new TextDecoder();
         let buf = "";
-        for await (const chunk of ollamaRes.body) {
+        outer: for await (const chunk of ollamaRes.body) {
+          if (streamEnded) break;
           buf += decoder.decode(chunk, { stream: true });
           const lines = buf.split("\n");
           buf = lines.pop() ?? "";
           for (const line of lines) {
+            if (streamEnded) break outer;
             const l = line.trim();
             if (!l) continue;
             try {
@@ -525,15 +561,20 @@ module.exports = async function chatRoutes(fastify) {
               if (obj.response) {
                 fullText += obj.response;
                 send("token", { token: obj.response });
-              }
-              if (obj.done) {
-                // flush any remaining
+                streamedTokens += Math.round(obj.response.length / 4);
+                if (streamedTokens >= STREAM_MAX_TOKENS) {
+                  // Cap reached — stop, do not error
+                  send("done", { model, truncated: true });
+                  streamEnded = true;
+                  ollamaController.abort();
+                  break outer;
+                }
               }
             } catch { /* ignore malformed line */ }
           }
         }
-        // flush tail
-        if (buf.trim()) {
+        // flush tail (only if not aborted)
+        if (!streamEnded && buf.trim()) {
           try {
             const obj = JSON.parse(buf.trim());
             if (obj.response) {
@@ -544,31 +585,41 @@ module.exports = async function chatRoutes(fastify) {
         }
       }
 
-      // Finalize usage + persist
-      await finalizeChatUsage({
-        organizationId: assistant.organizationId,
-        userId: uid,
-        apiKeyId: request.apiKeyId,
-        assistantId: assistant.id,
-        conversationId: body.conversationId != null ? String(body.conversationId) : null,
-        model,
-        inputTokens: estimatedInputTokens,
-        outputTokens: estimateTokensFromMessage(fullText),
-      });
-      await persistChatTurn({
-        organizationId: assistant.organizationId,
-        conversationId: body.conversationId != null ? String(body.conversationId) : null,
-        assistantId: assistant.id,
-        userText: message,
-        assistantText: fullText,
-      });
+      // Finalize usage + persist (skip if aborted before we got any text)
+      if (!streamEnded || fullText.length > 0) {
+        await finalizeChatUsage({
+          organizationId: assistant.organizationId,
+          userId: uid,
+          apiKeyId: request.apiKeyId,
+          assistantId: assistant.id,
+          conversationId: body.conversationId != null ? String(body.conversationId) : null,
+          model,
+          inputTokens: estimatedInputTokens,
+          outputTokens: estimateTokensFromMessage(fullText),
+        }).catch((e) => fastify.log.error(e, "finalizeChatUsage failed in stream"));
+        await persistChatTurn({
+          organizationId: assistant.organizationId,
+          conversationId: body.conversationId != null ? String(body.conversationId) : null,
+          assistantId: assistant.id,
+          userText: message,
+          assistantText: fullText,
+        }).catch((e) => fastify.log.error(e, "persistChatTurn failed in stream"));
+      }
 
-      send("done", { model });
+      if (!streamEnded) send("done", { model });
     } catch (err) {
-      fastify.log.error(err);
-      send("error", { error: err instanceof Error ? err.message : "Stream failed" });
+      if (err && err.name === "AbortError") {
+        // expected on client disconnect or timeout — already handled
+      } else {
+        fastify.log.error(err);
+        send("error", { error: err instanceof Error ? err.message : "Stream failed" });
+      }
     } finally {
-      raw.end();
+      clearTimeout(timeoutId);
+      if (!streamEnded) {
+        streamEnded = true;
+        raw.end();
+      }
     }
   });
 };

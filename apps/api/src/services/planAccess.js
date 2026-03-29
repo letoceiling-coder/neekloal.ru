@@ -115,7 +115,8 @@ async function finalizeChatUsage(params) {
         o.is_blocked,
         p.max_requests_per_month,
         p.max_tokens_per_month,
-        p.allowed_models
+        p.allowed_models,
+        p.cost_per_1k_tokens
       FROM organizations o
       INNER JOIN plans p ON p.id = o.plan_id
       WHERE o.id = ${organizationId}::uuid
@@ -189,6 +190,16 @@ async function finalizeChatUsage(params) {
       },
     });
 
+    // Cost calculation: costPer1kTokens is a Decimal returned as string by pg driver
+    const rawCostPerK = row.cost_per_1k_tokens;
+    let cost = null;
+    if (rawCostPerK != null) {
+      const costPerK = parseFloat(String(rawCostPerK));
+      if (Number.isFinite(costPerK) && costPerK > 0 && total > 0) {
+        cost = Number(((total / 1000) * costPerK).toFixed(6));
+      }
+    }
+
     await tx.usage.create({
       data: {
         organizationId,
@@ -198,6 +209,7 @@ async function finalizeChatUsage(params) {
         conversationId: conversationId || null,
         model: modelName,
         tokens: total,
+        cost: cost != null ? cost : undefined,
       },
     });
 
