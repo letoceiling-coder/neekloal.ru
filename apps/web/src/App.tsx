@@ -7,6 +7,7 @@ import { AgentDetailPage } from "./pages/AgentDetailPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { ApiKeysPage } from "./pages/ApiKeysPage";
+import { AssistantDetailPage } from "./pages/AssistantDetailPage";
 import { AssistantsPage } from "./pages/AssistantsPage";
 import { ConversationsPage } from "./pages/ConversationsPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -45,6 +46,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="assistants" element={<AssistantsPage />} />
+          <Route path="assistants/:assistantId" element={<AssistantDetailPage />} />
           <Route path="agents/:agentId" element={<AgentDetailPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="conversations" element={<ConversationsPage />} />

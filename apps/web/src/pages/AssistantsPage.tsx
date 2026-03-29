@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAssistants, useCreateAssistant } from "../api/assistants";
 import {
   useApiKeys,
@@ -234,6 +235,7 @@ export function AssistantsPage() {
   );
 
   const [connectAssistant, setConnectAssistant] = useState<Assistant | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const list = modelCatalog;
@@ -364,20 +366,27 @@ export function AssistantsPage() {
                   <p className="mt-3 line-clamp-3 flex-1 text-sm text-neutral-600">
                     {a.systemPrompt}
                   </p>
-                  <div className="mt-4">
+                  <div className="mt-4 flex gap-2">
+                    <button
+                      onClick={() => navigate(`/assistants/${a.id}`)}
+                      className={cn(
+                        "inline-flex flex-1 items-center justify-center gap-1.5 rounded-md",
+                        "bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white",
+                        "hover:bg-neutral-800 transition-colors"
+                      )}
+                    >
+                      Открыть
+                    </button>
                     <button
                       onClick={() => setConnectAssistant(a)}
                       className={cn(
-                        "inline-flex w-full items-center justify-center gap-1.5 rounded-md",
+                        "inline-flex items-center justify-center gap-1.5 rounded-md",
                         "border border-neutral-200 bg-neutral-50 px-3 py-1.5",
                         "text-xs font-medium text-neutral-700",
                         "hover:border-neutral-300 hover:bg-white transition-colors"
                       )}
                     >
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                        <path d="M1 6h10M6 1v10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                      </svg>
-                      Подключить на сайт
+                      Виджет
                     </button>
                   </div>
                 </CardContent>

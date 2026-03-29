@@ -49,9 +49,23 @@ export type Agent = {
   type: string;
   mode: string;
   assistantId: string | null;
+  rules?: string | null;
   userId?: string;
   createdAt?: string;
   tools?: AgentTool[];
+};
+
+export type UpdateAssistantInput = {
+  name?: string;
+  model?: string;
+  systemPrompt?: string;
+};
+
+export type UpdateAgentInput = {
+  name?: string;
+  rules?: string | null;
+  assistantId?: string | null;
+  mode?: string;
 };
 
 /** Ожидаемый контракт GET /conversations (когда появится на бэкенде) */

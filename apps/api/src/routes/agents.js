@@ -155,4 +155,43 @@ module.exports = async function agentsRoutes(fastify) {
 
     return reply.code(201).send(row);
   });
+
+  fastify.patch("/agents/:id", { preHandler: authMiddleware }, async (request, reply) => {
+    const id = String(request.params.id || "").trim();
+    if (!id) return reply.code(400).send({ error: "id is required" });
+
+    const body = request.body && typeof request.body === "object" ? request.body : {};
+    /** @type {import('@prisma/client').Prisma.AgentUpdateInput} */
+    const data = {};
+
+    if (body.name != null) data.name = String(body.name).trim();
+    if (body.rules !== undefined) data.rules = body.rules != null ? String(body.rules) : null;
+    if (body.assistantId !== undefined) {
+      data.assistantId =
+        body.assistantId != null && String(body.assistantId).trim() !== ""
+          ? String(body.assistantId).trim()
+          : null;
+    }
+    if (body.mode != null) {
+      const m = String(body.mode).trim().toLowerCase();
+      data.mode = m === "v2" ? "v2" : "v1";
+    }
+    if (body.trigger !== undefined) data.trigger = body.trigger != null ? String(body.trigger) : null;
+
+    if (Object.keys(data).length === 0) {
+      return reply.code(400).send({ error: "No valid fields to update" });
+    }
+
+    const existing = await prisma.agent.findFirst({
+      where: { id, organizationId: request.organizationId, deletedAt: null },
+    });
+    if (!existing) return reply.code(404).send({ error: "Agent not found" });
+
+    const updated = await prisma.agent.update({
+      where: { id },
+      data,
+      include: { tools: true },
+    });
+    return updated;
+  });
 };

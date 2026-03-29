@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../lib/apiClient";
 import { queryKeys } from "../queryKeys";
 import { useAuthStore } from "../stores/authStore";
-import type { Assistant, CreateAssistantInput } from "./types";
+import type { Assistant, CreateAssistantInput, UpdateAssistantInput } from "./types";
 
 export function useAssistants() {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -18,6 +18,27 @@ export function useCreateAssistant() {
   return useMutation({
     mutationFn: (body: CreateAssistantInput) =>
       apiClient.post<Assistant>("/assistants", body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.assistants.all });
+    },
+  });
+}
+
+export function usePatchAssistant() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string } & UpdateAssistantInput) =>
+      apiClient.patch<Assistant>(`/assistants/${id}`, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.assistants.all });
+    },
+  });
+}
+
+export function useDeleteAssistant() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiClient.delete<{ ok: boolean }>(`/assistants/${id}`),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.assistants.all });
     },
