@@ -10,7 +10,7 @@ import {
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAssistants, usePatchAssistant } from "../api/assistants";
 import { useAgents, useCreateAgent, usePatchAgent } from "../api/agents";
-import { useCreateApiKey, type CreateApiKeyResponse } from "../api/apiKeys";
+import { useCreateApiKey, usePatchApiKey, type CreateApiKeyResponse } from "../api/apiKeys";
 import {
   useAddKnowledge,
   useAddKnowledgeUrl,
@@ -45,8 +45,8 @@ function getApiBase(): string {
   return `${window.location.origin}/api`;
 }
 
-function buildEmbedCode(apiKey: string, assistantId: string): string {
-  return `<script src="${window.location.origin}/widget.js"><\/script>\n<script>\nwindow.AI_WIDGET_CONFIG = {\n  apiKey: "${apiKey}",\n  assistantId: "${assistantId}"\n};\n<\/script>`;
+function buildEmbedCode(apiKey: string): string {
+  return `<script src="https://site-al.ru/widget.js" data-key="${apiKey}"><\/script>`;
 }
 
 // ─── Tab bar ─────────────────────────────────────────────────────────────────
@@ -624,11 +624,18 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
 
 function WidgetSection({ assistant }: { assistant: Assistant }) {
   const createKey = useCreateApiKey();
+  const patchKey = usePatchApiKey();
   const [embedCode, setEmbedCode] = useState<string | null>(null);
+  const [keyId, setKeyId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const codeRef = useRef<HTMLTextAreaElement>(null);
+
+  // Domain management state
+  const [domains, setDomains] = useState<string[]>([]);
+  const [domainInput, setDomainInput] = useState("");
+  const [domainsSaved, setDomainsSaved] = useState(false);
 
   // Auto-create key on first mount
   useEffect(() => {
@@ -639,12 +646,16 @@ function WidgetSection({ assistant }: { assistant: Assistant }) {
     setCreating(true);
     setCreateError(null);
     setEmbedCode(null);
+    setKeyId(null);
+    setDomains([]);
     try {
-      const res = await createKey.mutateAsync({
+      const res = (await createKey.mutateAsync({
         assistantId: assistant.id,
         name: `widget:${assistant.name}`,
-      }) as CreateApiKeyResponse;
-      setEmbedCode(buildEmbedCode(res.key, assistant.id));
+      })) as CreateApiKeyResponse;
+      setKeyId(res.id);
+      setDomains(res.allowedDomains ?? []);
+      setEmbedCode(buildEmbedCode(res.key));
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : "Ошибка создания ключа");
     } finally {
@@ -661,6 +672,24 @@ function WidgetSection({ assistant }: { assistant: Assistant }) {
     } catch {
       codeRef.current?.select();
     }
+  }
+
+  function addDomain() {
+    const d = domainInput.trim().toLowerCase();
+    if (!d || domains.includes(d)) return;
+    setDomains((prev) => [...prev, d]);
+    setDomainInput("");
+  }
+
+  function removeDomain(d: string) {
+    setDomains((prev) => prev.filter((x) => x !== d));
+  }
+
+  async function saveDomains() {
+    if (!keyId) return;
+    await patchKey.mutateAsync({ id: keyId, allowedDomains: domains });
+    setDomainsSaved(true);
+    setTimeout(() => setDomainsSaved(false), 2500);
   }
 
   return (
@@ -690,29 +719,91 @@ function WidgetSection({ assistant }: { assistant: Assistant }) {
         {embedCode && !creating && (
           <>
             <p className="text-sm text-neutral-600">
-              Вставьте код перед{" "}
+              Вставьте одну строку перед{" "}
               <code className="rounded bg-neutral-100 px-1 text-xs">&lt;/body&gt;</code>:
             </p>
             <textarea
               ref={codeRef}
               readOnly
               value={embedCode}
-              rows={7}
+              rows={2}
               className="w-full resize-none rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 font-mono text-xs text-neutral-800 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
               onClick={() => codeRef.current?.select()}
             />
             <div className="flex items-center gap-3">
               <Button onClick={() => void handleCopy()}>
-                {copied ? "✓ Скопировано!" : "Скопировать код"}
+                {copied ? "✓ Скопировано!" : "Скопировать"}
               </Button>
               <Button variant="secondary" onClick={() => void generateKey()} loading={creating}>
                 Новый ключ
               </Button>
             </div>
             <p className="text-xs text-neutral-400">
-              Сохраните ключ — он показывается только здесь. При нажатии "Новый ключ"
+              Сохраните ключ — он показывается только здесь. При нажатии «Новый ключ»
               предыдущий ключ перестанет работать.
             </p>
+
+            {/* ─── Domain management ─────────────────────────────────────────── */}
+            <div className="space-y-3 border-t border-neutral-100 pt-4">
+              <div>
+                <h4 className="text-sm font-medium text-neutral-700">Разрешённые домены</h4>
+                <p className="mt-0.5 text-xs text-neutral-400">
+                  Если список пуст — виджет работает с любого домена.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={domainInput}
+                  onChange={(e) => setDomainInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addDomain();
+                    }
+                  }}
+                  placeholder="example.com"
+                  className="flex-1 rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
+                />
+                <Button variant="secondary" onClick={addDomain}>
+                  Добавить
+                </Button>
+              </div>
+              {domains.length > 0 && (
+                <div className="space-y-1.5">
+                  {domains.map((d) => (
+                    <div
+                      key={d}
+                      className="flex items-center justify-between rounded-md border border-neutral-200 bg-neutral-50 px-3 py-1.5"
+                    >
+                      <code className="text-xs text-neutral-700">{d}</code>
+                      <button
+                        type="button"
+                        onClick={() => removeDomain(d)}
+                        className="ml-2 text-neutral-400 hover:text-red-500"
+                        aria-label="Удалить домен"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {keyId && (
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="secondary"
+                    onClick={() => void saveDomains()}
+                    loading={patchKey.isPending}
+                  >
+                    Сохранить домены
+                  </Button>
+                  {domainsSaved && (
+                    <span className="text-xs font-medium text-green-600">✓ Сохранено</span>
+                  )}
+                </div>
+              )}
+            </div>
           </>
         )}
       </CardContent>

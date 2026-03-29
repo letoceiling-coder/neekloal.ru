@@ -25,7 +25,7 @@ function buildFinalPrompt(p) {
     agentRules = String(p.agent.rules).trim();
   }
 
-  const parts = [`SYSTEM:\n${sys}`];
+  const parts = [`SYSTEM:\n${sys}\n\nОтвечай только на русском языке.`];
   if (agentRules) {
     parts.push(`AGENT:\n${agentRules}`);
   }

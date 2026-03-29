@@ -1,13 +1,15 @@
 /**
  * Embed AI chat widget — with SSE streaming, typing animation, retry.
  *
- * Config:
+ * Simple embed (recommended):
+ *   <script src="https://site-al.ru/widget.js" data-key="sk-..."></script>
+ *
+ * Advanced config (optional):
  *   window.AI_WIDGET_CONFIG = {
- *     apiBaseUrl:  "https://your-api.example.com",  // required
- *     apiKey:      "sk-...",                         // required
- *     assistantId: "uuid",                           // optional if baked into API key
- *     title:       "Support",                        // optional
- *     greeting:    "...",                            // optional
+ *     apiKey:      "sk-...",    // alternative to data-key
+ *     assistantId: "uuid",      // optional if baked into API key
+ *     title:       "Support",   // optional
+ *     greeting:    "...",       // optional
  *   };
  *
  * Legacy: AI_WIDGET_API, AI_WIDGET_KEY, AI_WIDGET_ASSISTANT_ID still work.
@@ -20,11 +22,24 @@
 (function () {
   "use strict";
 
+  /* ── read data-key / data-assistant-id from the <script> tag ── */
+  var _script = null;
+  try {
+    _script = document.currentScript;
+    if (!_script) {
+      var _scripts = document.querySelectorAll('script[src*="widget.js"]');
+      if (_scripts.length) _script = _scripts[_scripts.length - 1];
+    }
+  } catch (e) { /* ignore */ }
+  var _dataKey = (_script && _script.getAttribute("data-key")) || "";
+  var _dataAssistantId = (_script && _script.getAttribute("data-assistant-id")) || "";
+
   /* ── config ── */
+  var DEFAULT_API = "https://site-al.ru/api";
   var cfg = window.AI_WIDGET_CONFIG || {};
-  var API = (cfg.apiBaseUrl || cfg.apiUrl || cfg.baseUrl || window.AI_WIDGET_API || "").replace(/\/$/, "");
-  var KEY = cfg.apiKey || window.AI_WIDGET_KEY || "";
-  var ASSISTANT_ID = cfg.assistantId || window.AI_WIDGET_ASSISTANT_ID || "";
+  var API = (cfg.apiBaseUrl || cfg.apiUrl || cfg.baseUrl || window.AI_WIDGET_API || DEFAULT_API).replace(/\/$/, "");
+  var KEY = _dataKey || cfg.apiKey || window.AI_WIDGET_KEY || "";
+  var ASSISTANT_ID = _dataAssistantId || cfg.assistantId || window.AI_WIDGET_ASSISTANT_ID || "";
   var TITLE = cfg.title || "Chat";
   var GREETING =
     cfg.greeting != null && String(cfg.greeting).trim() !== ""
@@ -241,8 +256,8 @@
     var text = (inputEl.value || "").trim();
     if (!text) return;
 
-    if (!API || !KEY) {
-      addLine("Настройте AI_WIDGET_CONFIG: apiBaseUrl, apiKey", "ai-msg-err");
+    if (!KEY) {
+      addLine("Укажите data-key в теге script или AI_WIDGET_CONFIG.apiKey", "ai-msg-err");
       return;
     }
 
