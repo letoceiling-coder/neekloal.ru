@@ -80,24 +80,32 @@ export function useDeleteKnowledge(assistantId: string) {
   });
 }
 
-/**
- * Upload a file to POST /knowledge/upload (multipart).
- * Returns a KnowledgeItem in processing state.
- */
-export async function uploadKnowledgeFile(
-  assistantId: string,
-  file: File,
-  token: string | null
-): Promise<KnowledgeItem> {
-  const base =
-    import.meta.env.VITE_API_URL != null &&
-    String(import.meta.env.VITE_API_URL).trim() !== ""
-      ? String(import.meta.env.VITE_API_URL).replace(/\/$/, "")
-      : `${window.location.origin}/api`;
+export type KnowledgeUploadBatchResult = {
+  items: KnowledgeItem[];
+  errors: { sourceName: string; error: string }[];
+};
 
+function knowledgeUploadBaseUrl(): string {
+  return import.meta.env.VITE_API_URL != null &&
+    String(import.meta.env.VITE_API_URL).trim() !== ""
+    ? String(import.meta.env.VITE_API_URL).replace(/\/$/, "")
+    : `${window.location.origin}/api`;
+}
+
+/**
+ * Upload one or many files (multipart: assistantId + files[]).
+ */
+export async function uploadKnowledgeFiles(
+  assistantId: string,
+  files: File[],
+  token: string | null
+): Promise<KnowledgeUploadBatchResult> {
+  const base = knowledgeUploadBaseUrl();
   const formData = new FormData();
   formData.append("assistantId", assistantId);
-  formData.append("file", file);
+  for (const file of files) {
+    formData.append("files[]", file);
+  }
 
   const res = await fetch(`${base}/knowledge/upload`, {
     method: "POST",
@@ -105,14 +113,34 @@ export async function uploadKnowledgeFile(
     body: formData,
   });
 
+  const body = (await res.json().catch(() => ({}))) as KnowledgeUploadBatchResult & {
+    error?: string;
+  };
+
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
     const errMsg =
-      typeof body === "object" && body !== null && "error" in body
-        ? String((body as { error: unknown }).error)
+      typeof body === "object" && body !== null && "error" in body && body.error
+        ? String(body.error)
         : `HTTP ${res.status}`;
     throw new Error(errMsg);
   }
 
-  return res.json() as Promise<KnowledgeItem>;
+  return {
+    items: Array.isArray(body.items) ? body.items : [],
+    errors: Array.isArray(body.errors) ? body.errors : [],
+  };
+}
+
+/**
+ * Upload a single file (legacy); uses batch API under the hood.
+ */
+export async function uploadKnowledgeFile(
+  assistantId: string,
+  file: File,
+  token: string | null
+): Promise<KnowledgeItem> {
+  const { items, errors } = await uploadKnowledgeFiles(assistantId, [file], token);
+  if (items.length > 0) return items[0];
+  if (errors.length > 0) throw new Error(errors[0].error);
+  throw new Error("Upload failed");
 }

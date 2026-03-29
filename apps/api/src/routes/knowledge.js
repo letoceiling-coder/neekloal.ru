@@ -97,9 +97,9 @@ async function enqueueOrIngest(fastify, row, assistantId) {
  * @param {import('fastify').FastifyInstance} fastify
  */
 module.exports = async function knowledgeRoutes(fastify) {
-  // Multipart support (scoped to this plugin)
+  // Multipart: many files per request (files[]), 10 MB each, up to 64 files
   await fastify.register(require("@fastify/multipart"), {
-    limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 5 },
+    limits: { fileSize: 10 * 1024 * 1024, files: 64, fields: 10 },
   });
 
   // ─── GET /knowledge?assistantId=<id> ──────────────────────────────────────
@@ -189,32 +189,45 @@ module.exports = async function knowledgeRoutes(fastify) {
     });
   });
 
-  // ─── POST /knowledge/upload (file: txt / pdf) ──────────────────────────────
+  /**
+   * Multipart file field names: single legacy `file`, or multiple `files` / `files[]`.
+   * @param {string} fieldname
+   * @returns {boolean}
+   */
+  function isKnowledgeUploadFileField(fieldname) {
+    const n = String(fieldname || "");
+    return n === "file" || n === "files" || n === "files[]" || n === "file[]";
+  }
+
+  // ─── POST /knowledge/upload (one or many files: txt / pdf) ─────────────────
   fastify.post("/knowledge/upload", { preHandler: authMiddleware }, async (request, reply) => {
     let assistantId = null;
-    let fileInfo = null;
+    /** @type {{ buffer: Buffer; filename: string; mimetype: string }[]} */
+    const fileInfos = [];
 
     const parts = request.parts();
     for await (const part of parts) {
       if (part.type === "field") {
-        if (part.fieldname === "assistantId") assistantId = String(part.value).trim();
-      } else {
-        // file part — read the stream into a buffer
+        if (part.fieldname === "assistantId") assistantId = String(part.value ?? "").trim();
+      } else if (isKnowledgeUploadFileField(part.fieldname)) {
         const chunks = [];
         for await (const chunk of part.file) chunks.push(chunk);
-        fileInfo = {
-          buffer: Buffer.concat(chunks),
-          filename: part.filename || "upload.txt",
-          mimetype: part.mimetype || "text/plain",
-        };
+        const buffer = Buffer.concat(chunks);
+        if (buffer.length > 0) {
+          fileInfos.push({
+            buffer,
+            filename: part.filename || "upload.txt",
+            mimetype: part.mimetype || "text/plain",
+          });
+        }
       }
     }
 
     if (!assistantId) {
       return reply.code(400).send({ error: "assistantId form field required" });
     }
-    if (!fileInfo || fileInfo.buffer.length === 0) {
-      return reply.code(400).send({ error: "file required" });
+    if (fileInfos.length === 0) {
+      return reply.code(400).send({ error: "At least one file is required (files[] or file)" });
     }
 
     const assistant = await prisma.assistant.findFirst({
@@ -226,39 +239,55 @@ module.exports = async function knowledgeRoutes(fastify) {
     });
     if (!assistant) return reply.code(404).send({ error: "Assistant not found" });
 
-    let text;
-    try {
-      text = await extractText(fileInfo.buffer, fileInfo.mimetype, fileInfo.filename);
-    } catch (err) {
-      return reply.code(422).send({ error: `Text extraction failed: ${err.message}` });
+    /** @type {object[]} */
+    const items = [];
+    /** @type {{ sourceName: string; error: string }[]} */
+    const errors = [];
+
+    for (const fileInfo of fileInfos) {
+      const sourceName = fileInfo.filename;
+      let text;
+      try {
+        text = await extractText(fileInfo.buffer, fileInfo.mimetype, fileInfo.filename);
+      } catch (err) {
+        errors.push({ sourceName, error: `Text extraction failed: ${err.message}` });
+        continue;
+      }
+
+      if (!text || text.trim().length < 10) {
+        errors.push({ sourceName, error: "Extracted text is too short or empty" });
+        continue;
+      }
+
+      const row = await prisma.knowledge.create({
+        data: {
+          organizationId: request.organizationId,
+          assistantId: assistant.id,
+          type: "file",
+          sourceName,
+          status: "processing",
+          content: text,
+        },
+      });
+
+      await enqueueOrIngest(fastify, row, assistant.id);
+      items.push({
+        id: row.id,
+        assistantId: row.assistantId,
+        type: row.type,
+        sourceName,
+        status: row.status,
+        contentPreview: text.slice(0, 300),
+        chunkCount: 0,
+        createdAt: row.createdAt,
+      });
     }
 
-    if (!text || text.trim().length < 10) {
-      return reply.code(422).send({ error: "Extracted text is too short or empty" });
+    if (items.length === 0) {
+      return reply.code(422).send({ items: [], errors });
     }
 
-    const row = await prisma.knowledge.create({
-      data: {
-        organizationId: request.organizationId,
-        assistantId: assistant.id,
-        type: "file",
-        sourceName: fileInfo.filename,
-        status: "processing",
-        content: text,
-      },
-    });
-
-    await enqueueOrIngest(fastify, row, assistant.id);
-    return reply.code(202).send({
-      id: row.id,
-      assistantId: row.assistantId,
-      type: row.type,
-      sourceName: fileInfo.filename,
-      status: "processing",
-      contentPreview: text.slice(0, 300),
-      chunkCount: 0,
-      createdAt: row.createdAt,
-    });
+    return reply.code(202).send({ items, errors });
   });
 
   // ─── POST /knowledge/url ──────────────────────────────────────────────────

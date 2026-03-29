@@ -7,6 +7,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAssistants, usePatchAssistant } from "../api/assistants";
 import { useAgents, useCreateAgent, usePatchAgent } from "../api/agents";
@@ -16,9 +17,10 @@ import {
   useAddKnowledgeUrl,
   useDeleteKnowledge,
   useKnowledgeList,
-  uploadKnowledgeFile,
+  uploadKnowledgeFiles,
   type KnowledgeItem,
 } from "../api/knowledge";
+import { queryKeys } from "../queryKeys";
 import { useModels } from "../api/models";
 import { useUsage } from "../api/usage";
 import { useAuthStore } from "../stores/authStore";
@@ -372,7 +374,7 @@ type KInputTab = "text" | "file" | "url";
 
 const K_TABS: { id: KInputTab; label: string }[] = [
   { id: "text", label: "📝 Текст" },
-  { id: "file", label: "📄 Файл" },
+  { id: "file", label: "📄 Файлы" },
   { id: "url", label: "🌐 Ссылка" },
 ];
 
@@ -390,7 +392,14 @@ function StatusBadge({ status }: { status: KnowledgeItem["status"] }) {
   );
 }
 
+type UploadFileRow = {
+  name: string;
+  status: "uploading" | "done" | "error";
+  error?: string;
+};
+
 function KnowledgeSection({ assistant }: { assistant: Assistant }) {
+  const queryClient = useQueryClient();
   const accessToken = useAuthStore((s) => s.accessToken);
   const [inputTab, setInputTab] = useState<KInputTab>("text");
 
@@ -398,11 +407,12 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
   const [text, setText] = useState("");
   const addText = useAddKnowledge();
 
-  // File
+  // File (multi)
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
   const [uploadDone, setUploadDone] = useState(false);
+  const [uploadRows, setUploadRows] = useState<UploadFileRow[]>([]);
 
   // URL
   const [urlInput, setUrlInput] = useState("");
@@ -424,19 +434,54 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
   }
 
   async function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const list = e.target.files;
+    if (!list?.length) return;
+    const files = Array.from(list);
     setUploadErr(null);
     setUploadDone(false);
     setUploading(true);
+    setUploadRows(files.map((f) => ({ name: f.name, status: "uploading" as const })));
     try {
-      await uploadKnowledgeFile(assistant.id, file, accessToken);
-      setUploadDone(true);
-      if (fileRef.current) fileRef.current.value = "";
+      const { items, errors } = await uploadKnowledgeFiles(assistant.id, files, accessToken);
+      const errByName = new Map(errors.map((x) => [x.sourceName, x.error]));
+      const okNames = new Set(
+        items.map((it) => it.sourceName).filter((n): n is string => Boolean(n))
+      );
+      setUploadRows(
+        files.map((f) => {
+          const err = errByName.get(f.name);
+          if (err) return { name: f.name, status: "error" as const, error: err };
+          if (okNames.has(f.name)) return { name: f.name, status: "done" as const };
+          return {
+            name: f.name,
+            status: "error" as const,
+            error: "Не обработано",
+          };
+        })
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.knowledge.byAssistant(assistant.id),
+      });
+      if (items.length > 0) setUploadDone(true);
+      if (errors.length > 0) {
+        setUploadErr(
+          errors.length === files.length
+            ? errors.map((x) => `${x.sourceName}: ${x.error}`).join(" · ")
+            : `Часть файлов с ошибкой: ${errors.map((x) => `${x.sourceName}: ${x.error}`).join(" · ")}`
+        );
+      }
     } catch (err) {
+      setUploadRows(
+        files.map((f) => ({
+          name: f.name,
+          status: "error" as const,
+          error: err instanceof Error ? err.message : "Ошибка загрузки",
+        }))
+      );
       setUploadErr(err instanceof Error ? err.message : "Ошибка загрузки");
     } finally {
       setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
     }
   }
 
@@ -509,12 +554,13 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
           {inputTab === "file" && (
             <div className="space-y-3">
               <p className="text-xs text-neutral-500">
-                Поддерживаемые форматы: <strong>.txt</strong>, <strong>.pdf</strong> (до 10 MB)
+                Можно выбрать <strong>несколько файлов</strong> сразу (до 64, по 10 MB каждый).
+                Форматы: <strong>.txt</strong>, <strong>.pdf</strong>.
               </p>
               <label
                 htmlFor="knowledge-file"
                 className={cn(
-                  "flex cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-dashed border-neutral-200 p-6 transition-colors",
+                  "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-neutral-200 p-6 transition-colors",
                   uploading ? "opacity-60 cursor-not-allowed" : "hover:border-neutral-400 hover:bg-neutral-50"
                 )}
               >
@@ -523,21 +569,58 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
                   <path d="M3 15h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="text-neutral-400"/>
                 </svg>
                 <span className="text-sm text-neutral-500">
-                  {uploading ? "Загрузка…" : "Выбрать файл (кликните)"}
+                  {uploading ? "Отправка на сервер…" : "Выбрать файлы (кликните)"}
                 </span>
               </label>
               <input
                 ref={fileRef}
                 id="knowledge-file"
                 type="file"
+                multiple
                 accept=".txt,.pdf,text/plain,application/pdf"
                 onChange={(e) => void handleFileChange(e)}
                 className="hidden"
                 disabled={uploading}
               />
+              {uploading && uploadRows.length > 0 && (
+                <div className="space-y-1 rounded-md border border-neutral-200 bg-neutral-50 p-3">
+                  <div className="mb-2 h-1.5 w-full overflow-hidden rounded-full bg-neutral-200">
+                    <div className="h-full w-full animate-pulse rounded-full bg-neutral-400" />
+                  </div>
+                  <p className="text-xs font-medium text-neutral-600">
+                    Загрузка {uploadRows.length} файл(ов)…
+                  </p>
+                </div>
+              )}
+              {!uploading && uploadRows.length > 0 && (
+                <ul className="max-h-48 space-y-1.5 overflow-y-auto rounded-md border border-neutral-200 p-3 text-sm">
+                  {uploadRows.map((row, idx) => (
+                    <li
+                      key={`${idx}-${row.name}`}
+                      className="flex items-start justify-between gap-2 border-b border-neutral-100 pb-1.5 last:border-0 last:pb-0"
+                    >
+                      <span className="min-w-0 truncate text-neutral-800" title={row.name}>
+                        {row.name}
+                      </span>
+                      <span className="shrink-0 text-xs text-right max-w-[55%]">
+                        {row.status === "done" && (
+                          <span className="text-green-600">в очереди</span>
+                        )}
+                        {row.status === "error" && (
+                          <span className="text-red-600 line-clamp-2" title={row.error}>
+                            {row.error ?? "ошибка"}
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
               {uploadErr && <p className="text-sm text-red-600">{uploadErr}</p>}
-              {uploadDone && (
-                <p className="text-sm text-green-600">✓ Файл загружен, идёт обработка…</p>
+              {uploadDone && !uploading && (
+                <p className="text-sm text-green-600">
+                  ✓ Файлы приняты, идёт обработка в фоне. Статус обновится в списке ниже.
+                </p>
               )}
             </div>
           )}

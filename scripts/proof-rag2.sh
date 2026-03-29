@@ -69,7 +69,7 @@ FILE_RESP=$(curl -s -X POST "$API/knowledge/upload" \
   -F "assistantId=$ASST_ID" \
   -F "file=@/tmp/tkn.txt;type=text/plain")
 echo "$FILE_RESP" | python3 -m json.tool 2>/dev/null || echo "$FILE_RESP"
-FILE_ID=$(echo "$FILE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null)
+FILE_ID=$(echo "$FILE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('items') or [{}])[0].get('id') or d.get('id',''))" 2>/dev/null)
 
 echo ""
 echo "===== Wait 5s for ingest ====="
