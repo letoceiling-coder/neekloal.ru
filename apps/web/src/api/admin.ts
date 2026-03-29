@@ -114,6 +114,16 @@ export type PlanPatch = {
   allowedModels?: unknown;
 };
 
+export type PlanCreateBody = {
+  slug: string;
+  name: string;
+  maxRequestsPerMonth?: number | null;
+  maxTokensPerMonth?: number | null;
+  allowedModels: unknown;
+};
+
+export type AdminDeleteOk = { ok: boolean };
+
 export async function getOrganizations(): Promise<AdminOrganization[]> {
   return apiClient.get<AdminOrganization[]>("/admin/organizations");
 }
@@ -125,6 +135,10 @@ export async function updateOrganization(
   return apiClient.patch<AdminOrganization>(`/admin/organizations/${id}`, body);
 }
 
+export async function deleteOrganization(id: string): Promise<AdminDeleteOk> {
+  return apiClient.delete<AdminDeleteOk>(`/admin/organizations/${id}`);
+}
+
 export async function getUsers(): Promise<AdminUserRow[]> {
   return apiClient.get<AdminUserRow[]>("/admin/users");
 }
@@ -133,12 +147,24 @@ export async function updateUser(id: string, body: UserPatch): Promise<AdminUser
   return apiClient.patch<AdminUserRow>(`/admin/users/${id}`, body);
 }
 
+export async function deleteUser(id: string): Promise<AdminDeleteOk> {
+  return apiClient.delete<AdminDeleteOk>(`/admin/users/${id}`);
+}
+
 export async function getPlans(): Promise<AdminPlan[]> {
   return apiClient.get<AdminPlan[]>("/admin/plans");
 }
 
 export async function updatePlan(id: string, body: PlanPatch): Promise<AdminPlan> {
   return apiClient.patch<AdminPlan>(`/admin/plans/${id}`, body);
+}
+
+export async function createPlan(body: PlanCreateBody): Promise<AdminPlan> {
+  return apiClient.post<AdminPlan>("/admin/plans", body);
+}
+
+export async function deletePlan(id: string): Promise<AdminDeleteOk> {
+  return apiClient.delete<AdminDeleteOk>(`/admin/plans/${id}`);
 }
 
 export type AdminUsageFilters = {
@@ -190,6 +216,16 @@ export function useAdminUpdateOrganization() {
   });
 }
 
+export function useAdminDeleteOrganization() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteOrganization(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.organizations });
+    },
+  });
+}
+
 export function useAdminUsers() {
   const accessToken = useAuthStore((s) => s.accessToken);
   return useQuery({
@@ -209,6 +245,16 @@ export function useAdminUpdateUser() {
   });
 }
 
+export function useAdminDeleteUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteUser(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.users });
+    },
+  });
+}
+
 export function useAdminPlans() {
   const accessToken = useAuthStore((s) => s.accessToken);
   return useQuery({
@@ -222,6 +268,28 @@ export function useAdminUpdatePlan() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: PlanPatch }) => updatePlan(id, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.plans });
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.organizations });
+    },
+  });
+}
+
+export function useAdminCreatePlan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PlanCreateBody) => createPlan(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.plans });
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.organizations });
+    },
+  });
+}
+
+export function useAdminDeletePlan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deletePlan(id),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: queryKeys.admin.plans });
       void qc.invalidateQueries({ queryKey: queryKeys.admin.organizations });

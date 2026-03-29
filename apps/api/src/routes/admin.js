@@ -91,7 +91,9 @@ module.exports = async function adminRoutes(fastify) {
     if (body.name != null) data.name = String(body.name).trim();
     if (body.planId != null) {
       const planId = String(body.planId).trim();
-      const plan = await prisma.plan.findUnique({ where: { id: planId } });
+      const plan = await prisma.plan.findFirst({
+        where: { id: planId, deletedAt: null },
+      });
       if (!plan) {
         return reply.code(400).send({ error: "Plan not found" });
       }
@@ -141,6 +143,46 @@ module.exports = async function adminRoutes(fastify) {
       });
       return org;
     });
+  });
+
+  fastify.delete("/organizations/:id", { preHandler: preRoot }, async (request, reply) => {
+    const adminId = request.userId;
+    if (!adminId) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const id = String(request.params.id || "").trim();
+    if (!id) {
+      return reply.code(400).send({ error: "id is required" });
+    }
+    const org = await prisma.organization.findFirst({
+      where: { id, deletedAt: null },
+    });
+    if (!org) {
+      return reply.code(404).send({ error: "Organization not found" });
+    }
+    const memberCount = await prisma.membership.count({
+      where: { organizationId: id, deletedAt: null },
+    });
+    if (memberCount > 0) {
+      return reply
+        .code(409)
+        .send({ error: "Cannot delete organization with active members" });
+    }
+    const before = orgSnapshot(org);
+    await prisma.$transaction(async (tx) => {
+      await tx.organization.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      });
+      await appendAdminAudit(tx, {
+        adminId,
+        action: "organization.delete",
+        entity: "organization",
+        entityId: id,
+        payload: { before, soft: true },
+      });
+    });
+    return reply.code(200).send({ ok: true });
   });
 
   fastify.get("/users", { preHandler: preRoot }, async () => {
@@ -240,10 +282,144 @@ module.exports = async function adminRoutes(fastify) {
     }
   });
 
+  fastify.delete("/users/:id", { preHandler: preRoot }, async (request, reply) => {
+    const adminId = request.userId;
+    if (!adminId) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const id = String(request.params.id || "").trim();
+    if (!id) {
+      return reply.code(400).send({ error: "id is required" });
+    }
+    if (id === adminId) {
+      return reply.code(403).send({ error: "Cannot delete your own account" });
+    }
+    const user = await prisma.user.findFirst({
+      where: { id, deletedAt: null },
+    });
+    if (!user) {
+      return reply.code(404).send({ error: "User not found" });
+    }
+    if (user.role === "root") {
+      return reply.code(403).send({ error: "Cannot delete root user" });
+    }
+    const before = { email: user.email, role: user.role };
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      });
+      await appendAdminAudit(tx, {
+        adminId,
+        action: "user.delete",
+        entity: "user",
+        entityId: id,
+        payload: { before, soft: true },
+      });
+    });
+    return reply.code(200).send({ ok: true });
+  });
+
   fastify.get("/plans", { preHandler: preRoot }, async () => {
     return prisma.plan.findMany({
+      where: { deletedAt: null },
       orderBy: { slug: "asc" },
     });
+  });
+
+  /**
+   * @param {string} raw
+   * @returns {{ ok: true, value: string } | { ok: false, error: string }}
+   */
+  function validatePlanSlug(raw) {
+    const s = String(raw ?? "")
+      .trim()
+      .toLowerCase();
+    if (!s || s.length > 64) {
+      return { ok: false, error: "Invalid slug" };
+    }
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(s)) {
+      return {
+        ok: false,
+        error: "Slug must be lowercase letters, digits and single hyphens",
+      };
+    }
+    return { ok: true, value: s };
+  }
+
+  fastify.post("/plans", { preHandler: preRoot }, async (request, reply) => {
+    const adminId = request.userId;
+    if (!adminId) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const body = isPlainObject(request.body) ? request.body : {};
+    const slugRes = validatePlanSlug(body.slug);
+    if (!slugRes.ok) {
+      return reply.code(400).send({ error: slugRes.error });
+    }
+    const name = String(body.name ?? "").trim();
+    if (!name) {
+      return reply.code(400).send({ error: "name is required" });
+    }
+    const vm = validateAllowedModelsInput(body.allowedModels);
+    if (!vm.ok) {
+      return reply.code(400).send({ error: vm.error });
+    }
+    if (Array.isArray(vm.value) && vm.value.length === 0) {
+      return reply
+        .code(400)
+        .send({
+          error: 'allowedModels must be "*" or a non-empty string array',
+        });
+    }
+    let maxRequestsPerMonth = null;
+    if (body.maxRequestsPerMonth !== undefined && body.maxRequestsPerMonth !== null) {
+      const n = Math.floor(Number(body.maxRequestsPerMonth));
+      if (!Number.isFinite(n) || n < 0) {
+        return reply.code(400).send({ error: "Invalid maxRequestsPerMonth" });
+      }
+      maxRequestsPerMonth = n;
+    }
+    let maxTokensPerMonth = null;
+    if (body.maxTokensPerMonth !== undefined && body.maxTokensPerMonth !== null) {
+      const n = Math.floor(Number(body.maxTokensPerMonth));
+      if (!Number.isFinite(n) || n < 0) {
+        return reply.code(400).send({ error: "Invalid maxTokensPerMonth" });
+      }
+      maxTokensPerMonth = n;
+    }
+    const dup = await prisma.plan.findFirst({
+      where: { slug: slugRes.value, deletedAt: null },
+    });
+    if (dup) {
+      return reply.code(409).send({ error: "Plan slug already exists" });
+    }
+    try {
+      return await prisma.$transaction(async (tx) => {
+        const plan = await tx.plan.create({
+          data: {
+            slug: slugRes.value,
+            name,
+            maxRequestsPerMonth,
+            maxTokensPerMonth,
+            allowedModels: vm.value,
+          },
+        });
+        await appendAdminAudit(tx, {
+          adminId,
+          action: "plan.create",
+          entity: "plan",
+          entityId: plan.id,
+          payload: { after: planSnapshot(plan) },
+        });
+        return plan;
+      });
+    } catch (err) {
+      if (err && err.code === "P2002") {
+        return reply.code(409).send({ error: "Plan slug already exists" });
+      }
+      throw err;
+    }
   });
 
   fastify.patch("/plans/:id", { preHandler: preRoot }, async (request, reply) => {
@@ -295,7 +471,9 @@ module.exports = async function adminRoutes(fastify) {
       return reply.code(400).send({ error: "No valid fields to update" });
     }
 
-    const existingPlan = await prisma.plan.findUnique({ where: { id } });
+    const existingPlan = await prisma.plan.findFirst({
+      where: { id, deletedAt: null },
+    });
     if (!existingPlan) {
       return reply.code(404).send({ error: "Plan not found" });
     }
@@ -320,6 +498,49 @@ module.exports = async function adminRoutes(fastify) {
     } catch {
       return reply.code(404).send({ error: "Plan not found" });
     }
+  });
+
+  fastify.delete("/plans/:id", { preHandler: preRoot }, async (request, reply) => {
+    const adminId = request.userId;
+    if (!adminId) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const id = String(request.params.id || "").trim();
+    if (!id) {
+      return reply.code(400).send({ error: "id is required" });
+    }
+    const plan = await prisma.plan.findFirst({
+      where: { id, deletedAt: null },
+    });
+    if (!plan) {
+      return reply.code(404).send({ error: "Plan not found" });
+    }
+    const orgCount = await prisma.organization.count({
+      where: { planId: id, deletedAt: null },
+    });
+    if (orgCount > 0) {
+      return reply
+        .code(409)
+        .send({
+          error:
+            "Cannot delete plan: reassign or remove organizations using this plan first",
+        });
+    }
+    const before = planSnapshot(plan);
+    await prisma.$transaction(async (tx) => {
+      await tx.plan.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      });
+      await appendAdminAudit(tx, {
+        adminId,
+        action: "plan.delete",
+        entity: "plan",
+        entityId: id,
+        payload: { before, soft: true },
+      });
+    });
+    return reply.code(200).send({ ok: true });
   });
 
   fastify.get("/usage", { preHandler: preRoot }, async (request) => {

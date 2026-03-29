@@ -84,17 +84,19 @@ model AdminAuditLog {
 }
 
 model Plan {
-  id                  String   @id @default(uuid()) @db.Uuid
-  slug                String   @unique
+  id                  String    @id @default(uuid()) @db.Uuid
+  slug                String
   name                String
-  maxRequestsPerMonth Int?     @map("max_requests_per_month")
-  maxTokensPerMonth   Int?     @map("max_tokens_per_month")
-  allowedModels       Json     @map("allowed_models")
-  createdAt           DateTime @default(now()) @map("created_at")
-  updatedAt           DateTime @updatedAt @map("updated_at")
+  maxRequestsPerMonth Int?      @map("max_requests_per_month")
+  maxTokensPerMonth   Int?      @map("max_tokens_per_month")
+  allowedModels       Json      @map("allowed_models")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+  deletedAt           DateTime? @map("deleted_at")
 
   organizations Organization[]
 
+  @@index([slug])
   @@map("plans")
 }
 

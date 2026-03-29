@@ -1,5 +1,11 @@
 import { useMemo, useState } from "react";
-import { type AdminUserRow, useAdminUpdateUser, useAdminUsers } from "../../api/admin";
+import {
+  type AdminUserRow,
+  useAdminDeleteUser,
+  useAdminUpdateUser,
+  useAdminUsers,
+} from "../../api/admin";
+import { AdminConfirmDialog } from "../../components/admin/AdminConfirmDialog";
 import { useAdminForbiddenRedirect } from "../../hooks/useAdminForbiddenRedirect";
 import { useDebounce } from "../../hooks/useDebounce";
 import { useFlashMessage } from "../../hooks/useFlashMessage";
@@ -28,6 +34,9 @@ export function AdminUsersPage() {
   const myUserId = useAuthStore((s) => s.userId);
   const { data: users, isLoading, error, refetch, isFetching } = useAdminUsers();
   const updateUser = useAdminUpdateUser();
+  const deleteUser = useAdminDeleteUser();
+  const [deleteTarget, setDeleteTarget] = useState<AdminUserRow | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
   const [roleDraft, setRoleDraft] = useState<Record<string, AdminUserRow["role"]>>({});
   const [searchRaw, setSearchRaw] = useState("");
   const debouncedSearch = useDebounce(searchRaw, 300);
@@ -94,43 +103,64 @@ export function AdminUsersPage() {
         header: "",
         cell: (u) => {
           const isSelf = u.id === myUserId;
+          const isRoot = u.role === "root";
           const next = roleDraft[u.id] ?? u.role;
           const changed = next !== u.role;
           const rowBusy = updateUser.isPending && updateUser.variables?.id === u.id;
+          const rowDeleteBusy = deleteUser.isPending && deleteUser.variables === u.id;
+          const cantDelete = isSelf || isRoot;
           return (
-            <Button
-              className="min-h-0 px-2 py-1 text-xs"
-              variant="secondary"
-              disabled={!changed || rowBusy || tableBusy || isSelf}
-              title={isSelf ? "Нельзя изменить свою роль" : undefined}
-              loading={rowBusy}
-              onClick={async () => {
-                try {
-                  await updateUser.mutateAsync({
-                    id: u.id,
-                    body: { role: next },
-                  });
-                  setRoleDraft((d) => {
-                    const copy = { ...d };
-                    delete copy[u.id];
-                    return copy;
-                  });
-                  show("Сохранено");
-                } catch (err) {
-                  onForbidden(err);
-                  if (err instanceof ApiError && err.status !== 403) {
-                    console.error(err);
+            <div className="flex flex-col gap-2">
+              <Button
+                className="min-h-0 px-2 py-1 text-xs"
+                variant="secondary"
+                disabled={!changed || rowBusy || tableBusy || isSelf}
+                title={isSelf ? "Нельзя изменить свою роль" : undefined}
+                loading={rowBusy}
+                onClick={async () => {
+                  try {
+                    await updateUser.mutateAsync({
+                      id: u.id,
+                      body: { role: next },
+                    });
+                    setRoleDraft((d) => {
+                      const copy = { ...d };
+                      delete copy[u.id];
+                      return copy;
+                    });
+                    show("Сохранено");
+                  } catch (err) {
+                    onForbidden(err);
+                    if (err instanceof ApiError && err.status !== 403) {
+                      show(err.message);
+                    }
                   }
+                }}
+              >
+                Сохранить роль
+              </Button>
+              <Button
+                className="min-h-0 border-red-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+                variant="secondary"
+                disabled={cantDelete || tableBusy || rowDeleteBusy}
+                title={
+                  isSelf
+                    ? "Нельзя удалить свою учётную запись"
+                    : isRoot
+                      ? "Нельзя удалить пользователя root"
+                      : undefined
                 }
-              }}
-            >
-              Сохранить
-            </Button>
+                loading={rowDeleteBusy}
+                onClick={() => setDeleteTarget(u)}
+              >
+                Удалить
+              </Button>
+            </div>
           );
         },
       },
     ],
-    [roleDraft, updateUser, onForbidden, show, myUserId, tableBusy]
+    [roleDraft, updateUser, deleteUser, onForbidden, show, myUserId, tableBusy]
   );
 
   const listEmpty = !isLoading && (users?.length ?? 0) === 0;
@@ -140,7 +170,7 @@ export function AdminUsersPage() {
   return (
     <Page
       title="Пользователи"
-      description="Роли platform (user / admin / root). Удаление и отключение учётных записей в API админки не реализованы — только смена роли."
+      description="Роли platform (user / admin / root). Удаление — soft delete; себя и root удалить нельзя."
     >
       <div className="space-y-4">
         {banner}
@@ -213,6 +243,36 @@ export function AdminUsersPage() {
             />
           </div>
         )}
+
+        <AdminConfirmDialog
+          open={deleteTarget != null}
+          title="Удалить пользователя?"
+          description={
+            deleteTarget
+              ? `Учётная запись ${deleteTarget.email} будет деактивирована (soft delete).`
+              : undefined
+          }
+          confirmLabel="Удалить"
+          destructive
+          pending={deletePending}
+          onClose={() => !deletePending && setDeleteTarget(null)}
+          onConfirm={async () => {
+            if (!deleteTarget) return;
+            setDeletePending(true);
+            try {
+              await deleteUser.mutateAsync(deleteTarget.id);
+              show("Пользователь удалён");
+              setDeleteTarget(null);
+            } catch (err) {
+              onForbidden(err);
+              if (err instanceof ApiError && err.status !== 403) {
+                show(err.message);
+              }
+            } finally {
+              setDeletePending(false);
+            }
+          }}
+        />
       </div>
     </Page>
   );

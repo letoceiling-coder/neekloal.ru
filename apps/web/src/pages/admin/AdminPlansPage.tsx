@@ -1,12 +1,15 @@
 import { useMemo, useState } from "react";
-import { type AdminPlan, useAdminPlans, useAdminUpdatePlan } from "../../api/admin";
-import { useModels } from "../../api/models";
 import {
-  AllowedModelsEditor,
-  type AllowedModelsValue,
-  normalizeFromPlan,
-  orphanModelsFromPlan,
-} from "../../components/admin/AllowedModelsEditor";
+  type AdminPlan,
+  useAdminCreatePlan,
+  useAdminDeletePlan,
+  useAdminPlans,
+  useAdminUpdatePlan,
+} from "../../api/admin";
+import { useModels } from "../../api/models";
+import { AdminConfirmDialog } from "../../components/admin/AdminConfirmDialog";
+import { PlanEditorDialog } from "../../components/admin/PlanEditorDialog";
+import { orphanModelsFromPlan } from "../../components/admin/AllowedModelsEditor";
 import { useAdminForbiddenRedirect } from "../../hooks/useAdminForbiddenRedirect";
 import { useFlashMessage } from "../../hooks/useFlashMessage";
 import { ApiError } from "../../lib/apiClient";
@@ -15,33 +18,17 @@ import {
   DataTable,
   type DataTableColumn,
   ErrorState,
-  Input,
   Page,
 } from "../../components/ui";
 
-type Draft = {
-  name: string;
-  maxReq: string;
-  maxTok: string;
-  models: AllowedModelsValue;
-};
-
-function planToDraft(p: AdminPlan): Draft {
-  return {
-    name: p.name,
-    maxReq: p.maxRequestsPerMonth == null ? "" : String(p.maxRequestsPerMonth),
-    maxTok: p.maxTokensPerMonth == null ? "" : String(p.maxTokensPerMonth),
-    models: normalizeFromPlan(p.allowedModels),
-  };
-}
-
-function modelsEqual(a: AllowedModelsValue, b: AllowedModelsValue): boolean {
-  if (a === "*" && b === "*") return true;
-  if (a === "*" || b === "*") return false;
-  if (a.length !== b.length) return false;
-  const sa = [...a].sort().join("\0");
-  const sb = [...b].sort().join("\0");
-  return sa === sb;
+function formatModels(allowed: unknown): string {
+  if (allowed === "*" || (typeof allowed === "string" && allowed.trim() === "*")) {
+    return "*";
+  }
+  if (Array.isArray(allowed)) {
+    return (allowed as unknown[]).map(String).join(", ") || "—";
+  }
+  return "—";
 }
 
 export function AdminPlansPage() {
@@ -53,265 +40,133 @@ export function AdminPlansPage() {
     isLoading: catalogLoading,
     isError: catalogError,
   } = useModels();
+
+  const createPlan = useAdminCreatePlan();
   const updatePlan = useAdminUpdatePlan();
-  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
-  const [modelsError, setModelsError] = useState<Record<string, string>>({});
-  const [rowHint, setRowHint] = useState<Record<string, string>>({});
+  const deletePlan = useAdminDeletePlan();
 
-  const getDraft = (p: AdminPlan): Draft => drafts[p.id] ?? planToDraft(p);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
+  const [editingPlan, setEditingPlan] = useState<AdminPlan | null>(null);
+  const [editorSaveError, setEditorSaveError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AdminPlan | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
 
-  const setField = (id: string, p: AdminPlan, field: keyof Draft, value: string | AllowedModelsValue) => {
-    if (field === "models") {
-      setModelsError((e) => {
-        const next = { ...e };
-        delete next[id];
-        return next;
-      });
-    }
-    const base = getDraft(p);
-    setDrafts((d) => ({
-      ...d,
-      [id]: {
-        ...base,
-        [field]: value,
-      } as Draft,
-    }));
-  };
+  const tableBusy =
+    isFetching && !isLoading
+      ? true
+      : createPlan.isPending || updatePlan.isPending || deletePlan.isPending;
 
-  const tableBusy = isFetching && !isLoading;
+  const editorPending = createPlan.isPending || updatePlan.isPending;
+
+  function openCreate() {
+    setEditorMode("create");
+    setEditingPlan(null);
+    setEditorSaveError(null);
+    setEditorOpen(true);
+  }
+
+  function openEdit(p: AdminPlan) {
+    setEditorMode("edit");
+    setEditingPlan(p);
+    setEditorSaveError(null);
+    setEditorOpen(true);
+  }
+
+  function closeEditor() {
+    if (editorPending) return;
+    setEditorOpen(false);
+    setEditingPlan(null);
+    setEditorSaveError(null);
+  }
 
   const columns = useMemo<DataTableColumn<AdminPlan>[]>(
     () => [
       {
         id: "slug",
         header: "Slug",
-        cell: (p) => (
-          <span className="font-mono text-xs text-neutral-500">{p.slug}</span>
-        ),
+        cell: (p) => <span className="font-mono text-xs text-neutral-500">{p.slug}</span>,
       },
       {
         id: "name",
         header: "Название",
-        cell: (p) => {
-          const d = getDraft(p);
-          const rowBusy = updatePlan.isPending && updatePlan.variables?.id === p.id;
-          return (
-            <Input
-              id={`plan-name-${p.id}`}
-              value={d.name}
-              disabled={rowBusy || tableBusy}
-              onChange={(e) => setField(p.id, p, "name", e.target.value)}
-              className="min-w-[140px]"
-            />
-          );
-        },
+        cell: (p) => <span className="font-medium">{p.name}</span>,
       },
       {
         id: "maxReq",
         header: "Запр./мес",
-        cell: (p) => {
-          const d = getDraft(p);
-          const rowBusy = updatePlan.isPending && updatePlan.variables?.id === p.id;
-          return (
-            <input
-              id={`plan-mr-${p.id}`}
-              type="number"
-              min={0}
-              disabled={rowBusy || tableBusy}
-              className="w-24 rounded-md border border-neutral-200 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-60"
-              placeholder="∞"
-              value={d.maxReq}
-              onChange={(e) => setField(p.id, p, "maxReq", e.target.value)}
-            />
-          );
-        },
+        cell: (p) => (p.maxRequestsPerMonth == null ? "∞" : p.maxRequestsPerMonth),
       },
       {
         id: "maxTok",
         header: "Токены/мес",
-        cell: (p) => {
-          const d = getDraft(p);
-          const rowBusy = updatePlan.isPending && updatePlan.variables?.id === p.id;
-          return (
-            <input
-              id={`plan-mt-${p.id}`}
-              type="number"
-              min={0}
-              disabled={rowBusy || tableBusy}
-              className="w-28 rounded-md border border-neutral-200 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-60"
-              placeholder="∞"
-              value={d.maxTok}
-              onChange={(e) => setField(p.id, p, "maxTok", e.target.value)}
-            />
-          );
-        },
+        cell: (p) => (p.maxTokensPerMonth == null ? "∞" : p.maxTokensPerMonth),
       },
       {
         id: "models",
         header: "Модели",
         cell: (p) => {
-          const d = getDraft(p);
-          const rowBusy = updatePlan.isPending && updatePlan.variables?.id === p.id;
-          const err = modelsError[p.id];
           const orphans =
             !catalogLoading && !catalogError
               ? orphanModelsFromPlan(p.allowedModels, modelCatalog)
               : [];
           return (
-            <div className="flex flex-col gap-1">
-              {catalogError ? (
-                <span className="text-xs text-amber-800">
-                  Не удалось загрузить каталог моделей. Обновите страницу.
-                </span>
+            <div className="max-w-[220px]">
+              {orphans.length > 0 ? (
+                <p className="mb-1 text-[10px] text-amber-800">
+                  Не в каталоге: {orphans.join(", ")}
+                </p>
               ) : null}
-              <AllowedModelsEditor
-                planId={p.id}
-                value={d.models}
-                availableModels={modelCatalog}
-                orphanModels={orphans}
-                catalogLoading={catalogLoading}
-                disabled={rowBusy || tableBusy}
-                onChange={(next) => setField(p.id, p, "models", next)}
-              />
-              {err ? (
-                <span className="text-xs text-red-600" role="alert">
-                  {err}
-                </span>
-              ) : null}
+              <span className="line-clamp-2 font-mono text-xs text-neutral-600">
+                {formatModels(p.allowedModels)}
+              </span>
             </div>
           );
         },
       },
       {
-        id: "save",
+        id: "actions",
         header: "",
-        cell: (p) => {
-          const d = getDraft(p);
-          const orig = planToDraft(p);
-          const changed =
-            d.name !== orig.name ||
-            d.maxReq !== orig.maxReq ||
-            d.maxTok !== orig.maxTok ||
-            !modelsEqual(d.models, orig.models);
-          const rowBusy = updatePlan.isPending && updatePlan.variables?.id === p.id;
-          const hint = rowHint[p.id];
-          return (
-            <div className="flex min-w-[100px] flex-col gap-1">
-              <Button
-                className="min-h-0 px-2 py-1 text-xs"
-                variant="secondary"
-                disabled={!changed || rowBusy || tableBusy}
-                loading={rowBusy}
-                onClick={async () => {
-                  setRowHint((h) => {
-                    const next = { ...h };
-                    delete next[p.id];
-                    return next;
-                  });
-                  let allowedModels: unknown;
-                  if (d.models === "*") {
-                    allowedModels = "*";
-                  } else if (d.models.length === 0) {
-                    setModelsError((e) => ({
-                      ...e,
-                      [p.id]: "Выберите модели или «Все модели»",
-                    }));
-                    return;
-                  } else {
-                    allowedModels = d.models;
-                  }
-                  const body: {
-                    name?: string;
-                    maxRequestsPerMonth?: number | null;
-                    maxTokensPerMonth?: number | null;
-                    allowedModels?: unknown;
-                  } = { name: d.name.trim() || p.name };
-                  body.maxRequestsPerMonth =
-                    d.maxReq.trim() === ""
-                      ? null
-                      : Math.max(0, Math.floor(Number(d.maxReq)));
-                  body.maxTokensPerMonth =
-                    d.maxTok.trim() === ""
-                      ? null
-                      : Math.max(0, Math.floor(Number(d.maxTok)));
-                  if (
-                    body.maxRequestsPerMonth != null &&
-                    !Number.isFinite(body.maxRequestsPerMonth)
-                  ) {
-                    setRowHint((h) => ({
-                      ...h,
-                      [p.id]: "Некорректный лимит запросов",
-                    }));
-                    return;
-                  }
-                  if (
-                    body.maxTokensPerMonth != null &&
-                    !Number.isFinite(body.maxTokensPerMonth)
-                  ) {
-                    setRowHint((h) => ({
-                      ...h,
-                      [p.id]: "Некорректный лимит токенов",
-                    }));
-                    return;
-                  }
-                  body.allowedModels = allowedModels;
-                  try {
-                    await updatePlan.mutateAsync({ id: p.id, body });
-                    setDrafts((prev) => {
-                      const next = { ...prev };
-                      delete next[p.id];
-                      return next;
-                    });
-                    setModelsError((e) => {
-                      const next = { ...e };
-                      delete next[p.id];
-                      return next;
-                    });
-                    show("Сохранено");
-                  } catch (err) {
-                    onForbidden(err);
-                    if (err instanceof ApiError && err.status !== 403) {
-                      setRowHint((h) => ({
-                        ...h,
-                        [p.id]: err.message,
-                      }));
-                    }
-                  }
-                }}
-              >
-                Сохранить
-              </Button>
-              {hint ? (
-                <span className="text-xs text-red-600" role="alert">
-                  {hint}
-                </span>
-              ) : null}
-            </div>
-          );
-        },
+        cell: (p) => (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              className="min-h-0 px-2 py-1 text-xs"
+              disabled={tableBusy}
+              onClick={() => openEdit(p)}
+            >
+              Редактировать
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              className="min-h-0 border-red-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+              disabled={tableBusy}
+              onClick={() => setDeleteTarget(p)}
+            >
+              Удалить
+            </Button>
+          </div>
+        ),
       },
     ],
-    [
-      drafts,
-      modelsError,
-      rowHint,
-      updatePlan,
-      onForbidden,
-      show,
-      tableBusy,
-      modelCatalog,
-      catalogLoading,
-      catalogError,
-    ]
+    [catalogLoading, catalogError, modelCatalog, tableBusy]
   );
 
   return (
     <Page
       title="Планы"
-      description="Лимиты и список разрешённых моделей. «Все модели» = *; иначе явный набор — без JSON вручную."
+      description="Создание, редактирование и удаление тарифов. Модели — из каталога API. Удаление плана возможно, если ни одна организация на нём не числится."
     >
       <div className="space-y-4">
         {banner}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Button type="button" onClick={() => openCreate()} disabled={!!error || tableBusy}>
+            Создать план
+          </Button>
+        </div>
+
         {error ? (
           <ErrorState
             message={error instanceof Error ? error.message : "Ошибка загрузки"}
@@ -330,6 +185,102 @@ export function AdminPlansPage() {
             />
           </div>
         )}
+
+        <PlanEditorDialog
+          open={editorOpen}
+          mode={editorMode}
+          plan={editingPlan}
+          modelCatalog={modelCatalog}
+          catalogLoading={catalogLoading}
+          catalogError={catalogError}
+          pending={editorPending}
+          saveError={editorSaveError}
+          onClose={closeEditor}
+          onSave={async (payload) => {
+            setEditorSaveError(null);
+            let allowedModels: unknown;
+            if (payload.models === "*") {
+              allowedModels = "*";
+            } else {
+              allowedModels = payload.models;
+            }
+            const maxRequestsPerMonth =
+              payload.maxReq.trim() === ""
+                ? null
+                : Math.max(0, Math.floor(Number(payload.maxReq)));
+            const maxTokensPerMonth =
+              payload.maxTok.trim() === ""
+                ? null
+                : Math.max(0, Math.floor(Number(payload.maxTok)));
+            if (maxRequestsPerMonth != null && !Number.isFinite(maxRequestsPerMonth)) {
+              setEditorSaveError("Некорректный лимит запросов");
+              return;
+            }
+            if (maxTokensPerMonth != null && !Number.isFinite(maxTokensPerMonth)) {
+              setEditorSaveError("Некорректный лимит токенов");
+              return;
+            }
+            try {
+              if (editorMode === "create") {
+                await createPlan.mutateAsync({
+                  slug: payload.slug.trim().toLowerCase(),
+                  name: payload.name.trim(),
+                  maxRequestsPerMonth,
+                  maxTokensPerMonth,
+                  allowedModels,
+                });
+                show("План создан");
+              } else if (editingPlan) {
+                await updatePlan.mutateAsync({
+                  id: editingPlan.id,
+                  body: {
+                    name: payload.name.trim(),
+                    maxRequestsPerMonth,
+                    maxTokensPerMonth,
+                    allowedModels,
+                  },
+                });
+                show("Сохранено");
+              }
+              closeEditor();
+            } catch (err) {
+              onForbidden(err);
+              if (err instanceof ApiError && err.status !== 403) {
+                setEditorSaveError(err.message);
+              }
+            }
+          }}
+        />
+
+        <AdminConfirmDialog
+          open={deleteTarget != null}
+          title="Удалить план?"
+          description={
+            deleteTarget
+              ? `План «${deleteTarget.name}» (${deleteTarget.slug}) будет скрыт. Организации на этом плане должны быть перенесены заранее.`
+              : undefined
+          }
+          confirmLabel="Удалить"
+          destructive
+          pending={deletePending}
+          onClose={() => !deletePending && setDeleteTarget(null)}
+          onConfirm={async () => {
+            if (!deleteTarget) return;
+            setDeletePending(true);
+            try {
+              await deletePlan.mutateAsync(deleteTarget.id);
+              show("План удалён");
+              setDeleteTarget(null);
+            } catch (err) {
+              onForbidden(err);
+              if (err instanceof ApiError && err.status !== 403) {
+                show(err.message);
+              }
+            } finally {
+              setDeletePending(false);
+            }
+          }}
+        />
       </div>
     </Page>
   );

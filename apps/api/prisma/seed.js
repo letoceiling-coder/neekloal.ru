@@ -30,16 +30,22 @@ const PLANS = [
 
 async function main() {
   for (const p of PLANS) {
-    await prisma.plan.upsert({
-      where: { slug: p.slug },
-      create: p,
-      update: {
-        name: p.name,
-        maxRequestsPerMonth: p.maxRequestsPerMonth,
-        maxTokensPerMonth: p.maxTokensPerMonth,
-        allowedModels: p.allowedModels,
-      },
+    const existing = await prisma.plan.findFirst({
+      where: { slug: p.slug, deletedAt: null },
     });
+    if (!existing) {
+      await prisma.plan.create({ data: p });
+    } else {
+      await prisma.plan.update({
+        where: { id: existing.id },
+        data: {
+          name: p.name,
+          maxRequestsPerMonth: p.maxRequestsPerMonth,
+          maxTokensPerMonth: p.maxTokensPerMonth,
+          allowedModels: p.allowedModels,
+        },
+      });
+    }
   }
 }
 

@@ -50,7 +50,9 @@ function isModelAllowed(allowedModels, modelName) {
  * @returns {Promise<import('@prisma/client').Plan>}
  */
 async function ensureFreePlan(tx) {
-  const existing = await tx.plan.findUnique({ where: { slug: "free" } });
+  const existing = await tx.plan.findFirst({
+    where: { slug: "free", deletedAt: null },
+  });
   if (existing) return existing;
   try {
     return await tx.plan.create({
@@ -64,7 +66,9 @@ async function ensureFreePlan(tx) {
     });
   } catch (err) {
     if (err && err.code === "P2002") {
-      const again = await tx.plan.findUnique({ where: { slug: "free" } });
+      const again = await tx.plan.findFirst({
+        where: { slug: "free", deletedAt: null },
+      });
       if (again) return again;
     }
     throw err;

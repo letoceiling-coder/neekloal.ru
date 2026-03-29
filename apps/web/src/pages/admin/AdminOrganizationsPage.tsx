@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   type AdminOrganization,
+  useAdminDeleteOrganization,
   useAdminOrganizations,
   useAdminPlans,
   useAdminUpdateOrganization,
@@ -31,6 +32,7 @@ export function AdminOrganizationsPage() {
   const { data: orgs, isLoading, error, refetch, isFetching } = useAdminOrganizations();
   const { data: plans } = useAdminPlans();
   const updateOrg = useAdminUpdateOrganization();
+  const deleteOrg = useAdminDeleteOrganization();
   const [planDraft, setPlanDraft] = useState<Record<string, string>>({});
   const [searchRaw, setSearchRaw] = useState("");
   const debouncedSearch = useDebounce(searchRaw, 300);
@@ -38,6 +40,8 @@ export function AdminOrganizationsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [blockDialog, setBlockDialog] = useState<AdminOrganization | null>(null);
   const [blockPending, setBlockPending] = useState(false);
+  const [deleteDialog, setDeleteDialog] = useState<AdminOrganization | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
 
   const filteredOrgs = useMemo(() => {
     let list = orgs ?? [];
@@ -117,6 +121,7 @@ export function AdminOrganizationsPage() {
             rowBusy && updateOrg.variables?.body?.isBlocked !== undefined;
           const planLoading =
             rowBusy && updateOrg.variables?.body?.planId !== undefined;
+          const deleteLoading = deleteOrg.isPending && deleteOrg.variables === o.id;
 
           return (
             <div className="flex flex-wrap items-center gap-2">
@@ -128,6 +133,15 @@ export function AdminOrganizationsPage() {
                 onClick={() => setBlockDialog(o)}
               >
                 {o.isBlocked ? "Разблокировать" : "Заблокировать"}
+              </Button>
+              <Button
+                variant="secondary"
+                className="min-h-0 border-red-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+                disabled={rowBusy || tableBusy || deleteLoading}
+                loading={deleteLoading}
+                onClick={() => setDeleteDialog(o)}
+              >
+                Удалить
               </Button>
               {planChanged ? (
                 <Button
@@ -162,7 +176,7 @@ export function AdminOrganizationsPage() {
         },
       },
     ],
-    [plans, planDraft, updateOrg, onForbidden, show, tableBusy]
+    [plans, planDraft, updateOrg, deleteOrg, onForbidden, show, tableBusy]
   );
 
   const listEmpty = !isLoading && (orgs?.length ?? 0) === 0;
@@ -172,7 +186,7 @@ export function AdminOrganizationsPage() {
   return (
     <Page
       title="Организации"
-      description="Поиск, фильтры, планы и блокировка. Удаление записей через API (DELETE) в текущей версии не подключено — используйте блокировку."
+      description="Поиск, фильтры, планы, блокировка и удаление (soft delete). Удаление возможно только если в организации нет участников."
     >
       <div className="space-y-4">
         {banner}
@@ -267,6 +281,36 @@ export function AdminOrganizationsPage() {
             />
           </div>
         )}
+
+        <AdminConfirmDialog
+          open={deleteDialog != null}
+          title="Удалить организацию?"
+          description={
+            deleteDialog
+              ? `«${deleteDialog.name}» будет скрыта (soft delete). Доступно только если нет участников в организации.`
+              : undefined
+          }
+          confirmLabel="Удалить"
+          destructive
+          pending={deletePending}
+          onClose={() => !deletePending && setDeleteDialog(null)}
+          onConfirm={async () => {
+            if (!deleteDialog) return;
+            setDeletePending(true);
+            try {
+              await deleteOrg.mutateAsync(deleteDialog.id);
+              show("Организация удалена");
+              setDeleteDialog(null);
+            } catch (err) {
+              onForbidden(err);
+              if (err instanceof ApiError && err.status !== 403) {
+                show(err.message);
+              }
+            } finally {
+              setDeletePending(false);
+            }
+          }}
+        />
 
         <AdminConfirmDialog
           open={blockDialog != null}
