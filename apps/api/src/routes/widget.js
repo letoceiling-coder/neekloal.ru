@@ -25,7 +25,11 @@ module.exports = async function widgetRoutes(fastify) {
       }
 
       const body = request.body && typeof request.body === "object" ? request.body : {};
-      const assistantId = body.assistantId != null ? String(body.assistantId).trim() : "";
+      // body.assistantId takes priority; fallback to apiKey-bound assistantId
+      const assistantId =
+        body.assistantId != null && String(body.assistantId).trim() !== ""
+          ? String(body.assistantId).trim()
+          : request.assistantId || "";
       if (!assistantId) {
         return reply.code(400).send({ error: "assistantId is required" });
       }

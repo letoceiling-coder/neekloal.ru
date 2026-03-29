@@ -154,6 +154,8 @@ model ApiKey {
   id             String    @id @default(uuid()) @db.Uuid
   organizationId String    @map("organization_id") @db.Uuid
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistantId    String?   @map("assistant_id") @db.Uuid
+  assistant      Assistant? @relation(fields: [assistantId], references: [id], onDelete: SetNull)
   keyHash        String    @unique @map("key_hash")
   name           String?
   createdAt      DateTime  @default(now()) @map("created_at")
@@ -163,6 +165,7 @@ model ApiKey {
   usages Usage[]
 
   @@index([organizationId])
+  @@index([assistantId])
   @@map("api_keys")
 }
 
@@ -185,6 +188,7 @@ model Assistant {
   knowledges    Knowledge[]
   conversations Conversation[]
   agents        Agent[]
+  apiKeys       ApiKey[]
   usages        Usage[]
 
   @@index([organizationId])

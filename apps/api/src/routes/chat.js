@@ -192,9 +192,13 @@ module.exports = async function chatRoutes(fastify) {
   }, async (request, reply) => {
     const body = request.body && typeof request.body === "object" ? request.body : {};
     const message = body.message;
-    const assistantId = body.assistantId;
+    // body.assistantId takes priority; fallback to apiKey-bound assistantId from chatAuth
+    const assistantId =
+      body.assistantId != null && String(body.assistantId).trim() !== ""
+        ? String(body.assistantId).trim()
+        : request.assistantId || null;
 
-    if (assistantId == null || String(assistantId).trim() === "") {
+    if (!assistantId) {
       return reply.code(400).send({ error: "assistantId is required" });
     }
 
@@ -204,7 +208,7 @@ module.exports = async function chatRoutes(fastify) {
 
     const assistant = await prisma.assistant.findFirst({
       where: {
-        id: String(assistantId),
+        id: assistantId,
         organizationId: request.organizationId,
         deletedAt: null,
       },
