@@ -207,7 +207,7 @@ function formatToolsBlock(tools) {
  * Full planner prompt length includes rules, tools, knowledge, user, history.
  * @param {object} assistant — Prisma assistant (systemPrompt)
  */
-function buildPlannerPrompt(rules, toolsBlock, kb, userMsg, assistant, historyLines) {
+function buildPlannerPrompt(rules, toolsBlock, kb, userMsg, assistant, historyLines, fsmStage) {
   const historyBlock =
     historyLines.length === 0
       ? "(none yet)"
@@ -232,6 +232,7 @@ OR
     agent: { rules: agentRules },
     appendAfterUser: `PREVIOUS TOOL RESULTS (structured JSON per entry, size-capped):
 ${historyBlock}`,
+    fsmStage,
   });
 }
 
@@ -240,12 +241,12 @@ ${historyBlock}`,
  * Knowledge block is never removed (only PREVIOUS TOOL RESULTS shrink).
  * @returns {{ lines: string[]; truncated: boolean }}
  */
-function trimHistoryForBudget(rules, toolsBlock, kb, userMsg, assistant, toolHistory, maxChars) {
+function trimHistoryForBudget(rules, toolsBlock, kb, userMsg, assistant, toolHistory, maxChars, fsmStage) {
   const lines = [...toolHistory];
   let truncated = false;
 
   function promptLen() {
-    return buildPlannerPrompt(rules, toolsBlock, kb, userMsg, assistant, lines).length;
+    return buildPlannerPrompt(rules, toolsBlock, kb, userMsg, assistant, lines, fsmStage).length;
   }
 
   while (lines.length > 2 && promptLen() > maxChars) {
@@ -265,7 +266,7 @@ function trimHistoryForBudget(rules, toolsBlock, kb, userMsg, assistant, toolHis
   return { lines, truncated };
 }
 
-async function llmFallbackPlain(model, rules, kb, userMsg, assistant, note) {
+async function llmFallbackPlain(model, rules, kb, userMsg, assistant, note, fsmStage) {
   const agentRules = `${SYSTEM_HARD_RULE}
 
 ${rules}
@@ -278,11 +279,12 @@ Answer in plain text only. Do not output JSON.`;
     knowledge: kb,
     message: userMsg,
     agent: { rules: agentRules },
+    fsmStage,
   });
   return ollamaGenerate(model, prompt);
 }
 
-function buildMaxStepsFallbackPrompt(rules, kb, userMsg, assistant) {
+function buildMaxStepsFallbackPrompt(rules, kb, userMsg, assistant, fsmStage) {
   const agentRules = `${SYSTEM_HARD_RULE}
 
 ${rules}
@@ -293,6 +295,7 @@ The agent reached the maximum number of steps without a final answer. Summarize 
     knowledge: kb,
     message: userMsg,
     agent: { rules: agentRules },
+    fsmStage,
   });
 }
 
@@ -306,7 +309,7 @@ The agent reached the maximum number of steps without a final answer. Summarize 
  * @param {object} params.agent — Prisma agent with tools[]
  * @param {string} params.initiatedByUserId
  */
-async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, initiatedByUserId }) {
+async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, initiatedByUserId, fsmStage }) {
   const userMsg = message == null ? "" : String(message).trim();
   const kb = knowledgeBlock ? String(knowledgeBlock).trim() : "";
   const rules =
@@ -369,7 +372,8 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, in
           kb,
           userMsg,
           assistant,
-          "Execution time limit reached. Answer briefly from KNOWLEDGE."
+          "Execution time limit reached. Answer briefly from KNOWLEDGE.",
+          fsmStage
         );
         await persistStep("response", "failed", { reason: "execution_timeout", text: finalText });
         finished = true;
@@ -384,13 +388,14 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, in
         userMsg,
         assistant,
         toolHistory,
-        ctxMax
+        ctxMax,
+        fsmStage
       );
       if (historyTrimmed) {
         contextTruncatedFlag = true;
       }
 
-      const prompt = buildPlannerPrompt(rules, toolsBlock, kb, userMsg, assistant, linesForPrompt);
+      const prompt = buildPlannerPrompt(rules, toolsBlock, kb, userMsg, assistant, linesForPrompt, fsmStage);
 
       const tStep0 = Date.now();
       const raw = await ollamaGenerate(model, prompt);
@@ -424,7 +429,8 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, in
           assistant,
           !parsed || typeof parsed !== "object"
             ? "The planner output was not valid JSON. Answer the user helpfully from KNOWLEDGE and context."
-            : `Invalid decision (${vd.reason || "unknown"}). Answer the user directly without tools.`
+            : `Invalid decision (${vd.reason || "unknown"}). Answer the user directly without tools.`,
+          fsmStage
         );
         await persistStep("response", "failed", {
           reason: !parsed || typeof parsed !== "object" ? "parse_fallback" : "validation_fallback",
@@ -444,7 +450,8 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, in
           kb,
           userMsg,
           assistant,
-          "The same decision repeated. Stop looping and answer the user in plain text."
+          "The same decision repeated. Stop looping and answer the user in plain text.",
+          fsmStage
         );
         await persistStep("response", "failed", { reason: "stagnation", text: finalText });
         finished = true;
@@ -477,7 +484,8 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, in
           kb,
           userMsg,
           assistant,
-          "Requested tool was not found. Answer without it."
+          "Requested tool was not found. Answer without it.",
+          fsmStage
         );
         await persistStep("response", "failed", { reason: "missing_tool", text: finalText });
         finished = true;
@@ -491,7 +499,8 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, in
           kb,
           userMsg,
           assistant,
-          "The same tool was selected twice in a row. Summarize and answer the user."
+          "The same tool was selected twice in a row. Summarize and answer the user.",
+          fsmStage
         );
         await persistStep("response", "failed", { reason: "repeat_tool_guard", text: finalText });
         finished = true;
@@ -505,7 +514,8 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, in
           kb,
           userMsg,
           assistant,
-          "Maximum number of tool calls reached. Answer from KNOWLEDGE only."
+          "Maximum number of tool calls reached. Answer from KNOWLEDGE only.",
+          fsmStage
         );
         await persistStep("response", "failed", { reason: "tool_limit_reached", text: finalText });
         finished = true;
@@ -519,7 +529,8 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, in
           kb,
           userMsg,
           assistant,
-          "Execution time limit reached before running the tool. Answer from KNOWLEDGE."
+          "Execution time limit reached before running the tool. Answer from KNOWLEDGE.",
+          fsmStage
         );
         await persistStep("response", "failed", { reason: "execution_timeout", text: finalText });
         finished = true;
@@ -567,7 +578,8 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, in
           kb,
           userMsg,
           assistant,
-          "A tool did not return a useful result. Answer using KNOWLEDGE and context only."
+          "A tool did not return a useful result. Answer using KNOWLEDGE and context only.",
+          fsmStage
         );
         await persistStep("response", "failed", { reason: "tool_not_useful", text: finalText });
         finished = true;
@@ -584,10 +596,14 @@ async function runAgentV2({ assistant, message, knowledgeBlock, model, agent, in
           kb,
           userMsg,
           assistant,
-          "Step limit reached under time pressure. Summarize from KNOWLEDGE."
+          "Step limit reached under time pressure. Summarize from KNOWLEDGE.",
+          fsmStage
         );
       } else {
-        finalText = await ollamaGenerate(model, buildMaxStepsFallbackPrompt(rules, kb, userMsg, assistant));
+        finalText = await ollamaGenerate(
+          model,
+          buildMaxStepsFallbackPrompt(rules, kb, userMsg, assistant, fsmStage)
+        );
       }
       stepLatencyMs.push(Date.now() - tFb);
       await persistStep("response", "failed", { reason: "max_loops_fallback", text: finalText });

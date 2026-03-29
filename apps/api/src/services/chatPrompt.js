@@ -9,6 +9,7 @@
  * @param {{ rules?: string|null }|null} [p.agent] — если есть rules, блок AGENT
  * @param {string} [p.knowledge] — RAG / документы
  * @param {unknown} p.message — пользовательское сообщение
+ * @param {string} [p.fsmStage] — этап воронки (greeting | qualification | offer | …)
  * @param {string} [p.appendAfterUser] — доп. блок после USER (история tool results, инструкции JSON)
  * @returns {string}
  */
@@ -25,9 +26,20 @@ function buildFinalPrompt(p) {
     agentRules = String(p.agent.rules).trim();
   }
 
+  const fsm =
+    p.fsmStage != null && String(p.fsmStage).trim() !== ""
+      ? String(p.fsmStage).trim()
+      : "";
+
   const parts = [`SYSTEM:\n${sys}\n\nОтвечай только на русском языке.`];
   if (agentRules) {
     parts.push(`AGENT:\n${agentRules}`);
+  }
+  if (fsm) {
+    parts.push(
+      `FSM:\nТекущий этап: ${fsm}\n` +
+        `Веди диалог как менеджер: учитывай этап, двигай к следующему шагу воронки, будь кратким.`
+    );
   }
   parts.push(`KNOWLEDGE:\n${kb || "(none)"}`);
 

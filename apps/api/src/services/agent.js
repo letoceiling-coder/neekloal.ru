@@ -67,7 +67,7 @@ function parseAgentJson(raw) {
  * @param {object} assistant — Prisma assistant
  * @param {string} reason
  */
-function buildFallbackPrompt(rules, kb, userMsg, assistant, reason) {
+function buildFallbackPrompt(rules, kb, userMsg, assistant, reason, fsmStage) {
   const agentBlock = `${rules}
 
 Reply helpfully in plain text for the user. Do not output JSON.
@@ -78,6 +78,7 @@ Note: ${reason}`;
     knowledge: kb,
     message: userMsg,
     agent: { rules: agentBlock },
+    fsmStage,
   });
 }
 
@@ -123,7 +124,7 @@ function toolExecutionLooksFailed(toolResultJson) {
  * @param {string} params.model
  * @param {object} params.agent — Prisma agent with tools[]
  */
-async function runAgent({ assistant, message, knowledgeBlock, model, agent }) {
+async function runAgent({ assistant, message, knowledgeBlock, model, agent, fsmStage }) {
   console.log("agent used", agent.id);
 
   const userMsg = message == null ? "" : String(message).trim();
@@ -151,6 +152,7 @@ OR
     knowledge: kb,
     message: userMsg,
     agent: { rules: agentPlannerRules },
+    fsmStage,
   });
 
   const firstRaw = await ollamaGenerate(model, firstPrompt);
@@ -196,7 +198,8 @@ OR
       kb,
       userMsg,
       assistant,
-      "The model requested a toolId that does not exist in TOOLS."
+      "The model requested a toolId that does not exist in TOOLS.",
+      fsmStage
     );
     const fallback = await ollamaGenerate(model, fallbackPrompt);
     console.log({
@@ -256,6 +259,7 @@ After reading TOOL RESULT below, write the final answer for the user in plain la
     message: userMsg,
     agent: { rules: secondAgentRules },
     appendAfterUser: `TOOL RESULT:\n${toolResult}`,
+    fsmStage,
   });
 
   const finalText = await ollamaGenerate(model, secondPrompt);

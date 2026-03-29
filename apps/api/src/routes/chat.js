@@ -8,6 +8,8 @@ const { runAgentV2 } = require("../services/agentV2");
 const { resolveModel, ensureModelAvailable } = require("../services/modelRouter");
 const { finalizeChatUsage, preCheckChatBeforeLlm } = require("../services/planAccess");
 const { buildFinalPrompt } = require("../services/chatPrompt");
+const { applyHybridSalesPipeline, isHybridSalesEnabled } = require("../services/hybridSales");
+const { validateSalesReply } = require("../services/salesReplyValidator");
 const chatAuthMiddleware = require("../middleware/chatAuth");
 const rateLimitMiddleware = require("../middleware/rateLimit");
 const { widgetChatRateLimit } = require("../middleware/widgetRateLimit");
@@ -184,6 +186,54 @@ function getGenerateUrl() {
 }
 
 /**
+ * @param {string} model
+ * @param {string} prompt
+ */
+async function ollamaGenerateNonStream(model, prompt) {
+  const url = getGenerateUrl();
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, prompt, stream: false }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Ollama generate failed: ${res.status} ${text}`);
+  }
+  const data = await res.json();
+  return data.response != null ? String(data.response) : "";
+}
+
+/**
+ * @param {string} model
+ * @param {object} chatAssistant
+ * @param {string} knowledgeBlock
+ * @param {unknown} message
+ * @param {string|undefined} fsmStage
+ * @param {string} draft
+ * @returns {Promise<string>}
+ */
+async function repairSalesReplyIfNeeded(model, chatAssistant, knowledgeBlock, message, fsmStage, draft) {
+  let text = String(draft ?? "").trim();
+  for (let attempt = 0; attempt < 2 && !validateSalesReply(text).ok; attempt++) {
+    const prompt = buildFinalPrompt({
+      assistant: chatAssistant,
+      systemPrompt: chatAssistant.systemPrompt,
+      agent: null,
+      knowledge: knowledgeBlock,
+      message,
+      fsmStage,
+      appendAfterUser:
+        `Черновик ответа:\n${text}\n\n` +
+        `Перепиши ответ целиком на русском: не более 3 предложений; ровно один вопрос (?); ` +
+        `явный следующий шаг (что сделать клиенту дальше).`,
+    });
+    text = (await ollamaGenerateNonStream(model, prompt)).trim();
+  }
+  return text;
+}
+
+/**
  * @param {import('fastify').FastifyInstance} fastify
  */
 /**
@@ -253,19 +303,41 @@ async function prepareChatContext(request, reply, fastify) {
     return null;
   }
 
-  let knowledgeBlock = "";
+  let ragBlock = "";
   if (qdrant.isRagEnabled()) {
     const retrieved = await retrieveForChat(fastify, assistant.id, message, 5);
-    knowledgeBlock = retrieved.knowledgeBlock;
+    ragBlock = retrieved.knowledgeBlock;
   }
-  if (!knowledgeBlock.trim()) {
-    const knowledgeRows = await prisma.knowledge.findMany({
-      where: { assistantId: assistant.id, organizationId: assistant.organizationId },
-      orderBy: { createdAt: "asc" },
-      take: 3,
+  const knowledgeRows = await prisma.knowledge.findMany({
+    where: { assistantId: assistant.id, organizationId: assistant.organizationId, deletedAt: null },
+    orderBy: { createdAt: "asc" },
+    take: 20,
+  });
+  const dbFallbackBlock =
+    knowledgeRows.length > 0 ? knowledgeRows.map((k) => k.content).join("\n\n") : "";
+
+  const hybridEnabled = isHybridSalesEnabled();
+  /** @type {{ intent: string; stage: string; knowledgeSource: string }} */
+  let hybridMeta = { intent: "unknown", stage: "greeting", knowledgeSource: "rag" };
+  let knowledgeBlock = "";
+
+  if (hybridEnabled) {
+    const hybrid = await applyHybridSalesPipeline({
+      organizationId: assistant.organizationId,
+      assistantId: assistant.id,
+      conversationId: body.conversationId,
+      message,
+      ragBlock: ragBlock || "",
+      dbFallbackBlock,
     });
-    knowledgeBlock =
-      knowledgeRows.length > 0 ? knowledgeRows.map((k) => k.content).join("\n\n") : "";
+    knowledgeBlock = hybrid.knowledgeBlock;
+    hybridMeta = {
+      intent: hybrid.intent,
+      stage: hybrid.stage,
+      knowledgeSource: hybrid.knowledgeSource,
+    };
+  } else {
+    knowledgeBlock = String(ragBlock || "").trim() || dbFallbackBlock;
   }
 
   const agentRecord = await prisma.agent.findFirst({
@@ -299,6 +371,9 @@ async function prepareChatContext(request, reply, fastify) {
     knowledgeBlock,
     agentForChat,
     uid: request.userId,
+    hybridEnabled,
+    hybridMeta,
+    fsmStage: hybridEnabled ? hybridMeta.stage : undefined,
   };
 }
 
@@ -309,21 +384,62 @@ module.exports = async function chatRoutes(fastify) {
     const ctx = await prepareChatContext(request, reply, fastify);
     if (!ctx) return; // error already sent
 
-    const { body, message, assistant, chatAssistant, isWidget, model,
-            estimatedInputTokens, knowledgeBlock, agentForChat, uid } = ctx;
+    const {
+      body,
+      message,
+      assistant,
+      chatAssistant,
+      isWidget,
+      model,
+      estimatedInputTokens,
+      knowledgeBlock,
+      agentForChat,
+      uid,
+      hybridEnabled,
+      hybridMeta,
+      fsmStage,
+    } = ctx;
+
+    if (hybridEnabled) {
+      fastify.log.info(
+        {
+          hybridSales: {
+            intent: hybridMeta.intent,
+            stage: hybridMeta.stage,
+            knowledgeSource: hybridMeta.knowledgeSource,
+          },
+        },
+        "chat hybrid sales"
+      );
+    }
 
     try {
       if (agentForChat) {
         const useV2 = String(agentForChat.mode || "v1").toLowerCase() === "v2";
         const runner = useV2 ? runAgentV2 : runAgent;
-        const { reply: replyText, model: modelOut } = await runner({
+        let { reply: replyText, model: modelOut } = await runner({
           assistant,
           message,
           knowledgeBlock,
           model,
           agent: agentForChat,
           initiatedByUserId: uid,
+          fsmStage,
         });
+        if (hybridEnabled) {
+          replyText = await repairSalesReplyIfNeeded(
+            modelOut,
+            chatAssistant,
+            knowledgeBlock,
+            message,
+            fsmStage,
+            replyText
+          );
+          const v = validateSalesReply(replyText);
+          if (!v.ok) {
+            fastify.log.warn({ reasons: v.reasons }, "sales reply still invalid after repair (agent)");
+          }
+        }
 
         const usage = await finalizeChatUsage({
           organizationId: assistant.organizationId,
@@ -370,6 +486,7 @@ module.exports = async function chatRoutes(fastify) {
         agent: null,
         knowledge: knowledgeBlock,
         message,
+        fsmStage,
       });
       fastify.log.info({ prompt }, "chat prompt");
 
@@ -391,7 +508,21 @@ module.exports = async function chatRoutes(fastify) {
       }
 
       const data = await res.json();
-      const replyText = data.response != null ? String(data.response) : "";
+      let replyText = data.response != null ? String(data.response) : "";
+      if (hybridEnabled) {
+        replyText = await repairSalesReplyIfNeeded(
+          model,
+          chatAssistant,
+          knowledgeBlock,
+          message,
+          fsmStage,
+          replyText
+        );
+        const v = validateSalesReply(replyText);
+        if (!v.ok) {
+          fastify.log.warn({ reasons: v.reasons }, "sales reply still invalid after repair");
+        }
+      }
 
       const usage = await finalizeChatUsage({
         organizationId: assistant.organizationId,
@@ -446,8 +577,34 @@ module.exports = async function chatRoutes(fastify) {
     const ctx = await prepareChatContext(request, reply, fastify);
     if (!ctx) return; // error already sent
 
-    const { body, message, assistant, chatAssistant, isWidget, model,
-            estimatedInputTokens, knowledgeBlock, agentForChat, uid } = ctx;
+    const {
+      body,
+      message,
+      assistant,
+      chatAssistant,
+      isWidget,
+      model,
+      estimatedInputTokens,
+      knowledgeBlock,
+      agentForChat,
+      uid,
+      hybridEnabled,
+      hybridMeta,
+      fsmStage,
+    } = ctx;
+
+    if (hybridEnabled) {
+      fastify.log.info(
+        {
+          hybridSales: {
+            intent: hybridMeta.intent,
+            stage: hybridMeta.stage,
+            knowledgeSource: hybridMeta.knowledgeSource,
+          },
+        },
+        "chat/stream hybrid sales"
+      );
+    }
 
     // Take over the raw socket — Fastify must not touch the response after this.
     reply.hijack();
@@ -496,14 +653,25 @@ module.exports = async function chatRoutes(fastify) {
         // Agent: run synchronously (no per-token streaming), then emit whole reply
         const useV2 = String(agentForChat.mode || "v1").toLowerCase() === "v2";
         const runner = useV2 ? runAgentV2 : runAgent;
-        const { reply: replyText, model: modelOut } = await runner({
+        let { reply: replyText, model: modelOut } = await runner({
           assistant,
           message,
           knowledgeBlock,
           model,
           agent: agentForChat,
           initiatedByUserId: uid,
+          fsmStage,
         });
+        if (hybridEnabled) {
+          replyText = await repairSalesReplyIfNeeded(
+            modelOut,
+            chatAssistant,
+            knowledgeBlock,
+            message,
+            fsmStage,
+            replyText
+          );
+        }
         fullText = replyText;
         // Emit word by word to simulate streaming UX
         const words = fullText.split(/(\s+)/);
@@ -523,6 +691,7 @@ module.exports = async function chatRoutes(fastify) {
           agent: null,
           knowledge: knowledgeBlock,
           message,
+          fsmStage,
         });
         fastify.log.info({ prompt }, "chat/stream prompt");
 
@@ -582,6 +751,16 @@ module.exports = async function chatRoutes(fastify) {
               send("token", { token: obj.response });
             }
           } catch { /* */ }
+        }
+      }
+
+      if (hybridEnabled && fullText && !agentForChat) {
+        const v = validateSalesReply(fullText);
+        if (!v.ok) {
+          fastify.log.warn(
+            { hybridSalesReplyValidation: v.reasons, path: "stream" },
+            "stream reply did not pass sales validation"
+          );
         }
       }
 

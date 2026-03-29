@@ -310,6 +310,8 @@ model Conversation {
   widgetSilenceFollowUpSentAt DateTime?   @map("widget_silence_follow_up_sent_at")
   /// Виджет: сколько авто follow-up отправлено за текущую «тишину» (сброс при сообщении пользователя). Макс. см. WIDGET_MAX_FOLLOWUPS_PER_CONVERSATION.
   widgetFollowUpCount         Int         @default(0) @map("widget_follow_up_count")
+  /// Sales hybrid FSM: greeting | qualification | offer | objection | close
+  salesStage                  String      @default("greeting") @map("sales_stage")
 
   messages Message[]
   usages   Usage[]
