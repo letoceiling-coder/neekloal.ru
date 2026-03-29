@@ -16,6 +16,7 @@ export const queryKeys = {
   },
   knowledge: {
     all: ["knowledge"] as const,
+    byAssistant: (id: string) => ["knowledge", "assistant", id] as const,
   },
   apiKeys: {
     all: ["api-keys"] as const,

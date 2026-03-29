@@ -1,4 +1,5 @@
 import {
+  type ChangeEvent,
   useEffect,
   useMemo,
   useRef,
@@ -10,7 +11,14 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAssistants, usePatchAssistant } from "../api/assistants";
 import { useAgents, useCreateAgent, usePatchAgent } from "../api/agents";
 import { useApiKeys, useCreateApiKey, type CreateApiKeyResponse } from "../api/apiKeys";
-import { useAddKnowledge } from "../api/knowledge";
+import {
+  useAddKnowledge,
+  useAddKnowledgeUrl,
+  useDeleteKnowledge,
+  useKnowledgeList,
+  uploadKnowledgeFile,
+  type KnowledgeItem,
+} from "../api/knowledge";
 import { useModels } from "../api/models";
 import { useUsage } from "../api/usage";
 import { useAuthStore } from "../stores/authStore";
@@ -54,13 +62,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "usage", label: "Статистика" },
 ];
 
-function TabBar({
-  active,
-  onChange,
-}: {
-  active: TabId;
-  onChange: (t: TabId) => void;
-}) {
+function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => void }) {
   return (
     <div className="flex gap-1 overflow-x-auto rounded-xl bg-neutral-100 p-1">
       {TABS.map((t) => (
@@ -135,7 +137,10 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
             />
           </div>
           <div>
-            <label htmlFor="basic-prompt" className="block text-xs font-medium text-neutral-600">
+            <label
+              htmlFor="basic-prompt"
+              className="block text-xs font-medium text-neutral-600"
+            >
               Системный промпт
             </label>
             <textarea
@@ -168,13 +173,34 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
 
 // ─── Section: Agent ───────────────────────────────────────────────────────────
 
-function AgentSection({
-  assistant,
-  agents,
-}: {
-  assistant: Assistant;
-  agents: Agent[];
-}) {
+const AGENT_TEMPLATES = [
+  {
+    label: "Продажи",
+    rules: `Ты — продающий менеджер. Помогай клиентам выбрать продукт.
+- Активно предлагай решения исходя из потребностей
+- Отвечай кратко и по делу, без воды
+- Завершай ответ призывом к действию
+- Используй дружелюбный, профессиональный тон`,
+  },
+  {
+    label: "Поддержка",
+    rules: `Ты — специалист техподдержки. Цель — решить проблему клиента.
+- Уточняй детали проблемы перед ответом
+- Давай пошаговые инструкции решения
+- Будь терпелив и доброжелателен
+- Если не можешь решить — сообщи, что передашь специалисту`,
+  },
+  {
+    label: "FAQ",
+    rules: `Ты — информационный помощник. Отвечай строго по базе знаний.
+- Отвечай точно и кратко только по известным данным
+- Если информации нет — честно сообщи об этом
+- Не придумывай факты и не додумывай
+- При вопросе вне базы: "Этот вопрос вне моей базы знаний"`,
+  },
+];
+
+function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Agent[] }) {
   const linkedAgent = agents.find((a) => a.assistantId === assistant.id) ?? null;
   const patchAgent = usePatchAgent();
   const createAgent = useCreateAgent();
@@ -233,7 +259,23 @@ function AgentSection({
         <CardContent>
           <form onSubmit={(e) => void handleSaveRules(e)} className="space-y-3">
             <div>
-              <label htmlFor="agent-rules" className="block text-xs font-medium text-neutral-600">
+              <div className="mb-2 flex items-center gap-2">
+                <span className="text-xs font-medium text-neutral-500">Шаблоны:</span>
+                {AGENT_TEMPLATES.map((t) => (
+                  <button
+                    key={t.label}
+                    type="button"
+                    onClick={() => setRules(t.rules)}
+                    className="rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs text-neutral-600 hover:bg-white hover:border-neutral-300 transition-colors"
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <label
+                htmlFor="agent-rules"
+                className="block text-xs font-medium text-neutral-600"
+              >
                 Правила агента (rules)
               </label>
               <textarea
@@ -264,8 +306,8 @@ function AgentSection({
       </CardHeader>
       <CardContent>
         <p className="mb-4 text-sm text-neutral-500">
-          Агент добавляет к ассистенту расширенную логику — правила поведения,
-          сценарии и инструменты.
+          Агент добавляет расширенную логику: правила поведения, сценарии, инструменты.
+          Выберите шаблон или напишите свои правила.
         </p>
         <form onSubmit={(e) => void handleCreate(e)} className="space-y-3">
           <Input
@@ -277,15 +319,34 @@ function AgentSection({
             required
           />
           <div>
-            <label htmlFor="new-agent-rules" className="block text-xs font-medium text-neutral-600">
-              Правила (необязательно)
+            <div className="mb-2 flex items-center gap-2">
+              <span className="text-xs font-medium text-neutral-500">Быстрые шаблоны:</span>
+              {AGENT_TEMPLATES.map((t) => (
+                <button
+                  key={t.label}
+                  type="button"
+                  onClick={() => {
+                    setAgentRules(t.rules);
+                    if (!agentName) setAgentName(t.label);
+                  }}
+                  className="rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs text-neutral-600 hover:bg-white hover:border-neutral-300 transition-colors"
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <label
+              htmlFor="new-agent-rules"
+              className="block text-xs font-medium text-neutral-600"
+            >
+              Правила поведения
             </label>
             <textarea
               id="new-agent-rules"
-              rows={5}
+              rows={6}
               value={agentRules}
               onChange={(e) => setAgentRules(e.target.value)}
-              placeholder="Отвечай только на русском. Если не знаешь — скажи об этом."
+              placeholder="Добавьте правила поведения (например: продающий менеджер)"
               className="mt-1 w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-xs text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
             />
           </div>
@@ -307,61 +368,253 @@ function AgentSection({
 
 // ─── Section: Knowledge ───────────────────────────────────────────────────────
 
-function KnowledgeSection({ assistant }: { assistant: Assistant }) {
-  const addKnowledge = useAddKnowledge();
-  const [content, setContent] = useState("");
-  const [added, setAdded] = useState(false);
+type KInputTab = "text" | "file" | "url";
 
-  async function handleAdd(e: FormEvent) {
+const K_TABS: { id: KInputTab; label: string }[] = [
+  { id: "text", label: "📝 Текст" },
+  { id: "file", label: "📄 Файл" },
+  { id: "url", label: "🌐 Ссылка" },
+];
+
+function StatusBadge({ status }: { status: KnowledgeItem["status"] }) {
+  const conf = {
+    processing: { bg: "bg-amber-50 text-amber-700", label: "обработка…" },
+    ready: { bg: "bg-green-50 text-green-700", label: "готово" },
+    failed: { bg: "bg-red-50 text-red-600", label: "ошибка" },
+  }[status] ?? { bg: "bg-neutral-100 text-neutral-500", label: status };
+
+  return (
+    <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", conf.bg)}>
+      {conf.label}
+    </span>
+  );
+}
+
+function KnowledgeSection({ assistant }: { assistant: Assistant }) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const [inputTab, setInputTab] = useState<KInputTab>("text");
+
+  // Text
+  const [text, setText] = useState("");
+  const addText = useAddKnowledge();
+
+  // File
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState<string | null>(null);
+  const [uploadDone, setUploadDone] = useState(false);
+
+  // URL
+  const [urlInput, setUrlInput] = useState("");
+  const addUrl = useAddKnowledgeUrl(assistant.id);
+
+  // List
+  const {
+    data: items = [],
+    isLoading: listLoading,
+  } = useKnowledgeList(assistant.id);
+  const deleteKnowledge = useDeleteKnowledge(assistant.id);
+
+  async function handleAddText(e: FormEvent) {
     e.preventDefault();
-    const text = content.trim();
-    if (!text) return;
-    await addKnowledge.mutateAsync({ assistantId: assistant.id, content: text });
-    setContent("");
-    setAdded(true);
-    setTimeout(() => setAdded(false), 3000);
+    const t = text.trim();
+    if (!t) return;
+    await addText.mutateAsync({ assistantId: assistant.id, content: t });
+    setText("");
   }
+
+  async function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadErr(null);
+    setUploadDone(false);
+    setUploading(true);
+    try {
+      await uploadKnowledgeFile(assistant.id, file, accessToken);
+      setUploadDone(true);
+      if (fileRef.current) fileRef.current.value = "";
+    } catch (err) {
+      setUploadErr(err instanceof Error ? err.message : "Ошибка загрузки");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleAddUrl(e: FormEvent) {
+    e.preventDefault();
+    const u = urlInput.trim();
+    if (!u) return;
+    await addUrl.mutateAsync({ assistantId: assistant.id, url: u });
+    setUrlInput("");
+  }
+
+  const typeIcon: Record<string, string> = {
+    file: "📄",
+    url: "🌐",
+    text: "📝",
+  };
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-neutral-800">База знаний</h3>
+        <span className="text-xs text-neutral-400">{items.length} записей</span>
       </CardHeader>
-      <CardContent>
-        <p className="mb-4 text-sm text-neutral-500">
-          Добавьте текст, который ассистент будет использовать при ответах (RAG).
-        </p>
-        <form onSubmit={(e) => void handleAdd(e)} className="space-y-3">
-          <div>
-            <label htmlFor="knowledge-text" className="block text-xs font-medium text-neutral-600">
-              Текст знаний
-            </label>
-            <textarea
-              id="knowledge-text"
-              rows={10}
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Вставьте статью, инструкцию, FAQ или другой текст…"
-              className="mt-1 w-full resize-y rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
-              required
-            />
+      <CardContent className="space-y-5">
+        {/* Input area */}
+        <div className="rounded-xl border border-neutral-200 p-4">
+          {/* Sub-tab bar */}
+          <div className="mb-4 flex gap-1 rounded-lg bg-neutral-100 p-1">
+            {K_TABS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setInputTab(t.id)}
+                className={cn(
+                  "flex-1 rounded-md py-1.5 text-xs font-medium transition-colors",
+                  inputTab === t.id
+                    ? "bg-white text-neutral-900 shadow-sm"
+                    : "text-neutral-500 hover:text-neutral-700"
+                )}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
-          <div className="flex items-center gap-3">
-            <Button type="submit" loading={addKnowledge.isPending}>
-              Добавить
-            </Button>
-            {added && (
-              <span className="text-sm text-green-600">✓ Знания добавлены</span>
-            )}
-            {addKnowledge.isError && (
-              <span className="text-sm text-red-600">
-                {addKnowledge.error instanceof Error
-                  ? addKnowledge.error.message
-                  : "Ошибка"}
-              </span>
-            )}
+
+          {/* Text */}
+          {inputTab === "text" && (
+            <form onSubmit={(e) => void handleAddText(e)} className="space-y-3">
+              <textarea
+                rows={6}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Вставьте текст, статью, FAQ или инструкцию…"
+                className="w-full resize-y rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
+                required
+              />
+              <div className="flex items-center gap-3">
+                <Button type="submit" loading={addText.isPending}>
+                  Добавить текст
+                </Button>
+                {addText.isError && (
+                  <span className="text-sm text-red-600">
+                    {addText.error instanceof Error ? addText.error.message : "Ошибка"}
+                  </span>
+                )}
+              </div>
+            </form>
+          )}
+
+          {/* File */}
+          {inputTab === "file" && (
+            <div className="space-y-3">
+              <p className="text-xs text-neutral-500">
+                Поддерживаемые форматы: <strong>.txt</strong>, <strong>.pdf</strong> (до 10 MB)
+              </p>
+              <label
+                htmlFor="knowledge-file"
+                className={cn(
+                  "flex cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-dashed border-neutral-200 p-6 transition-colors",
+                  uploading ? "opacity-60 cursor-not-allowed" : "hover:border-neutral-400 hover:bg-neutral-50"
+                )}
+              >
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                  <path d="M10 3v10M5 8l5-5 5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-neutral-400"/>
+                  <path d="M3 15h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="text-neutral-400"/>
+                </svg>
+                <span className="text-sm text-neutral-500">
+                  {uploading ? "Загрузка…" : "Выбрать файл (кликните)"}
+                </span>
+              </label>
+              <input
+                ref={fileRef}
+                id="knowledge-file"
+                type="file"
+                accept=".txt,.pdf,text/plain,application/pdf"
+                onChange={(e) => void handleFileChange(e)}
+                className="hidden"
+                disabled={uploading}
+              />
+              {uploadErr && <p className="text-sm text-red-600">{uploadErr}</p>}
+              {uploadDone && (
+                <p className="text-sm text-green-600">✓ Файл загружен, идёт обработка…</p>
+              )}
+            </div>
+          )}
+
+          {/* URL */}
+          {inputTab === "url" && (
+            <form onSubmit={(e) => void handleAddUrl(e)} className="space-y-3">
+              <Input
+                id="knowledge-url"
+                label="URL страницы"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="https://example.com/page"
+                type="url"
+                required
+              />
+              <div className="flex items-center gap-3">
+                <Button type="submit" loading={addUrl.isPending}>
+                  Загрузить страницу
+                </Button>
+                {addUrl.isError && (
+                  <span className="text-sm text-red-600">
+                    {addUrl.error instanceof Error ? addUrl.error.message : "Ошибка"}
+                  </span>
+                )}
+              </div>
+            </form>
+          )}
+        </div>
+
+        {/* Knowledge list */}
+        {listLoading && <Loader />}
+        {!listLoading && items.length === 0 && (
+          <p className="py-4 text-center text-sm text-neutral-400">
+            База знаний пуста. Добавьте текст, файл или ссылку выше.
+          </p>
+        )}
+        {items.length > 0 && (
+          <div className="space-y-2">
+            {items.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-start gap-3 rounded-lg border border-neutral-200 p-3"
+              >
+                <span className="mt-0.5 text-base leading-none">
+                  {typeIcon[item.type] ?? "📎"}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-neutral-800">
+                    {item.sourceName ?? `Текст ${item.id.slice(0, 8)}`}
+                  </p>
+                  <p className="mt-0.5 line-clamp-2 text-xs text-neutral-500">
+                    {item.contentPreview}
+                  </p>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <StatusBadge status={item.status} />
+                    {item.chunkCount > 0 && (
+                      <span className="text-xs text-neutral-400">
+                        {item.chunkCount} чанков
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => deleteKnowledge.mutate(item.id)}
+                  disabled={deleteKnowledge.isPending}
+                  className="shrink-0 rounded p-1 text-neutral-300 hover:bg-red-50 hover:text-red-500 transition-colors"
+                  title="Удалить"
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <path d="M2 4h10M5 4V2h4v2M5.5 6v5M8.5 6v5M3 4l.7 8h6.6L11 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+              </div>
+            ))}
           </div>
-        </form>
+        )}
       </CardContent>
     </Card>
   );
@@ -373,6 +626,7 @@ type WidgetPhase =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "ready"; apiKey: string }
+  | { status: "exists" }
   | { status: "error"; message: string };
 
 function WidgetSection({ assistant }: { assistant: Assistant }) {
@@ -382,32 +636,27 @@ function WidgetSection({ assistant }: { assistant: Assistant }) {
   const [copied, setCopied] = useState(false);
   const codeRef = useRef<HTMLTextAreaElement>(null);
 
+  const existingKey = allKeys?.find((k) => k.assistantId === assistant.id);
+
   useEffect(() => {
     if (keysLoading || phase.status !== "idle") return;
 
-    const existing = allKeys?.find((k) => k.assistantId === assistant.id);
-    if (existing) {
-      setPhase({
-        status: "error",
-        message:
-          "Ключ уже создан. Значение видно только при первом создании. " +
-          'Нажмите "Новый ключ" чтобы сгенерировать замену.',
-      });
-      return;
-    }
-
-    setPhase({ status: "loading" });
-    createKey
-      .mutateAsync({ assistantId: assistant.id, name: `widget:${assistant.name}` })
-      .then((res: CreateApiKeyResponse) => {
-        setPhase({ status: "ready", apiKey: res.key });
-      })
-      .catch((e: unknown) => {
-        setPhase({
-          status: "error",
-          message: e instanceof Error ? e.message : "Ошибка создания ключа",
+    if (existingKey) {
+      setPhase({ status: "exists" });
+    } else {
+      setPhase({ status: "loading" });
+      createKey
+        .mutateAsync({ assistantId: assistant.id, name: `widget:${assistant.name}` })
+        .then((res: CreateApiKeyResponse) => {
+          setPhase({ status: "ready", apiKey: res.key });
+        })
+        .catch((e: unknown) => {
+          setPhase({
+            status: "error",
+            message: e instanceof Error ? e.message : "Ошибка создания ключа",
+          });
         });
-      });
+    }
   }, [keysLoading]);
 
   function handleNewKey() {
@@ -425,9 +674,7 @@ function WidgetSection({ assistant }: { assistant: Assistant }) {
       });
   }
 
-  async function handleCopy() {
-    if (phase.status !== "ready") return;
-    const code = buildEmbedCode(phase.apiKey, assistant.id);
+  async function handleCopy(code: string) {
     try {
       await navigator.clipboard.writeText(code);
       setCopied(true);
@@ -451,17 +698,35 @@ function WidgetSection({ assistant }: { assistant: Assistant }) {
         {phase.status === "loading" && (
           <div className="flex items-center gap-2 text-sm text-neutral-500">
             <Loader className="h-4 w-4" />
-            Подготовка ключа…
+            Подготовка API ключа…
+          </div>
+        )}
+
+        {phase.status === "exists" && (
+          <div className="space-y-3">
+            <p className="text-sm text-neutral-600">
+              Для этого ассистента уже есть API ключ.{" "}
+              <span className="text-neutral-400">
+                (id: {existingKey?.id.slice(0, 8)}…)
+              </span>
+            </p>
+            <p className="rounded-md bg-neutral-50 px-4 py-3 text-sm text-neutral-500">
+              Значение ключа показывается только при создании. Нажмите кнопку ниже,
+              чтобы сгенерировать новый ключ и получить готовый код.
+            </p>
+            <Button onClick={handleNewKey} loading={createKey.isPending}>
+              Создать новый ключ и получить код
+            </Button>
           </div>
         )}
 
         {phase.status === "error" && (
           <div className="space-y-3">
-            <p className="rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <p className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700">
               {phase.message}
             </p>
             <Button variant="secondary" onClick={handleNewKey} loading={createKey.isPending}>
-              Новый ключ
+              Попробовать снова
             </Button>
           </div>
         )}
@@ -481,10 +746,14 @@ function WidgetSection({ assistant }: { assistant: Assistant }) {
               onClick={() => codeRef.current?.select()}
             />
             <div className="flex items-center gap-3">
-              <Button onClick={() => void handleCopy()}>
+              <Button onClick={() => void handleCopy(embedCode)}>
                 {copied ? "✓ Скопировано!" : "Скопировать код"}
               </Button>
-              <Button variant="secondary" onClick={handleNewKey} loading={createKey.isPending}>
+              <Button
+                variant="secondary"
+                onClick={handleNewKey}
+                loading={createKey.isPending}
+              >
                 Новый ключ
               </Button>
             </div>
@@ -493,7 +762,7 @@ function WidgetSection({ assistant }: { assistant: Assistant }) {
               <code className="rounded bg-neutral-100 px-1">
                 {phase.apiKey.slice(0, 14)}…
               </code>{" "}
-              показывается только сейчас.
+              показывается только сейчас — сохраните его.
             </p>
           </>
         )}
@@ -539,9 +808,7 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
         body: JSON.stringify({ assistantId: assistant.id, message: text }),
       });
 
-      if (!res.ok || !res.body) {
-        throw new Error(`HTTP ${res.status}`);
-      }
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -618,10 +885,7 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
           {messages.map((m) => (
             <div
               key={m.id}
-              className={cn(
-                "flex",
-                m.role === "user" ? "justify-end" : "justify-start"
-              )}
+              className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}
             >
               <div
                 className={cn(
@@ -651,7 +915,11 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
             placeholder="Ваше сообщение…"
             disabled={streaming}
           />
-          <Button onClick={() => void send()} loading={streaming} disabled={!input.trim()}>
+          <Button
+            onClick={() => void send()}
+            loading={streaming}
+            disabled={!input.trim()}
+          >
             Отправить
           </Button>
         </div>
@@ -681,10 +949,12 @@ function UsageSection() {
   return (
     <Card>
       <CardHeader>
-        <h3 className="text-sm font-semibold text-neutral-800">Использование (организация)</h3>
+        <h3 className="text-sm font-semibold text-neutral-800">
+          Использование (организация)
+        </h3>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3">
           <div className="rounded-lg bg-neutral-50 px-4 py-3">
             <p className="text-xs text-neutral-500">Запросов</p>
             <p className="mt-0.5 text-xl font-semibold text-neutral-900">
@@ -698,7 +968,6 @@ function UsageSection() {
             </p>
           </div>
         </div>
-
         {modelEntries.length > 0 && (
           <div>
             <p className="mb-2 text-xs font-medium text-neutral-500">По моделям</p>
@@ -762,12 +1031,9 @@ export function AssistantDetailPage() {
   return (
     <Page
       title={assistant.name}
-      description={
-        <span className="font-mono text-xs">{assistant.model}</span>
-      }
+      description={<span className="font-mono text-xs">{assistant.model}</span>}
       className="mx-auto max-w-3xl"
     >
-      {/* Back */}
       <div className="-mt-2">
         <Link
           to="/assistants"
@@ -777,10 +1043,8 @@ export function AssistantDetailPage() {
         </Link>
       </div>
 
-      {/* Tabs */}
       <TabBar active={activeTab} onChange={setActiveTab} />
 
-      {/* Content */}
       {activeTab === "basic" && <BasicSection assistant={assistant} />}
       {activeTab === "agent" && (
         <AgentSection assistant={assistant} agents={agents} />

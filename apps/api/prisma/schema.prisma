@@ -407,6 +407,10 @@ model Knowledge {
   assistantId    String    @map("assistant_id") @db.Uuid
   assistant      Assistant @relation(fields: [assistantId], references: [id], onDelete: Cascade)
   type           String
+  /// Original file name or ingested URL for display.
+  sourceName     String?   @map("source_name")
+  /// Ingest lifecycle: "processing" | "ready" | "failed"
+  status         String    @default("ready")
   content        String    @db.Text
   embeddingId    String?   @map("embedding_id")
   createdAt      DateTime  @default(now()) @map("created_at")
