@@ -1,48 +1,103 @@
 "use strict";
 
+const { Worker } = require("bullmq");
 const prisma = require("../lib/prisma");
-const qdrant = require("../lib/qdrant");
+const { getWorkerConnection } = require("../lib/redis");
 const { ingestKnowledgeDocument } = require("../services/rag");
 
-/** Items stuck in "processing" longer than 5 minutes are retried. */
-const STUCK_THRESHOLD_MS = 5 * 60 * 1000;
-
-/** Periodic check interval. */
-const INTERVAL_MS = 60 * 1000;
+const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
+const RECOVERY_INTERVAL_MS = 60 * 1000; // 1 min
 
 /** @type {NodeJS.Timeout | null} */
-let workerTimer = null;
+let _recoveryTimer = null;
+
+// ─── Core ingest logic ────────────────────────────────────────────────────────
 
 /**
- * Ingest a single knowledge item and update its status.
+ * Fetch the knowledge item and run the full ingest pipeline.
+ * Updates status to "ready" | "failed".
  * @param {import('fastify').FastifyInstance} fastify
- * @param {{ id: string; assistantId: string; organizationId: string; content: string }} item
+ * @param {string} knowledgeId
  */
-async function processItem(fastify, item) {
+async function processKnowledgeItem(fastify, knowledgeId) {
+  const item = await prisma.knowledge.findUnique({ where: { id: knowledgeId } });
+
+  if (!item) {
+    fastify.log.warn({ knowledgeId }, "ragWorker: item not found, skipping");
+    return;
+  }
+  if (item.deletedAt || item.status === "ready") {
+    fastify.log.info({ knowledgeId, status: item.status }, "ragWorker: item already done, skipping");
+    return;
+  }
+
   try {
     await ingestKnowledgeDocument(fastify, item, item.assistantId);
     await prisma.knowledge.update({ where: { id: item.id }, data: { status: "ready" } });
-    fastify.log.info({ knowledgeId: item.id, assistantId: item.assistantId }, "ragWorker: ingest complete");
-    return true;
+    fastify.log.info({ knowledgeId, assistantId: item.assistantId }, "ragWorker: ingest complete");
   } catch (err) {
-    fastify.log.warn(
-      { knowledgeId: item.id, err: err instanceof Error ? err.message : String(err) },
+    fastify.log.error(
+      { knowledgeId, err: err instanceof Error ? err.message : String(err) },
       "ragWorker: ingest failed"
     );
     await prisma.knowledge
       .update({ where: { id: item.id }, data: { status: "failed" } })
       .catch(() => {});
-    return false;
+    throw err; // propagate so BullMQ retries
   }
 }
 
+// ─── BullMQ worker ────────────────────────────────────────────────────────────
+
 /**
- * Find and re-process knowledge items stuck in "processing" state.
+ * Create and start the BullMQ Worker.
+ * @param {import('fastify').FastifyInstance} fastify
+ * @returns {import('bullmq').Worker | null}
+ */
+function createBullWorker(fastify) {
+  let conn;
+  try {
+    conn = getWorkerConnection();
+  } catch {
+    return null;
+  }
+
+  const worker = new Worker(
+    "rag-processing",
+    async (job) => {
+      const { knowledgeId } = job.data;
+      fastify.log.info({ jobId: job.id, knowledgeId }, "ragWorker: processing BullMQ job");
+      await processKnowledgeItem(fastify, knowledgeId);
+    },
+    { connection: conn, concurrency: 2 }
+  );
+
+  worker.on("completed", (job) => {
+    fastify.log.info({ jobId: job.id, knowledgeId: job.data.knowledgeId }, "ragWorker: job completed");
+  });
+
+  worker.on("failed", (job, err) => {
+    fastify.log.warn(
+      { jobId: job?.id, knowledgeId: job?.data?.knowledgeId, err: err.message },
+      "ragWorker: job failed (will retry)"
+    );
+  });
+
+  worker.on("error", (err) => {
+    fastify.log.warn({ err: err.message }, "ragWorker: worker error");
+  });
+
+  return worker;
+}
+
+// ─── Recovery polling ─────────────────────────────────────────────────────────
+
+/**
+ * Find items stuck in "processing" (older than threshold) and re-enqueue them.
+ * Acts as a safety net for both BullMQ and direct-ingest paths.
  * @param {import('fastify').FastifyInstance} fastify
  */
-async function runWorkerCycle(fastify) {
-  if (!qdrant.isRagEnabled()) return;
-
+async function runRecoveryCycle(fastify) {
   const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS);
   const stuck = await prisma.knowledge.findMany({
     where: { status: "processing", createdAt: { lt: cutoff }, deletedAt: null },
@@ -50,21 +105,29 @@ async function runWorkerCycle(fastify) {
     orderBy: { createdAt: "asc" },
   });
 
-  if (stuck.length > 0) {
-    fastify.log.info({ count: stuck.length }, "ragWorker: retrying stuck items");
-    for (const item of stuck) {
-      await processItem(fastify, item);
-    }
+  if (stuck.length === 0) return;
+
+  fastify.log.info({ count: stuck.length }, "ragWorker: recovering stuck items");
+
+  const { addIngestJob } = require("../queue/ragQueue");
+
+  for (const item of stuck) {
+    // Try queue first, fall back to direct
+    addIngestJob(item.id).catch(() => {
+      void processKnowledgeItem(fastify, item.id).catch((e) =>
+        fastify.log.error(e, "ragWorker: direct recovery failed")
+      );
+    });
   }
 }
 
+// ─── Reindex endpoint handler ─────────────────────────────────────────────────
+
 /**
- * Re-index all knowledge rows for a given assistant.
- * Called by the /knowledge/reindex endpoint.
+ * Re-queue all knowledge rows for an assistant for Qdrant re-indexing.
  * @param {import('fastify').FastifyInstance} fastify
  * @param {string} assistantId
  * @param {string} organizationId
- * @returns {Promise<{ reindexed: number; failed: number }>}
  */
 async function reindexAssistant(fastify, assistantId, organizationId) {
   const items = await prisma.knowledge.findMany({
@@ -72,71 +135,84 @@ async function reindexAssistant(fastify, assistantId, organizationId) {
     orderBy: { createdAt: "asc" },
   });
 
-  fastify.log.info(
-    { assistantId, count: items.length },
-    "ragWorker: reindex started"
-  );
+  fastify.log.info({ assistantId, count: items.length }, "ragWorker: reindex started");
 
-  let reindexed = 0;
+  const { addIngestJob } = require("../queue/ragQueue");
+
+  let queued = 0;
+  let direct = 0;
   let failed = 0;
 
   for (const item of items) {
-    // Mark as processing before ingesting
     await prisma.knowledge
       .update({ where: { id: item.id }, data: { status: "processing" } })
       .catch(() => {});
-    const ok = await processItem(fastify, item);
-    if (ok) reindexed++;
-    else failed++;
+
+    const jobAdded = await addIngestJob(item.id).then(() => true).catch(() => false);
+
+    if (jobAdded) {
+      queued++;
+    } else {
+      // BullMQ unavailable: process directly
+      const ok = await processKnowledgeItem(fastify, item.id)
+        .then(() => true)
+        .catch(() => false);
+      if (ok) direct++;
+      else failed++;
+    }
   }
 
-  fastify.log.info({ assistantId, reindexed, failed }, "ragWorker: reindex complete");
-  return { reindexed, failed };
+  fastify.log.info({ assistantId, queued, direct, failed }, "ragWorker: reindex scheduled");
+  return { queued, direct, failed, total: items.length };
 }
 
+// ─── Startup ──────────────────────────────────────────────────────────────────
+
 /**
- * Start the background RAG worker.
- * Called once after server starts listening.
+ * Start the full RAG worker system:
+ *  - BullMQ worker (if Redis is reachable)
+ *  - Periodic recovery polling for stuck items
  * @param {import('fastify').FastifyInstance} fastify
  */
 function startWorker(fastify) {
+  const qdrant = require("../lib/qdrant");
   if (!qdrant.isRagEnabled()) {
-    fastify.log.info("ragWorker: QDRANT_URL not set — worker disabled");
+    fastify.log.info("ragWorker: Qdrant not configured — skipping worker");
     return;
   }
 
-  // Initial stuck-item recovery after 15 seconds
+  // BullMQ worker (optional — falls back gracefully if Redis is down)
+  let bullWorker = null;
+  try {
+    bullWorker = createBullWorker(fastify);
+    if (bullWorker) {
+      fastify.log.info({ qdrantUrl: process.env.QDRANT_URL }, "ragWorker: BullMQ worker started");
+    }
+  } catch (err) {
+    fastify.log.warn({ err: err.message }, "ragWorker: BullMQ unavailable, using polling fallback");
+  }
+
+  // Recovery polling — always runs (handles stuck jobs regardless of BullMQ)
   setTimeout(
-    () =>
-      void runWorkerCycle(fastify).catch((e) =>
-        fastify.log.error(e, "ragWorker: initial cycle error")
-      ),
+    () => void runRecoveryCycle(fastify).catch((e) => fastify.log.error(e, "ragWorker: initial recovery error")),
     15_000
   );
-
-  // Periodic check every minute
-  workerTimer = setInterval(
-    () =>
-      void runWorkerCycle(fastify).catch((e) =>
-        fastify.log.error(e, "ragWorker: cycle error")
-      ),
-    INTERVAL_MS
+  _recoveryTimer = setInterval(
+    () => void runRecoveryCycle(fastify).catch((e) => fastify.log.error(e, "ragWorker: recovery error")),
+    RECOVERY_INTERVAL_MS
   );
 
   fastify.log.info(
-    { intervalMs: INTERVAL_MS, qdrantUrl: process.env.QDRANT_URL },
+    { bullmqEnabled: Boolean(bullWorker), recoveryIntervalMs: RECOVERY_INTERVAL_MS },
     "ragWorker: started"
   );
 }
 
-/**
- * Stop the background worker (for graceful shutdown).
- */
 function stopWorker() {
-  if (workerTimer) {
-    clearInterval(workerTimer);
-    workerTimer = null;
+  if (_recoveryTimer) {
+    clearInterval(_recoveryTimer);
+    _recoveryTimer = null;
   }
 }
 
-module.exports = { startWorker, stopWorker, runWorkerCycle, reindexAssistant, processItem };
+module.exports = { startWorker, stopWorker, runRecoveryCycle, reindexAssistant, processKnowledgeItem };

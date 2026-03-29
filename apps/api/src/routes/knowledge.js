@@ -4,6 +4,7 @@ const prisma = require("../lib/prisma");
 const authMiddleware = require("../middleware/auth");
 const qdrant = require("../lib/qdrant");
 const { ingestKnowledgeDocument } = require("../services/rag");
+const { addIngestJob } = require("../queue/ragQueue");
 
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_URL_CHARS = 100_000;
@@ -49,29 +50,47 @@ async function extractText(buffer, mimetype, filename) {
 }
 
 /**
- * Run RAG ingest in the background; update status when complete.
+ * Add a knowledge item to the BullMQ queue.
+ * Falls back to setImmediate-based ingest if queue is unavailable.
  * @param {import('fastify').FastifyInstance} fastify
  * @param {{ id: string; organizationId: string; content: string }} row
  * @param {string} assistantId
  */
-function runIngestBackground(fastify, row, assistantId) {
-  setImmediate(async () => {
-    if (!qdrant.isRagEnabled()) {
-      await prisma.knowledge
-        .update({ where: { id: row.id }, data: { status: "ready" } })
-        .catch(() => {});
-      return;
-    }
-    try {
-      await ingestKnowledgeDocument(fastify, row, assistantId);
-      await prisma.knowledge.update({ where: { id: row.id }, data: { status: "ready" } });
-    } catch (err) {
-      fastify.log.error({ knowledgeId: row.id, err: err.message }, "background ingest failed");
-      await prisma.knowledge
-        .update({ where: { id: row.id }, data: { status: "failed" } })
-        .catch(() => {});
-    }
-  });
+async function enqueueOrIngest(fastify, row, assistantId) {
+  // Try BullMQ first
+  const queued = await addIngestJob(row.id)
+    .then(() => {
+      fastify.log.info({ knowledgeId: row.id }, "knowledge: job added to BullMQ queue");
+      return true;
+    })
+    .catch((err) => {
+      fastify.log.warn(
+        { knowledgeId: row.id, err: err.message },
+        "knowledge: BullMQ unavailable — falling back to direct ingest"
+      );
+      return false;
+    });
+
+  if (!queued) {
+    // Direct background ingest (setImmediate fallback)
+    setImmediate(async () => {
+      if (!qdrant.isRagEnabled()) {
+        await prisma.knowledge
+          .update({ where: { id: row.id }, data: { status: "ready" } })
+          .catch(() => {});
+        return;
+      }
+      try {
+        await ingestKnowledgeDocument(fastify, row, assistantId);
+        await prisma.knowledge.update({ where: { id: row.id }, data: { status: "ready" } });
+      } catch (err) {
+        fastify.log.error({ knowledgeId: row.id, err: err.message }, "direct ingest failed");
+        await prisma.knowledge
+          .update({ where: { id: row.id }, data: { status: "failed" } })
+          .catch(() => {});
+      }
+    });
+  }
 }
 
 /**
@@ -157,7 +176,7 @@ module.exports = async function knowledgeRoutes(fastify) {
       },
     });
 
-    runIngestBackground(fastify, row, assistant.id);
+    await enqueueOrIngest(fastify, row, assistant.id);
     return reply.code(201).send({
       id: row.id,
       assistantId: row.assistantId,
@@ -229,7 +248,7 @@ module.exports = async function knowledgeRoutes(fastify) {
       },
     });
 
-    runIngestBackground(fastify, row, assistant.id);
+    await enqueueOrIngest(fastify, row, assistant.id);
     return reply.code(202).send({
       id: row.id,
       assistantId: row.assistantId,
@@ -300,7 +319,7 @@ module.exports = async function knowledgeRoutes(fastify) {
       },
     });
 
-    runIngestBackground(fastify, row, assistant.id);
+    await enqueueOrIngest(fastify, row, assistant.id);
     return reply.code(202).send({
       id: row.id,
       assistantId: row.assistantId,
@@ -344,15 +363,7 @@ module.exports = async function knowledgeRoutes(fastify) {
     // Remove Qdrant points for this knowledge's chunks
     if (qdrant.isRagEnabled() && existing.chunks.length > 0) {
       const pointIds = existing.chunks.map((c) => c.embeddingId).filter(Boolean);
-      if (pointIds.length > 0) {
-        const qc = qdrant.getClient();
-        const col = qdrant.getCollectionName();
-        if (qc) {
-          await qc
-            .delete(col, { wait: false, points: pointIds })
-            .catch((e) => fastify.log.warn({ err: e.message }, "qdrant point delete failed"));
-        }
-      }
+      await qdrant.deleteAssistantPoints(existing.assistantId, pointIds);
     }
 
     // Hard-delete row (cascades to knowledge_chunks)

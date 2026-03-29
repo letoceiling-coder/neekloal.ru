@@ -1,24 +1,23 @@
 "use strict";
 
 const { randomUUID } = require("crypto");
+const crypto = require("crypto");
 const prisma = require("../lib/prisma");
 const qdrant = require("../lib/qdrant");
 const { embedText, resolveEmbeddingDimension, getEmbeddingModelName } = require("./embedding");
 const { chunkText } = require("./chunking");
 
-/**
- * Rough token estimate (~4 chars per token) for logging / limits.
- * @param {string} text
- */
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Rough token estimate (~4 chars per token). */
 function estimateTokensRough(text) {
   return Math.max(0, Math.ceil(String(text).length / 4));
 }
 
-/** Reserve 20% headroom vs configured caps (token-safe). */
 const TOKEN_BUDGET_SAFETY = 0.8;
 
 /**
- * Cap KNOWLEDGE block size (chars + optional token budget).
+ * Cap KNOWLEDGE block size.
  * @param {string} text
  * @returns {{ text: string; truncated: boolean }}
  */
@@ -30,22 +29,53 @@ function limitKnowledgeBlock(text) {
   if (maxTokensEnv) {
     const mt = parseInt(maxTokensEnv, 10);
     if (!Number.isNaN(mt) && mt > 0) {
-      const effectiveTokens = Math.floor(mt * TOKEN_BUDGET_SAFETY);
-      maxCharsEff = Math.min(maxCharsEff, effectiveTokens * 4);
+      maxCharsEff = Math.min(maxCharsEff, Math.floor(mt * TOKEN_BUDGET_SAFETY) * 4);
     }
   }
 
   const t = String(text);
-  if (t.length <= maxCharsEff) {
-    return { text: t, truncated: false };
-  }
+  if (t.length <= maxCharsEff) return { text: t, truncated: false };
   return { text: t.slice(0, maxCharsEff) + "\n\n[TRUNCATED]", truncated: true };
 }
 
+// ─── Redis cache ──────────────────────────────────────────────────────────────
+
+const CACHE_TTL_SEC = parseInt(process.env.RAG_CACHE_TTL || "120", 10) || 120;
+
+function ragCacheKey(assistantId, query) {
+  const hash = crypto.createHash("md5").update(query).digest("hex");
+  return `rag:${assistantId}:${hash}`;
+}
+
+async function getCachedRag(assistantId, query) {
+  try {
+    const { getCacheConnection } = require("../lib/redis");
+    const redis = getCacheConnection();
+    const key = ragCacheKey(assistantId, query);
+    const val = await redis.get(key);
+    return val ? JSON.parse(val) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function setCachedRag(assistantId, query, result) {
+  try {
+    const { getCacheConnection } = require("../lib/redis");
+    const redis = getCacheConnection();
+    const key = ragCacheKey(assistantId, query);
+    await redis.setex(key, CACHE_TTL_SEC, JSON.stringify(result));
+  } catch {
+    /* ignore cache errors */
+  }
+}
+
+// ─── Ingest ───────────────────────────────────────────────────────────────────
+
 /**
- * Full ingest: chunks → embeddings → Qdrant + KnowledgeChunk rows.
+ * Full ingest pipeline: chunk → embed → store in per-assistant Qdrant collection.
  * @param {import('fastify').FastifyInstance} fastify
- * @param {{ id: string; content: string }} knowledge
+ * @param {{ id: string; organizationId: string; content: string }} knowledge
  * @param {string} assistantId
  */
 async function ingestKnowledgeDocument(fastify, knowledge, assistantId) {
@@ -59,7 +89,8 @@ async function ingestKnowledgeDocument(fastify, knowledge, assistantId) {
   }
 
   const dim = await resolveEmbeddingDimension((t) => embedText(t, assistantId));
-  await qdrant.ensureCollection(dim);
+  // Per-assistant collection
+  await qdrant.ensureAssistantCollection(assistantId, dim);
 
   const modelName = getEmbeddingModelName();
   const chunkIds = [];
@@ -82,8 +113,8 @@ async function ingestKnowledgeDocument(fastify, knowledge, assistantId) {
       },
     });
 
-    await qdrant.upsertChunkPoint(row.id, vector, {
-      assistantId,
+    // Upsert into per-assistant collection (no assistantId in payload — redundant)
+    await qdrant.upsertAssistantPoint(assistantId, row.id, vector, {
       knowledgeId: knowledge.id,
       chunkId: row.id,
       content: piece,
@@ -93,14 +124,26 @@ async function ingestKnowledgeDocument(fastify, knowledge, assistantId) {
   }
 
   fastify.log.info(
-    { knowledgeId: knowledge.id, chunksIndexed: chunkIds.length, chunkIds, embeddingModel: modelName, embeddingDim: dim },
+    {
+      knowledgeId: knowledge.id,
+      assistantId,
+      chunksIndexed: chunkIds.length,
+      chunkIds,
+      embeddingModel: modelName,
+      embeddingDim: dim,
+      collection: qdrant.getAssistantCollectionName(assistantId),
+    },
     "rag ingest complete"
   );
 
   return { chunksIndexed: chunkIds.length, chunkIds };
 }
 
+// ─── Retrieval ────────────────────────────────────────────────────────────────
+
 /**
+ * Retrieve the most relevant knowledge chunks for a chat message.
+ * Uses Redis cache (TTL 120s) → per-assistant Qdrant collection → DB fallback.
  * @param {import('fastify').FastifyInstance} fastify
  * @param {string} assistantId
  * @param {unknown} message
@@ -111,17 +154,20 @@ async function retrieveForChat(fastify, assistantId, message, topK) {
   const k = topK != null ? topK : parseInt(process.env.RAG_TOP_K || "5", 10) || 5;
   const candidateLimit = parseInt(process.env.RAG_SEARCH_CANDIDATES || "24", 10) || 24;
   let minScore = parseFloat(process.env.RAG_MIN_SCORE || "0.7");
-  if (Number.isNaN(minScore)) {
-    minScore = 0.7;
-  }
+  if (Number.isNaN(minScore)) minScore = 0.7;
 
   if (!qdrant.isRagEnabled()) {
     return { knowledgeBlock: "", chunkIds: [], scores: [] };
   }
 
   const query = message == null ? "" : String(message).trim();
-  if (!query) {
-    return { knowledgeBlock: "", chunkIds: [], scores: [] };
+  if (!query) return { knowledgeBlock: "", chunkIds: [], scores: [] };
+
+  // ── Cache check ──────────────────────────────────────────────────────────
+  const cached = await getCachedRag(assistantId, query);
+  if (cached) {
+    fastify.log.info({ assistantId, ragCacheHit: true }, "rag retrieval (cache hit)");
+    return cached;
   }
 
   const ragStart = Date.now();
@@ -139,16 +185,22 @@ async function retrieveForChat(fastify, assistantId, message, topK) {
 
   try {
     const dim = await resolveEmbeddingDimension(wrapEmbed);
-    await qdrant.ensureCollection(dim);
+    await qdrant.ensureAssistantCollection(assistantId, dim);
 
     const queryVector = await wrapEmbed(query);
 
-    const { hits: hitsRaw, latencyMs: qL } = await qdrant.searchSimilar(queryVector, assistantId, candidateLimit);
+    // ── Per-assistant collection search ──────────────────────────────────
+    const { hits: hitsRaw, latencyMs: qL } = await qdrant.searchAssistantSimilar(
+      assistantId,
+      queryVector,
+      candidateLimit
+    );
     qdrantLatencyMs = qL;
 
     let minScoreUsed = minScore;
     let passed = hitsRaw.filter((h) => Number(h.score) >= minScoreUsed);
     let adaptiveScoreFallback = false;
+
     if (passed.length === 0 && hitsRaw.length > 0) {
       minScoreUsed = 0.5;
       passed = hitsRaw.filter((h) => Number(h.score) >= minScoreUsed);
@@ -156,29 +208,26 @@ async function retrieveForChat(fastify, assistantId, message, topK) {
     }
 
     const top = passed.slice(0, k);
-
     const texts = [];
     const chunkIds = [];
     const scores = [];
+
     for (const h of top) {
       const content = typeof h.payload.content === "string" ? h.payload.content : "";
-      if (content) {
-        texts.push(content);
-      }
+      if (content) texts.push(content);
       chunkIds.push(h.id);
       scores.push(h.score);
     }
 
-    let knowledgeBlock = texts.join("\n\n---\n\n");
-    const limited = limitKnowledgeBlock(knowledgeBlock);
-    knowledgeBlock = limited.text;
-
+    const limited = limitKnowledgeBlock(texts.join("\n\n---\n\n"));
+    const knowledgeBlock = limited.text;
     const totalTokensKnowledge = estimateTokensRough(knowledgeBlock);
     const ragLatencyMs = Date.now() - ragStart;
 
     fastify.log.info(
       {
         assistantId,
+        collection: qdrant.getAssistantCollectionName(assistantId),
         retrievalCandidates: hitsRaw.length,
         filteredChunksCount: passed.length,
         droppedByMinScore: hitsRaw.length - passed.length,
@@ -198,7 +247,10 @@ async function retrieveForChat(fastify, assistantId, message, topK) {
       "rag retrieval"
     );
 
-    return { knowledgeBlock, chunkIds, scores };
+    const result = { knowledgeBlock, chunkIds, scores };
+    // Store in cache (fire-and-forget)
+    void setCachedRag(assistantId, query, result);
+    return result;
   } catch (err) {
     const ragLatencyMs = Date.now() - ragStart;
     fastify.log.warn(
@@ -210,7 +262,7 @@ async function retrieveForChat(fastify, assistantId, message, topK) {
         qdrantLatencyMs,
         ragFallback: true,
       },
-      "rag retrieval failed; using fallback knowledge"
+      "rag retrieval failed; using fallback"
     );
     return { knowledgeBlock: "", chunkIds: [], scores: [] };
   }
