@@ -158,6 +158,8 @@ model ApiKey {
   assistant      Assistant? @relation(fields: [assistantId], references: [id], onDelete: SetNull)
   keyHash        String    @unique @map("key_hash")
   name           String?
+  /// Allowed origin hostnames (e.g. ["example.com","*.app.example.com"]). Empty = no restriction.
+  allowedDomains String[]  @map("allowed_domains")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
   deletedAt      DateTime? @map("deleted_at")

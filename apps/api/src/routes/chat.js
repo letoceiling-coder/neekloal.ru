@@ -186,115 +186,131 @@ function getGenerateUrl() {
 /**
  * @param {import('fastify').FastifyInstance} fastify
  */
+/**
+ * Shared pre-LLM setup: auth is already done; returns everything needed to
+ * call the LLM or agent, or sends an error response and returns null.
+ *
+ * @param {import('fastify').FastifyRequest} request
+ * @param {import('fastify').FastifyReply} reply
+ * @param {import('fastify').FastifyInstance} fastify
+ */
+async function prepareChatContext(request, reply, fastify) {
+  const body = request.body && typeof request.body === "object" ? request.body : {};
+  const message = body.message;
+  const assistantId =
+    body.assistantId != null && String(body.assistantId).trim() !== ""
+      ? String(body.assistantId).trim()
+      : request.assistantId || null;
+
+  if (!assistantId) {
+    reply.code(400).send({ error: "assistantId is required" });
+    return null;
+  }
+  if (request.userId == null) {
+    reply.code(403).send({ error: "No acting user for this organization" });
+    return null;
+  }
+
+  const assistant = await prisma.assistant.findFirst({
+    where: { id: assistantId, organizationId: request.organizationId, deletedAt: null },
+  });
+  if (!assistant) {
+    reply.code(404).send({ error: "Assistant not found" });
+    return null;
+  }
+
+  const isWidget = isWidgetClientRequest(request);
+  if (isWidget) {
+    const domainCheck = assertWidgetDomainAllowed(assistant, request);
+    if (!domainCheck.ok) {
+      reply.code(403).send({ error: domainCheck.error });
+      return null;
+    }
+  }
+
+  const chatAssistant = Object.assign({}, assistant, {
+    systemPrompt: isWidget
+      ? appendWidgetSalesPrompt(assistant.systemPrompt)
+      : assistant.systemPrompt,
+  });
+
+  let model =
+    assistant.model === "auto" ? resolveModel(message) : assistant.model;
+  model = await ensureModelAvailable(model, process.env.OLLAMA_URL);
+  console.log("MODEL SELECTED:", model);
+
+  const estimatedInputTokens = estimateTokensFromMessage(message);
+  const estimatedOutputTokens = Math.max(256, estimatedInputTokens * 2);
+
+  const pre = await preCheckChatBeforeLlm({
+    organizationId: assistant.organizationId,
+    modelName: model,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+  });
+  if (!pre.ok) {
+    reply.code(pre.status).send({ error: pre.error });
+    return null;
+  }
+
+  let knowledgeBlock = "";
+  if (qdrant.isRagEnabled()) {
+    const retrieved = await retrieveForChat(fastify, assistant.id, message, 5);
+    knowledgeBlock = retrieved.knowledgeBlock;
+  }
+  if (!knowledgeBlock.trim()) {
+    const knowledgeRows = await prisma.knowledge.findMany({
+      where: { assistantId: assistant.id, organizationId: assistant.organizationId },
+      orderBy: { createdAt: "asc" },
+      take: 3,
+    });
+    knowledgeBlock =
+      knowledgeRows.length > 0 ? knowledgeRows.map((k) => k.content).join("\n\n") : "";
+  }
+
+  const agentRecord = await prisma.agent.findFirst({
+    where: {
+      organizationId: assistant.organizationId,
+      assistantId: assistant.id,
+      deletedAt: null,
+    },
+    include: { tools: true },
+  });
+
+  let agentForChat = agentRecord;
+  if (agentRecord && isWidget) {
+    const useV2Rules = String(agentRecord.mode || "v1").toLowerCase() === "v2";
+    const fallbackRules = useV2Rules ? DEFAULT_AGENT_RULES_V2 : DEFAULT_AGENT_RULES_V1;
+    const baseRules =
+      agentRecord.rules && String(agentRecord.rules).trim() !== ""
+        ? String(agentRecord.rules).trim()
+        : fallbackRules;
+    agentForChat = { ...agentRecord, rules: `${baseRules}${WIDGET_SALES_BLOCK}` };
+  }
+
+  return {
+    body,
+    message,
+    assistant,
+    chatAssistant,
+    isWidget,
+    model,
+    estimatedInputTokens,
+    knowledgeBlock,
+    agentForChat,
+    uid: request.userId,
+  };
+}
+
 module.exports = async function chatRoutes(fastify) {
   fastify.post("/chat", {
     preHandler: [chatAuthMiddleware, rateLimitMiddleware, widgetChatRateLimit],
   }, async (request, reply) => {
-    const body = request.body && typeof request.body === "object" ? request.body : {};
-    const message = body.message;
-    // body.assistantId takes priority; fallback to apiKey-bound assistantId from chatAuth
-    const assistantId =
-      body.assistantId != null && String(body.assistantId).trim() !== ""
-        ? String(body.assistantId).trim()
-        : request.assistantId || null;
+    const ctx = await prepareChatContext(request, reply, fastify);
+    if (!ctx) return; // error already sent
 
-    if (!assistantId) {
-      return reply.code(400).send({ error: "assistantId is required" });
-    }
-
-    if (request.userId == null) {
-      return reply.code(403).send({ error: "No acting user for this organization" });
-    }
-
-    const assistant = await prisma.assistant.findFirst({
-      where: {
-        id: assistantId,
-        organizationId: request.organizationId,
-        deletedAt: null,
-      },
-    });
-    if (!assistant) {
-      return reply.code(404).send({ error: "Assistant not found" });
-    }
-
-    const isWidget = isWidgetClientRequest(request);
-    if (isWidget) {
-      const domainCheck = assertWidgetDomainAllowed(assistant, request);
-      if (!domainCheck.ok) {
-        return reply.code(403).send({ error: domainCheck.error });
-      }
-    }
-
-    const chatAssistant = Object.assign({}, assistant, {
-      systemPrompt: isWidget
-        ? appendWidgetSalesPrompt(assistant.systemPrompt)
-        : assistant.systemPrompt,
-    });
-
-    const uid = request.userId;
-
-    let model =
-      assistant.model === "auto"
-        ? resolveModel(message)
-        : assistant.model;
-    model = await ensureModelAvailable(model, process.env.OLLAMA_URL);
-    console.log("MODEL SELECTED:", model);
-
-    const estimatedInputTokens = estimateTokensFromMessage(message);
-    const estimatedOutputTokens = Math.max(256, estimatedInputTokens * 2);
-
-    const pre = await preCheckChatBeforeLlm({
-      organizationId: assistant.organizationId,
-      modelName: model,
-      estimatedInputTokens,
-      estimatedOutputTokens,
-    });
-    if (!pre.ok) {
-      return reply.code(pre.status).send({ error: pre.error });
-    }
-
-    let knowledgeBlock = "";
-
-    if (qdrant.isRagEnabled()) {
-      const retrieved = await retrieveForChat(fastify, assistant.id, message, 5);
-      knowledgeBlock = retrieved.knowledgeBlock;
-    }
-
-    if (!knowledgeBlock.trim()) {
-      const knowledgeRows = await prisma.knowledge.findMany({
-        where: { assistantId: assistant.id, organizationId: assistant.organizationId },
-        orderBy: { createdAt: "asc" },
-        take: 3,
-      });
-      knowledgeBlock =
-        knowledgeRows.length > 0 ? knowledgeRows.map((k) => k.content).join("\n\n") : "";
-      if (knowledgeRows.length > 0 && qdrant.isRagEnabled()) {
-        fastify.log.info(
-          { assistantId: assistant.id, knowledgeDocumentsUsed: knowledgeRows.length },
-          "chat knowledge: RAG empty, using raw knowledge document text fallback"
-        );
-      }
-    }
-
-    const agentRecord = await prisma.agent.findFirst({
-      where: {
-        organizationId: assistant.organizationId,
-        assistantId: assistant.id,
-        deletedAt: null,
-      },
-      include: { tools: true },
-    });
-
-    let agentForChat = agentRecord;
-    if (agentRecord && isWidget) {
-      const useV2Rules = String(agentRecord.mode || "v1").toLowerCase() === "v2";
-      const fallbackRules = useV2Rules ? DEFAULT_AGENT_RULES_V2 : DEFAULT_AGENT_RULES_V1;
-      const baseRules =
-        agentRecord.rules && String(agentRecord.rules).trim() !== ""
-          ? String(agentRecord.rules).trim()
-          : fallbackRules;
-      agentForChat = { ...agentRecord, rules: `${baseRules}${WIDGET_SALES_BLOCK}` };
-    }
+    const { body, message, assistant, chatAssistant, isWidget, model,
+            estimatedInputTokens, knowledgeBlock, agentForChat, uid } = ctx;
 
     try {
       if (agentForChat) {
@@ -417,6 +433,142 @@ module.exports = async function chatRoutes(fastify) {
     } catch (error) {
       fastify.log.error(error);
       return reply.code(500).send({ error: error.message || "Internal Server Error" });
+    }
+  });
+
+  // ─── SSE streaming endpoint ───────────────────────────────────────────────
+  fastify.post("/chat/stream", {
+    preHandler: [chatAuthMiddleware, rateLimitMiddleware, widgetChatRateLimit],
+  }, async (request, reply) => {
+    const ctx = await prepareChatContext(request, reply, fastify);
+    if (!ctx) return; // error already sent
+
+    const { body, message, assistant, chatAssistant, isWidget, model,
+            estimatedInputTokens, knowledgeBlock, agentForChat, uid } = ctx;
+
+    // Take over the raw socket — Fastify must not touch the response after this.
+    reply.hijack();
+    const raw = reply.raw;
+
+    raw.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": request.headers.origin || "*",
+    });
+
+    /** Send one SSE event */
+    function send(event, data) {
+      raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    }
+
+    try {
+      let fullText = "";
+
+      if (agentForChat) {
+        // Agent: run synchronously (no per-token streaming), then emit whole reply
+        const useV2 = String(agentForChat.mode || "v1").toLowerCase() === "v2";
+        const runner = useV2 ? runAgentV2 : runAgent;
+        const { reply: replyText, model: modelOut } = await runner({
+          assistant,
+          message,
+          knowledgeBlock,
+          model,
+          agent: agentForChat,
+          initiatedByUserId: uid,
+        });
+        fullText = replyText;
+        // Emit word by word to simulate streaming UX
+        const words = fullText.split(/(\s+)/);
+        for (const w of words) {
+          if (w) send("token", { token: w });
+        }
+      } else {
+        // Direct Ollama — real token streaming
+        const prompt = buildFinalPrompt({
+          assistant: chatAssistant,
+          systemPrompt: chatAssistant.systemPrompt,
+          agent: null,
+          knowledge: knowledgeBlock,
+          message,
+        });
+        fastify.log.info({ prompt }, "chat/stream prompt");
+
+        const ollamaUrl = getGenerateUrl();
+        const ollamaRes = await fetch(ollamaUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model, prompt, stream: true }),
+        });
+
+        if (!ollamaRes.ok || !ollamaRes.body) {
+          const errText = await ollamaRes.text().catch(() => "");
+          fastify.log.error({ status: ollamaRes.status, body: errText }, "ollama stream failed");
+          send("error", { error: "Ollama stream failed" });
+          raw.end();
+          return;
+        }
+
+        // Read NDJSON stream line by line
+        const decoder = new TextDecoder();
+        let buf = "";
+        for await (const chunk of ollamaRes.body) {
+          buf += decoder.decode(chunk, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            const l = line.trim();
+            if (!l) continue;
+            try {
+              const obj = JSON.parse(l);
+              if (obj.response) {
+                fullText += obj.response;
+                send("token", { token: obj.response });
+              }
+              if (obj.done) {
+                // flush any remaining
+              }
+            } catch { /* ignore malformed line */ }
+          }
+        }
+        // flush tail
+        if (buf.trim()) {
+          try {
+            const obj = JSON.parse(buf.trim());
+            if (obj.response) {
+              fullText += obj.response;
+              send("token", { token: obj.response });
+            }
+          } catch { /* */ }
+        }
+      }
+
+      // Finalize usage + persist
+      await finalizeChatUsage({
+        organizationId: assistant.organizationId,
+        userId: uid,
+        apiKeyId: request.apiKeyId,
+        assistantId: assistant.id,
+        conversationId: body.conversationId != null ? String(body.conversationId) : null,
+        model,
+        inputTokens: estimatedInputTokens,
+        outputTokens: estimateTokensFromMessage(fullText),
+      });
+      await persistChatTurn({
+        organizationId: assistant.organizationId,
+        conversationId: body.conversationId != null ? String(body.conversationId) : null,
+        assistantId: assistant.id,
+        userText: message,
+        assistantText: fullText,
+      });
+
+      send("done", { model });
+    } catch (err) {
+      fastify.log.error(err);
+      send("error", { error: err instanceof Error ? err.message : "Stream failed" });
+    } finally {
+      raw.end();
     }
   });
 };
