@@ -1,5 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useAssistants, useCreateAssistant } from "../api/assistants";
+import { useModels } from "../api/models";
+import { AdminCommandSelect } from "../components/admin/AdminCommandSelect";
 import {
   Button,
   Card,
@@ -17,12 +19,30 @@ import {
 export function AssistantsPage() {
   const { data, isLoading, isError, error, refetch } = useAssistants();
   const createMutation = useCreateAssistant();
+  const {
+    data: modelCatalog,
+    isLoading: modelsLoading,
+    isError: modelsCatalogError,
+  } = useModels();
+
+  const modelOptions = useMemo(
+    () => (modelCatalog ?? []).map((m) => ({ value: m, label: m })),
+    [modelCatalog]
+  );
 
   const [name, setName] = useState("");
-  const [model, setModel] = useState("llama3.2");
+  const [model, setModel] = useState("");
   const [systemPrompt, setSystemPrompt] = useState(
     "You are a helpful assistant."
   );
+
+  useEffect(() => {
+    const list = modelCatalog;
+    if (!list?.length) return;
+    if (model === "" || !list.includes(model)) {
+      setModel(list[0]);
+    }
+  }, [modelCatalog, model]);
 
   const message =
     error instanceof Error ? error.message : "Ошибка загрузки";
@@ -63,15 +83,23 @@ export function AssistantsPage() {
                 required
                 autoComplete="off"
               />
-              <Input
-                id="asst-model"
-                label="Модель"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="llama3.2"
-                required
-                autoComplete="off"
-              />
+              <div>
+                <AdminCommandSelect
+                  id="asst-model"
+                  label="Модель"
+                  options={modelOptions}
+                  value={model}
+                  onChange={setModel}
+                  placeholder="Выберите модель"
+                  searchPlaceholder="Поиск модели…"
+                  disabled={modelsLoading || modelOptions.length === 0}
+                />
+                {modelsCatalogError ? (
+                  <p className="mt-1 text-xs text-amber-800">
+                    Не удалось загрузить список моделей. Обновите страницу.
+                  </p>
+                ) : null}
+              </div>
             </div>
             <div>
               <label

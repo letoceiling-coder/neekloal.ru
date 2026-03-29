@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
 import { type AdminPlan, useAdminPlans, useAdminUpdatePlan } from "../../api/admin";
+import { useModels } from "../../api/models";
 import {
   AllowedModelsEditor,
   type AllowedModelsValue,
   normalizeFromPlan,
+  orphanModelsFromPlan,
 } from "../../components/admin/AllowedModelsEditor";
 import { useAdminForbiddenRedirect } from "../../hooks/useAdminForbiddenRedirect";
 import { useFlashMessage } from "../../hooks/useFlashMessage";
@@ -46,6 +48,11 @@ export function AdminPlansPage() {
   const onForbidden = useAdminForbiddenRedirect();
   const { show, banner } = useFlashMessage();
   const { data: plans, isLoading, error, refetch, isFetching } = useAdminPlans();
+  const {
+    data: modelCatalog = [],
+    isLoading: catalogLoading,
+    isError: catalogError,
+  } = useModels();
   const updatePlan = useAdminUpdatePlan();
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [modelsError, setModelsError] = useState<Record<string, string>>({});
@@ -146,11 +153,23 @@ export function AdminPlansPage() {
           const d = getDraft(p);
           const rowBusy = updatePlan.isPending && updatePlan.variables?.id === p.id;
           const err = modelsError[p.id];
+          const orphans =
+            !catalogLoading && !catalogError
+              ? orphanModelsFromPlan(p.allowedModels, modelCatalog)
+              : [];
           return (
             <div className="flex flex-col gap-1">
+              {catalogError ? (
+                <span className="text-xs text-amber-800">
+                  Не удалось загрузить каталог моделей. Обновите страницу.
+                </span>
+              ) : null}
               <AllowedModelsEditor
                 planId={p.id}
                 value={d.models}
+                availableModels={modelCatalog}
+                orphanModels={orphans}
+                catalogLoading={catalogLoading}
                 disabled={rowBusy || tableBusy}
                 onChange={(next) => setField(p.id, p, "models", next)}
               />
@@ -272,7 +291,18 @@ export function AdminPlansPage() {
         },
       },
     ],
-    [drafts, modelsError, rowHint, updatePlan, onForbidden, show, tableBusy]
+    [
+      drafts,
+      modelsError,
+      rowHint,
+      updatePlan,
+      onForbidden,
+      show,
+      tableBusy,
+      modelCatalog,
+      catalogLoading,
+      catalogError,
+    ]
   );
 
   return (

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useAdminOrganizations, type AdminUsageItem, useAdminUsage } from "../../api/admin";
+import { useModels } from "../../api/models";
 import { AdminCommandSelect } from "../../components/admin/AdminCommandSelect";
-import { KNOWN_AI_MODELS } from "../../config/aiModels";
 import { useAdminForbiddenRedirect } from "../../hooks/useAdminForbiddenRedirect";
 import { ApiError } from "../../lib/apiClient";
 import {
@@ -29,6 +29,7 @@ export function AdminUsagePage() {
   const [model, setModel] = useState("");
 
   const { data: orgs } = useAdminOrganizations();
+  const { data: modelCatalog = [] } = useModels();
 
   const orgOptions = useMemo(() => {
     const list = orgs ?? [];
@@ -56,7 +57,7 @@ export function AdminUsagePage() {
   );
 
   const modelOptionsMerged = useMemo(() => {
-    const seen = new Set(KNOWN_AI_MODELS);
+    const seen = new Set(modelCatalog);
     const extra: { value: string; label: string }[] = [];
     for (const item of data?.items ?? []) {
       if (!seen.has(item.model)) {
@@ -67,10 +68,10 @@ export function AdminUsagePage() {
     extra.sort((a, b) => a.label.localeCompare(b.label));
     return [
       { value: "", label: "Все модели" },
-      ...KNOWN_AI_MODELS.map((m) => ({ value: m, label: m })),
+      ...modelCatalog.map((m) => ({ value: m, label: m })),
       ...extra,
     ];
-  }, [data?.items]);
+  }, [data?.items, modelCatalog]);
 
   const columns = useMemo<DataTableColumn<AdminUsageItem>[]>(
     () => [

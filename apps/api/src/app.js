@@ -13,6 +13,7 @@ async function build() {
   });
   await app.register(require("./routes/auth"));
   await app.register(require("./routes/health"));
+  await app.register(require("./routes/models"));
   await app.register(require("./routes/users"));
   await app.register(require("./routes/apiKeys"));
   await app.register(require("./routes/assistants"));

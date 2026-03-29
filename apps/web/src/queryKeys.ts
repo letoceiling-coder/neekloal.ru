@@ -26,6 +26,9 @@ export const queryKeys = {
   billing: {
     summary: ["billing", "summary"] as const,
   },
+  models: {
+    all: ["models", "catalog"] as const,
+  },
   admin: {
     gate: ["admin", "gate"] as const,
     organizations: ["admin", "organizations"] as const,
