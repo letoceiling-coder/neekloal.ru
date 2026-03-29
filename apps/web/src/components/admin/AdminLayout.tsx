@@ -27,19 +27,31 @@ const nav = [
 export function AdminLayout() {
   const navigate = useNavigate();
   const accessToken = useAuthStore((s) => s.accessToken);
+  const isHydrated = useAuthStore((s) => s.isHydrated);
 
   const gate = useQuery({
-    queryKey: queryKeys.admin.gate,
+    // Без accessToken в ключе React Query держит старый 403 после нового логина / смены токена.
+    queryKey: [...queryKeys.admin.gate, accessToken ?? "__none__"],
     queryFn: getPlans,
-    enabled: Boolean(accessToken),
+    enabled: isHydrated && Boolean(accessToken),
     retry: false,
+    staleTime: 0,
   });
 
   useEffect(() => {
+    if (!isHydrated) return;
     if (gate.error instanceof ApiError && gate.error.status === 403) {
       navigate("/dashboard", { replace: true });
     }
-  }, [gate.error, navigate]);
+  }, [gate.error, isHydrated, navigate]);
+
+  if (!isHydrated) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-neutral-50 text-sm text-neutral-600">
+        Loading...
+      </div>
+    );
+  }
 
   if (gate.isPending) {
     return (

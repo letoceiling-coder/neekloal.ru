@@ -5,6 +5,9 @@ import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import "./index.css";
 import { queryClient } from "./lib/queryClient";
+import { hydrateAuthFromStorage } from "./stores/authStore";
+
+hydrateAuthFromStorage();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

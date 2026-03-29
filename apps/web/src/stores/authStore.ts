@@ -8,6 +8,8 @@ export type AuthState = {
   userId: string | null;
   organizationId: string | null;
   isAuthenticated: boolean;
+  /** true после первого чтения localStorage (или явной setSession / logout) */
+  isHydrated: boolean;
   setSession: (payload: {
     accessToken: string;
     email: string;
@@ -41,14 +43,29 @@ function readPersisted(): Partial<
   }
 }
 
-const persisted = readPersisted();
+/**
+ * Читает `crm_auth_v2`, обновляет store и выставляет `isHydrated: true`.
+ * Вызывать до первого React render (`main.tsx`) и при `storage` из других вкладок.
+ */
+export function hydrateAuthFromStorage(): void {
+  const next = readPersisted();
+  useAuthStore.setState({
+    accessToken: next.accessToken ?? null,
+    email: next.email ?? null,
+    userId: next.userId ?? null,
+    organizationId: next.organizationId ?? null,
+    isAuthenticated: Boolean(next.accessToken),
+    isHydrated: true,
+  });
+}
 
 export const useAuthStore = create<AuthState>((set) => ({
-  accessToken: persisted.accessToken ?? null,
-  email: persisted.email ?? null,
-  userId: persisted.userId ?? null,
-  organizationId: persisted.organizationId ?? null,
-  isAuthenticated: persisted.isAuthenticated ?? false,
+  accessToken: null,
+  email: null,
+  userId: null,
+  organizationId: null,
+  isAuthenticated: false,
+  isHydrated: false,
   setSession: (payload) => {
     const next = {
       accessToken: payload.accessToken,
@@ -56,6 +73,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       userId: payload.userId,
       organizationId: payload.organizationId,
       isAuthenticated: true,
+      isHydrated: true,
     };
     if (typeof window !== "undefined") {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
@@ -72,6 +90,14 @@ export const useAuthStore = create<AuthState>((set) => ({
       userId: null,
       organizationId: null,
       isAuthenticated: false,
+      isHydrated: true,
     });
   },
 }));
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event: StorageEvent) => {
+    if (event.key !== null && event.key !== STORAGE_KEY) return;
+    hydrateAuthFromStorage();
+  });
+}
