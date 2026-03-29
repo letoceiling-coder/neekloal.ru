@@ -205,8 +205,67 @@ async function finalizeChatUsage(params) {
   });
 }
 
+/**
+ * Проверка плана и лимитов ДО вызова LLM (402/403). Логика согласована с finalizeChatUsage
+ * (сброс периода по reset_at применяется так же в read-only виде).
+ *
+ * @param {object} params
+ * @param {string} params.organizationId
+ * @param {string} params.modelName
+ * @param {unknown} params.estimatedInputTokens
+ * @param {unknown} params.estimatedOutputTokens
+ * @returns {Promise<{ ok: true } | { ok: false, status: number, error: string }>}
+ */
+async function preCheckChatBeforeLlm(params) {
+  const { organizationId, modelName, estimatedInputTokens, estimatedOutputTokens } = params;
+
+  const org = await prisma.organization.findFirst({
+    where: { id: organizationId, deletedAt: null },
+    include: { plan: true },
+  });
+  if (!org || !org.plan) {
+    return { ok: false, status: 404, error: "Organization not found" };
+  }
+  if (org.isBlocked === true) {
+    return { ok: false, status: 403, error: "Organization is blocked" };
+  }
+
+  let requestsUsed = safeTokenCount(org.requestsUsed);
+  let tokensUsed = safeTokenCount(org.tokensUsed);
+  const now = new Date();
+  if (org.resetAt != null && now > org.resetAt) {
+    requestsUsed = 0;
+    tokensUsed = 0;
+  }
+
+  const allowedModels = org.plan.allowedModels;
+  const m = String(modelName ?? "").trim();
+  if (!isModelAllowed(allowedModels, m)) {
+    return { ok: false, status: 403, error: "Model not allowed for your plan" };
+  }
+
+  const inT = safeTokenCount(estimatedInputTokens);
+  const outT = safeTokenCount(estimatedOutputTokens);
+  const total = inT + outT;
+
+  const maxReq = org.plan.maxRequestsPerMonth;
+  const maxTok = org.plan.maxTokensPerMonth;
+  const maxReqN = maxReq != null ? safeTokenCount(maxReq) : null;
+  const maxTokN = maxTok != null ? safeTokenCount(maxTok) : null;
+
+  if (maxReqN != null && requestsUsed >= maxReqN) {
+    return { ok: false, status: 402, error: "Monthly request limit exceeded" };
+  }
+  if (maxTokN != null && tokensUsed + total > maxTokN) {
+    return { ok: false, status: 402, error: "Monthly token limit exceeded" };
+  }
+
+  return { ok: true };
+}
+
 module.exports = {
   finalizeChatUsage,
+  preCheckChatBeforeLlm,
   ensureFreePlan,
   getInitialResetAt,
   startOfNextCalendarMonthUTC,

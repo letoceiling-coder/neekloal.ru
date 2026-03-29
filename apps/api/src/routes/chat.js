@@ -6,7 +6,8 @@ const { retrieveForChat } = require("../services/rag");
 const { runAgent } = require("../services/agent");
 const { runAgentV2 } = require("../services/agentV2");
 const { resolveModel, ensureModelAvailable } = require("../services/modelRouter");
-const { finalizeChatUsage } = require("../services/planAccess");
+const { finalizeChatUsage, preCheckChatBeforeLlm } = require("../services/planAccess");
+const { buildFinalPrompt } = require("../services/chatPrompt");
 const chatAuthMiddleware = require("../middleware/chatAuth");
 const rateLimitMiddleware = require("../middleware/rateLimit");
 const { widgetChatRateLimit } = require("../middleware/widgetRateLimit");
@@ -183,36 +184,6 @@ function getGenerateUrl() {
 }
 
 /**
- * @param {string} systemPrompt
- * @param {string} knowledgeBlock raw joined knowledge (may be empty)
- * @param {unknown} message
- */
-function buildStructuredPrompt(systemPrompt, knowledgeBlock, message) {
-  const sys = String(systemPrompt ?? "").trim();
-  const kb = knowledgeBlock ? String(knowledgeBlock).trim() : "";
-  const userMsg = message == null ? "" : String(message).trim();
-
-  if (kb) {
-    const prompt = `SYSTEM:
-${sys}
-
-KNOWLEDGE:
-${kb}
-
-USER:
-${userMsg}`;
-    return prompt.trim();
-  }
-
-  const prompt = `SYSTEM:
-${sys}
-
-USER:
-${userMsg}`;
-  return prompt.trim();
-}
-
-/**
  * @param {import('fastify').FastifyInstance} fastify
  */
 module.exports = async function chatRoutes(fastify) {
@@ -266,6 +237,17 @@ module.exports = async function chatRoutes(fastify) {
     console.log("MODEL SELECTED:", model);
 
     const estimatedInputTokens = estimateTokensFromMessage(message);
+    const estimatedOutputTokens = Math.max(256, estimatedInputTokens * 2);
+
+    const pre = await preCheckChatBeforeLlm({
+      organizationId: assistant.organizationId,
+      modelName: model,
+      estimatedInputTokens,
+      estimatedOutputTokens,
+    });
+    if (!pre.ok) {
+      return reply.code(pre.status).send({ error: pre.error });
+    }
 
     let knowledgeBlock = "";
 
@@ -362,7 +344,13 @@ module.exports = async function chatRoutes(fastify) {
         return withWidgetSync({ reply: replyText, model: modelOut }, isWidget, persistedAgent);
       }
 
-      const prompt = buildStructuredPrompt(chatAssistant.systemPrompt, knowledgeBlock, message);
+      const prompt = buildFinalPrompt({
+        assistant: chatAssistant,
+        systemPrompt: chatAssistant.systemPrompt,
+        agent: null,
+        knowledge: knowledgeBlock,
+        message,
+      });
       fastify.log.info({ prompt }, "chat prompt");
 
       const url = getGenerateUrl();

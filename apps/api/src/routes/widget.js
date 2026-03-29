@@ -58,6 +58,7 @@ module.exports = async function widgetRoutes(fastify) {
       const phoneDigits =
         firstMessageRaw != null ? getLeadPhoneDigitsFromText(firstMessageRaw) : null;
 
+      let createdNewLead = false;
       let lead = null;
       if (phoneDigits) {
         const existing = await prisma.lead.findFirst({

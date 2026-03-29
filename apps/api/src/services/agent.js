@@ -1,6 +1,7 @@
 "use strict";
 
 const { executeTool } = require("./tools");
+const { buildFinalPrompt } = require("./chatPrompt");
 
 const VALID_ACTIONS = new Set(["reply", "tool"]);
 
@@ -63,24 +64,21 @@ function parseAgentJson(raw) {
  * @param {string} rules
  * @param {string} kb
  * @param {string} userMsg
- * @param {string} assistantName
+ * @param {object} assistant — Prisma assistant
  * @param {string} reason
  */
-function buildFallbackPrompt(rules, kb, userMsg, assistantName, reason) {
-  return `SYSTEM (agent rules):
-${rules}
+function buildFallbackPrompt(rules, kb, userMsg, assistant, reason) {
+  const agentBlock = `${rules}
 
-KNOWLEDGE:
-${kb || "(none)"}
+Reply helpfully in plain text for the user. Do not output JSON.
 
-ASSISTANT: ${assistantName}
-
-USER:
-${userMsg}
-
-Note: ${reason}
-
-Reply helpfully in plain text for the user. Do not output JSON.`;
+Note: ${reason}`;
+  return buildFinalPrompt({
+    assistant,
+    knowledge: kb,
+    message: userMsg,
+    agent: { rules: agentBlock },
+  });
 }
 
 /**
@@ -138,24 +136,22 @@ async function runAgent({ assistant, message, knowledgeBlock, model, agent }) {
 
   const toolsBlock = formatToolsBlock(agent.tools || []);
 
-  const firstPrompt = `SYSTEM (agent rules):
-${rules}
+  const agentPlannerRules = `${rules}
 
 TOOLS (available):
 ${toolsBlock}
-
-KNOWLEDGE:
-${kb || "(none)"}
-
-ASSISTANT CONTEXT (name / model hint): ${assistant.name}
-
-USER:
-${userMsg}
 
 You must respond with exactly one JSON object and nothing else:
 {"action":"reply","text":"<your answer to the user>"}
 OR
 {"action":"tool","toolId":"<uuid from TOOLS>","input":<optional JSON object for the tool>}`;
+
+  const firstPrompt = buildFinalPrompt({
+    assistant,
+    knowledge: kb,
+    message: userMsg,
+    agent: { rules: agentPlannerRules },
+  });
 
   const firstRaw = await ollamaGenerate(model, firstPrompt);
   const parsed = parseAgentJson(firstRaw);
@@ -199,7 +195,7 @@ OR
       rules,
       kb,
       userMsg,
-      assistant.name,
+      assistant,
       "The model requested a toolId that does not exist in TOOLS."
     );
     const fallback = await ollamaGenerate(model, fallbackPrompt);
@@ -231,7 +227,7 @@ OR
     const reason = executeThrew
       ? "Tool execution threw an error; apologize briefly and answer if you can."
       : `Tool returned failure or invalid payload: ${toolResult.slice(0, 500)}`;
-    const fallbackPrompt = buildFallbackPrompt(rules, kb, userMsg, assistant.name, reason);
+    const fallbackPrompt = buildFallbackPrompt(rules, kb, userMsg, assistant, reason);
     const fallback = await ollamaGenerate(model, fallbackPrompt);
     console.log({
       agentAction: "tool",
@@ -250,19 +246,17 @@ OR
     toolFailed: false,
   });
 
-  const secondPrompt = `SYSTEM (agent rules):
-${rules}
+  const secondAgentRules = `${rules}
 
-KNOWLEDGE:
-${kb || "(none)"}
+After reading TOOL RESULT below, write the final answer for the user in plain language. Be concise. Do not output JSON.`;
 
-USER:
-${userMsg}
-
-TOOL RESULT:
-${toolResult}
-
-Write the final answer for the user in plain language. Be concise. Do not output JSON.`;
+  const secondPrompt = buildFinalPrompt({
+    assistant,
+    knowledge: kb,
+    message: userMsg,
+    agent: { rules: secondAgentRules },
+    appendAfterUser: `TOOL RESULT:\n${toolResult}`,
+  });
 
   const finalText = await ollamaGenerate(model, secondPrompt);
   return { reply: finalText.trim() || toolResult, model };
