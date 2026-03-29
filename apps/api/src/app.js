@@ -44,6 +44,9 @@ build()
         app.log.warn({ err: e }, "printRoutes failed");
       }
       startWidgetFollowUpSweep(app.log);
+      // Start RAG background worker (stuck-job recovery + periodic reindex)
+      const { startWorker } = require("./workers/ragWorker");
+      startWorker(app);
     })
   )
   .catch((err) => {

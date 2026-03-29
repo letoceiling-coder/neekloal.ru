@@ -10,7 +10,7 @@ import {
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAssistants, usePatchAssistant } from "../api/assistants";
 import { useAgents, useCreateAgent, usePatchAgent } from "../api/agents";
-import { useApiKeys, useCreateApiKey, type CreateApiKeyResponse } from "../api/apiKeys";
+import { useCreateApiKey, type CreateApiKeyResponse } from "../api/apiKeys";
 import {
   useAddKnowledge,
   useAddKnowledgeUrl,
@@ -622,61 +622,40 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
 
 // ─── Section: Widget ──────────────────────────────────────────────────────────
 
-type WidgetPhase =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "ready"; apiKey: string }
-  | { status: "exists" }
-  | { status: "error"; message: string };
-
 function WidgetSection({ assistant }: { assistant: Assistant }) {
-  const { data: allKeys, isLoading: keysLoading } = useApiKeys();
   const createKey = useCreateApiKey();
-  const [phase, setPhase] = useState<WidgetPhase>({ status: "idle" });
+  const [embedCode, setEmbedCode] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const codeRef = useRef<HTMLTextAreaElement>(null);
 
-  const existingKey = allKeys?.find((k) => k.assistantId === assistant.id);
-
+  // Auto-create key on first mount
   useEffect(() => {
-    if (keysLoading || phase.status !== "idle") return;
+    void generateKey();
+  }, [assistant.id]);
 
-    if (existingKey) {
-      setPhase({ status: "exists" });
-    } else {
-      setPhase({ status: "loading" });
-      createKey
-        .mutateAsync({ assistantId: assistant.id, name: `widget:${assistant.name}` })
-        .then((res: CreateApiKeyResponse) => {
-          setPhase({ status: "ready", apiKey: res.key });
-        })
-        .catch((e: unknown) => {
-          setPhase({
-            status: "error",
-            message: e instanceof Error ? e.message : "Ошибка создания ключа",
-          });
-        });
+  async function generateKey() {
+    setCreating(true);
+    setCreateError(null);
+    setEmbedCode(null);
+    try {
+      const res = await createKey.mutateAsync({
+        assistantId: assistant.id,
+        name: `widget:${assistant.name}`,
+      }) as CreateApiKeyResponse;
+      setEmbedCode(buildEmbedCode(res.key, assistant.id));
+    } catch (e) {
+      setCreateError(e instanceof Error ? e.message : "Ошибка создания ключа");
+    } finally {
+      setCreating(false);
     }
-  }, [keysLoading]);
-
-  function handleNewKey() {
-    setPhase({ status: "loading" });
-    createKey
-      .mutateAsync({ assistantId: assistant.id, name: `widget:${assistant.name}` })
-      .then((res: CreateApiKeyResponse) => {
-        setPhase({ status: "ready", apiKey: res.key });
-      })
-      .catch((e: unknown) => {
-        setPhase({
-          status: "error",
-          message: e instanceof Error ? e.message : "Ошибка создания ключа",
-        });
-      });
   }
 
-  async function handleCopy(code: string) {
+  async function handleCopy() {
+    if (!embedCode) return;
     try {
-      await navigator.clipboard.writeText(code);
+      await navigator.clipboard.writeText(embedCode);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -684,54 +663,31 @@ function WidgetSection({ assistant }: { assistant: Assistant }) {
     }
   }
 
-  const embedCode =
-    phase.status === "ready"
-      ? buildEmbedCode(phase.apiKey, assistant.id)
-      : "";
-
   return (
     <Card>
       <CardHeader>
         <h3 className="text-sm font-semibold text-neutral-800">Виджет для сайта</h3>
       </CardHeader>
       <CardContent className="space-y-4">
-        {phase.status === "loading" && (
+        {creating && (
           <div className="flex items-center gap-2 text-sm text-neutral-500">
             <Loader className="h-4 w-4" />
-            Подготовка API ключа…
+            Генерация API ключа…
           </div>
         )}
 
-        {phase.status === "exists" && (
-          <div className="space-y-3">
-            <p className="text-sm text-neutral-600">
-              Для этого ассистента уже есть API ключ.{" "}
-              <span className="text-neutral-400">
-                (id: {existingKey?.id.slice(0, 8)}…)
-              </span>
-            </p>
-            <p className="rounded-md bg-neutral-50 px-4 py-3 text-sm text-neutral-500">
-              Значение ключа показывается только при создании. Нажмите кнопку ниже,
-              чтобы сгенерировать новый ключ и получить готовый код.
-            </p>
-            <Button onClick={handleNewKey} loading={createKey.isPending}>
-              Создать новый ключ и получить код
-            </Button>
-          </div>
-        )}
-
-        {phase.status === "error" && (
+        {createError && !creating && (
           <div className="space-y-3">
             <p className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700">
-              {phase.message}
+              {createError}
             </p>
-            <Button variant="secondary" onClick={handleNewKey} loading={createKey.isPending}>
+            <Button variant="secondary" onClick={() => void generateKey()} loading={creating}>
               Попробовать снова
             </Button>
           </div>
         )}
 
-        {phase.status === "ready" && (
+        {embedCode && !creating && (
           <>
             <p className="text-sm text-neutral-600">
               Вставьте код перед{" "}
@@ -746,23 +702,16 @@ function WidgetSection({ assistant }: { assistant: Assistant }) {
               onClick={() => codeRef.current?.select()}
             />
             <div className="flex items-center gap-3">
-              <Button onClick={() => void handleCopy(embedCode)}>
+              <Button onClick={() => void handleCopy()}>
                 {copied ? "✓ Скопировано!" : "Скопировать код"}
               </Button>
-              <Button
-                variant="secondary"
-                onClick={handleNewKey}
-                loading={createKey.isPending}
-              >
+              <Button variant="secondary" onClick={() => void generateKey()} loading={creating}>
                 Новый ключ
               </Button>
             </div>
             <p className="text-xs text-neutral-400">
-              Ключ{" "}
-              <code className="rounded bg-neutral-100 px-1">
-                {phase.apiKey.slice(0, 14)}…
-              </code>{" "}
-              показывается только сейчас — сохраните его.
+              Сохраните ключ — он показывается только здесь. При нажатии "Новый ключ"
+              предыдущий ключ перестанет работать.
             </p>
           </>
         )}

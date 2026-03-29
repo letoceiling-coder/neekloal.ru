@@ -313,6 +313,23 @@ module.exports = async function knowledgeRoutes(fastify) {
     });
   });
 
+  // ─── POST /knowledge/reindex ─────────────────────────────────────────────
+  // Force re-ingest all knowledge for an assistant into Qdrant.
+  fastify.post("/knowledge/reindex", { preHandler: authMiddleware }, async (request, reply) => {
+    const body = request.body && typeof request.body === "object" ? request.body : {};
+    const assistantId = body.assistantId != null ? String(body.assistantId).trim() : "";
+    if (!assistantId) return reply.code(400).send({ error: "assistantId is required" });
+
+    const assistant = await prisma.assistant.findFirst({
+      where: { id: assistantId, organizationId: request.organizationId, deletedAt: null },
+    });
+    if (!assistant) return reply.code(404).send({ error: "Assistant not found" });
+
+    const { reindexAssistant } = require("../workers/ragWorker");
+    const result = await reindexAssistant(fastify, assistantId, request.organizationId);
+    return reply.code(200).send(result);
+  });
+
   // ─── DELETE /knowledge/:id ────────────────────────────────────────────────
   fastify.delete("/knowledge/:id", { preHandler: authMiddleware }, async (request, reply) => {
     const id = String(request.params.id || "").trim();
