@@ -61,7 +61,16 @@ export function AdminLayout() {
     );
   }
 
-  if (gate.error && !(gate.error instanceof ApiError && gate.error.status === 403)) {
+  // 403: редирект в useEffect; не рендерим Outlet — иначе дочерние страницы дернут admin API и useAdminForbiddenRedirect снова уведёт на /dashboard.
+  if (gate.error instanceof ApiError && gate.error.status === 403) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-neutral-50">
+        <Loader />
+      </div>
+    );
+  }
+
+  if (gate.error) {
     const msg =
       gate.error instanceof ApiError ? gate.error.message : "Не удалось проверить доступ";
     return (

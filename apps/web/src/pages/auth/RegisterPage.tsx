@@ -1,17 +1,19 @@
 import { type FormEvent, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { AuthCard } from "../../components/auth/AuthCard";
 import { apiClient, ApiError } from "../../lib/apiClient";
-import { useAuthStore } from "../../stores/authStore";
+import { type PlatformRole, useAuthStore } from "../../stores/authStore";
 
 type RegisterResponse = {
   accessToken: string;
-  user: { id: string; email: string };
+  user: { id: string; email: string; role: PlatformRole };
   organizationId: string;
 };
 
 export function RegisterPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const setSession = useAuthStore((s) => s.setSession);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -35,7 +37,6 @@ export function RegisterPage() {
     }
     setLoading(true);
     try {
-      console.log("REQUEST SENDING", em);
       const data = await apiClient.post<RegisterResponse>("/auth/register", {
         email: em,
         password,
@@ -45,7 +46,9 @@ export function RegisterPage() {
         email: data.user.email,
         userId: data.user.id,
         organizationId: data.organizationId,
+        role: data.user.role,
       });
+      void queryClient.invalidateQueries({ queryKey: ["admin"] });
       navigate("/dashboard", { replace: true });
     } catch (err) {
       console.error(err);

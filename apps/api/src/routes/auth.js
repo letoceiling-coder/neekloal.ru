@@ -77,7 +77,7 @@ module.exports = async function authRoutes(fastify) {
 
     return reply.code(201).send({
       accessToken,
-      user: { id: user.id, email: user.email },
+      user: { id: user.id, email: user.email, role: user.role },
       organizationId,
     });
   });
@@ -120,7 +120,7 @@ module.exports = async function authRoutes(fastify) {
 
     return {
       accessToken,
-      user: { id: user.id, email: user.email },
+      user: { id: user.id, email: user.email, role: user.role },
       organizationId: membership.organizationId,
     };
   });

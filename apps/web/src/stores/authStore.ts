@@ -2,11 +2,15 @@ import { create } from "zustand";
 
 const STORAGE_KEY = "crm_auth_v2";
 
+export type PlatformRole = "user" | "admin" | "root";
+
 export type AuthState = {
   accessToken: string | null;
   email: string | null;
   userId: string | null;
   organizationId: string | null;
+  /** с сервера (login/register); для старых записей в localStorage может отсутствовать */
+  role: PlatformRole | null;
   isAuthenticated: boolean;
   /** true после первого чтения localStorage (или явной setSession / logout) */
   isHydrated: boolean;
@@ -15,12 +19,21 @@ export type AuthState = {
     email: string;
     userId: string;
     organizationId: string;
+    role: PlatformRole;
   }) => void;
   logout: () => void;
 };
 
+function parseRole(v: unknown): PlatformRole | null {
+  if (v === "user" || v === "admin" || v === "root") return v;
+  return null;
+}
+
 function readPersisted(): Partial<
-  Pick<AuthState, "accessToken" | "email" | "userId" | "organizationId" | "isAuthenticated">
+  Pick<
+    AuthState,
+    "accessToken" | "email" | "userId" | "organizationId" | "role" | "isAuthenticated"
+  >
 > {
   if (typeof window === "undefined") return {};
   try {
@@ -31,11 +44,13 @@ function readPersisted(): Partial<
     const email = typeof p.email === "string" ? p.email : null;
     const userId = typeof p.userId === "string" ? p.userId : null;
     const organizationId = typeof p.organizationId === "string" ? p.organizationId : null;
+    const role = parseRole(p.role);
     return {
       accessToken,
       email,
       userId,
       organizationId,
+      role,
       isAuthenticated: Boolean(accessToken),
     };
   } catch {
@@ -54,6 +69,7 @@ export function hydrateAuthFromStorage(): void {
     email: next.email ?? null,
     userId: next.userId ?? null,
     organizationId: next.organizationId ?? null,
+    role: next.role ?? null,
     isAuthenticated: Boolean(next.accessToken),
     isHydrated: true,
   });
@@ -64,6 +80,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   email: null,
   userId: null,
   organizationId: null,
+  role: null,
   isAuthenticated: false,
   isHydrated: false,
   setSession: (payload) => {
@@ -72,6 +89,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       email: payload.email,
       userId: payload.userId,
       organizationId: payload.organizationId,
+      role: payload.role,
       isAuthenticated: true,
       isHydrated: true,
     };
@@ -89,6 +107,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       email: null,
       userId: null,
       organizationId: null,
+      role: null,
       isAuthenticated: false,
       isHydrated: true,
     });

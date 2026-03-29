@@ -1,18 +1,20 @@
 import { type FormEvent, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { AuthCard } from "../../components/auth/AuthCard";
 import { apiClient, ApiError } from "../../lib/apiClient";
-import { useAuthStore } from "../../stores/authStore";
+import { type PlatformRole, useAuthStore } from "../../stores/authStore";
 
 type LoginResponse = {
   accessToken: string;
-  user: { id: string; email: string };
+  user: { id: string; email: string; role: PlatformRole };
   organizationId: string;
 };
 
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const queryClient = useQueryClient();
   const setSession = useAuthStore((s) => s.setSession);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -24,13 +26,11 @@ export function LoginPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    console.log("SUBMIT CLICKED");
     setError(null);
     const em = email.trim().toLowerCase();
     if (!em || !password) return;
     setLoading(true);
     try {
-      console.log("REQUEST SENDING", em);
       const data = await apiClient.post<LoginResponse>("/auth/login", {
         email: em,
         password,
@@ -40,7 +40,9 @@ export function LoginPage() {
         email: data.user.email,
         userId: data.user.id,
         organizationId: data.organizationId,
+        role: data.user.role,
       });
+      void queryClient.invalidateQueries({ queryKey: ["admin"] });
       navigate(from, { replace: true });
     } catch (err) {
       console.error(err);
