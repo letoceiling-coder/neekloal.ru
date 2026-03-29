@@ -157,9 +157,9 @@ function WidgetInstallModal({
               <p className="rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 {modalState.message}
               </p>
-              <Button size="sm" onClick={handleCreateNew} loading={createKey.isPending}>
-                Создать новый ключ
-              </Button>
+                <Button onClick={handleCreateNew} loading={createKey.isPending}>
+                  Создать новый ключ
+                </Button>
             </div>
           )}
 
@@ -190,8 +190,7 @@ function WidgetInstallModal({
                   {copied ? "✓ Скопировано!" : "Скопировать"}
                 </Button>
                 <Button
-                  variant="outline"
-                  size="sm"
+                  variant="secondary"
                   onClick={handleCreateNew}
                   loading={createKey.isPending}
                 >
