@@ -18,3 +18,4 @@ export { Page } from "./Page";
 export type { PageProps } from "./Page";
 export { SectionHeader } from "./SectionHeader";
 export type { SectionHeaderProps } from "./SectionHeader";
+export { Skeleton } from "./Skeleton";

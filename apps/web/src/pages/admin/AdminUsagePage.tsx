@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
-import { type AdminUsageItem, useAdminUsage } from "../../api/admin";
+import { useAdminOrganizations, type AdminUsageItem, useAdminUsage } from "../../api/admin";
+import { AdminCommandSelect } from "../../components/admin/AdminCommandSelect";
+import { KNOWN_AI_MODELS } from "../../config/aiModels";
 import { useAdminForbiddenRedirect } from "../../hooks/useAdminForbiddenRedirect";
 import { ApiError } from "../../lib/apiClient";
 import {
@@ -7,7 +9,6 @@ import {
   DataTable,
   type DataTableColumn,
   ErrorState,
-  Input,
   Page,
 } from "../../components/ui";
 
@@ -24,24 +25,52 @@ function formatDate(iso: string): string {
 export function AdminUsagePage() {
   const onForbidden = useAdminForbiddenRedirect();
   const [offset, setOffset] = useState(0);
-  const [orgDraft, setOrgDraft] = useState("");
-  const [modelDraft, setModelDraft] = useState("");
-  const [appliedOrg, setAppliedOrg] = useState("");
-  const [appliedModel, setAppliedModel] = useState("");
+  const [orgId, setOrgId] = useState("");
+  const [model, setModel] = useState("");
+
+  const { data: orgs } = useAdminOrganizations();
+
+  const orgOptions = useMemo(() => {
+    const list = orgs ?? [];
+    return [
+      { value: "", label: "Все организации" },
+      ...list.map((o) => ({
+        value: o.id,
+        label: `${o.name} · ${o.slug}`,
+      })),
+    ];
+  }, [orgs]);
 
   const filters =
-    appliedOrg.trim() || appliedModel.trim()
+    orgId.trim() || model.trim()
       ? {
-          organizationId: appliedOrg.trim() || undefined,
-          model: appliedModel.trim() || undefined,
+          organizationId: orgId.trim() || undefined,
+          model: model.trim() || undefined,
         }
       : undefined;
 
-  const { data, isLoading, error, refetch } = useAdminUsage(
+  const { data, isLoading, error, refetch, isFetching } = useAdminUsage(
     PAGE,
     offset,
     filters
   );
+
+  const modelOptionsMerged = useMemo(() => {
+    const seen = new Set(KNOWN_AI_MODELS);
+    const extra: { value: string; label: string }[] = [];
+    for (const item of data?.items ?? []) {
+      if (!seen.has(item.model)) {
+        seen.add(item.model);
+        extra.push({ value: item.model, label: item.model });
+      }
+    }
+    extra.sort((a, b) => a.label.localeCompare(b.label));
+    return [
+      { value: "", label: "Все модели" },
+      ...KNOWN_AI_MODELS.map((m) => ({ value: m, label: m })),
+      ...extra,
+    ];
+  }, [data?.items]);
 
   const columns = useMemo<DataTableColumn<AdminUsageItem>[]>(
     () => [
@@ -80,65 +109,58 @@ export function AdminUsagePage() {
   const canPrev = offset > 0;
   const canNext = offset + PAGE < total;
 
-  function applyFilters() {
-    setAppliedOrg(orgDraft.trim());
-    setAppliedModel(modelDraft.trim());
-    setOffset(0);
-  }
-
   function clearFilters() {
-    setOrgDraft("");
-    setModelDraft("");
-    setAppliedOrg("");
-    setAppliedModel("");
+    setOrgId("");
+    setModel("");
     setOffset(0);
   }
 
   return (
-    <Page title="Usage" description="Фильтры, пагинация.">
+    <Page title="Usage" description="Фильтры по организации и модели, пагинация.">
       <div className="space-y-4">
-        <div className="flex flex-wrap items-end gap-3 rounded-md border border-neutral-200 bg-neutral-50/80 p-3">
-          <Input
-            id="usage-filter-org"
-            label="Organization ID"
-            value={orgDraft}
-            onChange={(e) => setOrgDraft(e.target.value)}
-            placeholder="UUID"
-            className="min-w-[200px]"
+        <div className="grid gap-4 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-3">
+          <AdminCommandSelect
+            id="usage-org"
+            label="Организация"
+            options={orgOptions}
+            value={orgId}
+            onChange={(v) => {
+              setOrgId(v);
+              setOffset(0);
+            }}
+            placeholder="Все организации"
+            searchPlaceholder="Поиск по названию или slug…"
+            disabled={isLoading && !data}
           />
-          <Input
-            id="usage-filter-model"
+          <AdminCommandSelect
+            id="usage-model"
             label="Модель"
-            value={modelDraft}
-            onChange={(e) => setModelDraft(e.target.value)}
-            placeholder="llama3.2"
-            className="min-w-[160px]"
+            options={modelOptionsMerged}
+            value={model}
+            onChange={(v) => {
+              setModel(v);
+              setOffset(0);
+            }}
+            placeholder="Все модели"
+            searchPlaceholder="Поиск модели…"
+            disabled={isLoading && !data}
           />
-          <Button
-            type="button"
-            variant="secondary"
-            className="min-h-0 px-3 py-2 text-xs"
-            disabled={isLoading}
-            onClick={() => applyFilters()}
-          >
-            Применить
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            className="min-h-0 px-3 py-2 text-xs"
-            disabled={isLoading}
-            onClick={() => clearFilters()}
-          >
-            Сбросить
-          </Button>
+          <div className="flex items-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              className="min-h-9"
+              disabled={!orgId && !model}
+              onClick={() => clearFilters()}
+            >
+              Сбросить фильтры
+            </Button>
+          </div>
         </div>
 
         {error ? (
           <ErrorState
-            message={
-              error instanceof Error ? error.message : "Ошибка загрузки"
-            }
+            message={error instanceof Error ? error.message : "Ошибка загрузки"}
             onRetry={() => {
               if (error instanceof ApiError && error.status === 403) {
                 onForbidden(error);
@@ -151,14 +173,13 @@ export function AdminUsagePage() {
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-sm text-neutral-500">
-                Всего записей: {total}. Показано {data?.items.length ?? 0} с
-                offset {offset}.
+                Всего записей: {total}. На странице {data?.items.length ?? 0}, offset {offset}.
               </p>
               <div className="flex gap-2">
                 <Button
                   variant="secondary"
                   className="min-h-0 px-3 py-1.5 text-xs"
-                  disabled={!canPrev || isLoading}
+                  disabled={!canPrev || isFetching}
                   onClick={() => setOffset((o) => Math.max(0, o - PAGE))}
                 >
                   Назад
@@ -166,21 +187,25 @@ export function AdminUsagePage() {
                 <Button
                   variant="secondary"
                   className="min-h-0 px-3 py-1.5 text-xs"
-                  disabled={!canNext || isLoading}
+                  disabled={!canNext || isFetching}
                   onClick={() => setOffset((o) => o + PAGE)}
                 >
                   Вперёд
                 </Button>
               </div>
             </div>
-            <DataTable
-              className="mt-2"
-              columns={columns}
-              rows={data?.items ?? []}
-              getRowId={(r) => r.id}
-              isLoading={isLoading}
-              emptyTitle="Нет данных"
-            />
+            <div className={isFetching && !isLoading ? "opacity-70" : undefined}>
+              <DataTable
+                className="mt-2"
+                columns={columns}
+                rows={data?.items ?? []}
+                getRowId={(r) => r.id}
+                isLoading={isLoading}
+                loadingMode="skeleton"
+                skeletonRows={12}
+                emptyTitle="Нет записей usage"
+              />
+            </div>
           </>
         )}
       </div>

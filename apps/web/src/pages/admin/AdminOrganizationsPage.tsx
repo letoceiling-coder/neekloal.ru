@@ -5,27 +5,51 @@ import {
   useAdminPlans,
   useAdminUpdateOrganization,
 } from "../../api/admin";
+import { AdminConfirmDialog } from "../../components/admin/AdminConfirmDialog";
 import { useAdminForbiddenRedirect } from "../../hooks/useAdminForbiddenRedirect";
+import { useDebounce } from "../../hooks/useDebounce";
 import { useFlashMessage } from "../../hooks/useFlashMessage";
 import { ApiError } from "../../lib/apiClient";
 import {
   Button,
   DataTable,
   type DataTableColumn,
+  EmptyState,
   ErrorState,
+  Input,
   Page,
 } from "../../components/ui";
 
 const selectClass =
   "max-w-[200px] rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-sm text-neutral-900 focus:border-neutral-300 focus:outline-none focus:ring-2 focus:ring-neutral-900/15 disabled:cursor-not-allowed disabled:opacity-60";
 
+type StatusFilter = "all" | "active" | "blocked";
+
 export function AdminOrganizationsPage() {
   const onForbidden = useAdminForbiddenRedirect();
   const { show, banner } = useFlashMessage();
-  const { data: orgs, isLoading, error, refetch } = useAdminOrganizations();
+  const { data: orgs, isLoading, error, refetch, isFetching } = useAdminOrganizations();
   const { data: plans } = useAdminPlans();
   const updateOrg = useAdminUpdateOrganization();
   const [planDraft, setPlanDraft] = useState<Record<string, string>>({});
+  const [searchRaw, setSearchRaw] = useState("");
+  const debouncedSearch = useDebounce(searchRaw, 300);
+  const [planFilter, setPlanFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [blockDialog, setBlockDialog] = useState<AdminOrganization | null>(null);
+  const [blockPending, setBlockPending] = useState(false);
+
+  const filteredOrgs = useMemo(() => {
+    let list = orgs ?? [];
+    const q = debouncedSearch.trim().toLowerCase();
+    if (q) list = list.filter((o) => o.name.toLowerCase().includes(q));
+    if (planFilter !== "all") list = list.filter((o) => o.planId === planFilter);
+    if (statusFilter === "active") list = list.filter((o) => !o.isBlocked);
+    if (statusFilter === "blocked") list = list.filter((o) => o.isBlocked);
+    return list;
+  }, [orgs, debouncedSearch, planFilter, statusFilter]);
+
+  const tableBusy = isFetching && !isLoading;
 
   const columns = useMemo<DataTableColumn<AdminOrganization>[]>(
     () => [
@@ -38,12 +62,11 @@ export function AdminOrganizationsPage() {
         id: "plan",
         header: "План",
         cell: (o) => {
-          const rowBusy =
-            updateOrg.isPending && updateOrg.variables?.id === o.id;
+          const rowBusy = updateOrg.isPending && updateOrg.variables?.id === o.id;
           return (
             <select
               className={selectClass}
-              disabled={rowBusy}
+              disabled={rowBusy || tableBusy}
               aria-label={`План для ${o.name}`}
               aria-busy={rowBusy}
               value={planDraft[o.id] ?? o.planId}
@@ -72,8 +95,16 @@ export function AdminOrganizationsPage() {
       },
       {
         id: "blocked",
-        header: "Блок",
-        cell: (o) => (o.isBlocked ? "Да" : "Нет"),
+        header: "Статус",
+        cell: (o) => (
+          <span
+            className={
+              o.isBlocked ? "text-red-700" : "text-emerald-700"
+            }
+          >
+            {o.isBlocked ? "Заблокирована" : "Активна"}
+          </span>
+        ),
       },
       {
         id: "actions",
@@ -81,11 +112,9 @@ export function AdminOrganizationsPage() {
         cell: (o) => {
           const selected = planDraft[o.id] ?? o.planId;
           const planChanged = selected !== o.planId;
-          const rowBusy =
-            updateOrg.isPending && updateOrg.variables?.id === o.id;
+          const rowBusy = updateOrg.isPending && updateOrg.variables?.id === o.id;
           const blockLoading =
-            rowBusy &&
-            updateOrg.variables?.body?.isBlocked !== undefined;
+            rowBusy && updateOrg.variables?.body?.isBlocked !== undefined;
           const planLoading =
             rowBusy && updateOrg.variables?.body?.planId !== undefined;
 
@@ -94,37 +123,16 @@ export function AdminOrganizationsPage() {
               <Button
                 variant="secondary"
                 className="min-h-0 px-2 py-1 text-xs"
-                disabled={rowBusy}
+                disabled={rowBusy || tableBusy}
                 loading={blockLoading}
-                onClick={async () => {
-                  const nextBlocked = !o.isBlocked;
-                  if (nextBlocked) {
-                    if (
-                      !confirm("Заблокировать организацию?")
-                    ) {
-                      return;
-                    }
-                  }
-                  try {
-                    await updateOrg.mutateAsync({
-                      id: o.id,
-                      body: { isBlocked: nextBlocked },
-                    });
-                    show("Сохранено");
-                  } catch (err) {
-                    onForbidden(err);
-                    if (err instanceof ApiError && err.status !== 403) {
-                      console.error(err);
-                    }
-                  }
-                }}
+                onClick={() => setBlockDialog(o)}
               >
                 {o.isBlocked ? "Разблокировать" : "Заблокировать"}
               </Button>
               {planChanged ? (
                 <Button
                   className="min-h-0 px-2 py-1 text-xs"
-                  disabled={rowBusy}
+                  disabled={rowBusy || tableBusy}
                   loading={planLoading}
                   onClick={async () => {
                     try {
@@ -154,29 +162,150 @@ export function AdminOrganizationsPage() {
         },
       },
     ],
-    [plans, planDraft, updateOrg, onForbidden, show]
+    [plans, planDraft, updateOrg, onForbidden, show, tableBusy]
   );
 
+  const listEmpty = !isLoading && (orgs?.length ?? 0) === 0;
+  const filterEmpty =
+    !isLoading && (orgs?.length ?? 0) > 0 && filteredOrgs.length === 0;
+
   return (
-    <Page title="Организации" description="Планы, лимиты, блокировки.">
+    <Page
+      title="Организации"
+      description="Поиск, фильтры, планы и блокировка. Удаление записей через API (DELETE) в текущей версии не подключено — используйте блокировку."
+    >
       <div className="space-y-4">
         {banner}
+        <div className="flex flex-col gap-3 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Input
+              id="org-search"
+              label="Поиск по названию"
+              placeholder="Компания…"
+              value={searchRaw}
+              disabled={!!error}
+              onChange={(e) => setSearchRaw(e.target.value)}
+            />
+            <div>
+              <label
+                htmlFor="org-filter-plan"
+                className="mb-1 block text-xs font-medium text-neutral-600"
+              >
+                План
+              </label>
+              <select
+                id="org-filter-plan"
+                className={selectClass + " max-w-none w-full"}
+                value={planFilter}
+                disabled={!!error}
+                onChange={(e) => setPlanFilter(e.target.value)}
+              >
+                <option value="all">Все планы</option>
+                {(plans ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="org-filter-status"
+                className="mb-1 block text-xs font-medium text-neutral-600"
+              >
+                Статус
+              </label>
+              <select
+                id="org-filter-status"
+                className={selectClass + " max-w-none w-full"}
+                value={statusFilter}
+                disabled={!!error}
+                onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+              >
+                <option value="all">Все</option>
+                <option value="active">Активные</option>
+                <option value="blocked">Заблокированные</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
         {error ? (
           <ErrorState
-            message={
-              error instanceof Error ? error.message : "Ошибка загрузки"
-            }
+            message={error instanceof Error ? error.message : "Ошибка загрузки"}
             onRetry={() => void refetch()}
           />
-        ) : (
-          <DataTable
+        ) : isLoading && !orgs ? (
+          <DataTable<AdminOrganization>
             columns={columns}
-            rows={orgs ?? []}
-            getRowId={(o) => o.id}
-            isLoading={isLoading}
-            emptyTitle="Нет данных"
+            rows={[]}
+            getRowId={() => "—"}
+            isLoading
+            loadingMode="skeleton"
+            skeletonRows={10}
+            emptyTitle="—"
           />
+        ) : listEmpty ? (
+          <EmptyState
+            title="Нет организаций"
+            description="В системе пока нет организаций."
+          />
+        ) : filterEmpty ? (
+          <EmptyState
+            title="Ничего не найдено"
+            description="Измените поиск или фильтры."
+          />
+        ) : (
+          <div className={tableBusy ? "pointer-events-none opacity-70" : undefined}>
+            <DataTable
+              columns={columns}
+              rows={filteredOrgs}
+              getRowId={(o) => o.id}
+              isLoading={false}
+              loadingMode="skeleton"
+              emptyTitle="Нет данных"
+            />
+          </div>
         )}
+
+        <AdminConfirmDialog
+          open={blockDialog != null}
+          title={
+            blockDialog?.isBlocked
+              ? "Разблокировать организацию?"
+              : "Заблокировать организацию?"
+          }
+          description={
+            blockDialog
+              ? `«${blockDialog.name}» — ${blockDialog.isBlocked ? "клиенты снова смогут пользоваться сервисом." : "доступ будет ограничен."}`
+              : undefined
+          }
+          confirmLabel={blockDialog?.isBlocked ? "Разблокировать" : "Заблокировать"}
+          destructive={!blockDialog?.isBlocked}
+          pending={blockPending}
+          onClose={() => !blockPending && setBlockDialog(null)}
+          onConfirm={async () => {
+            if (!blockDialog) return;
+            const o = blockDialog;
+            const nextBlocked = !o.isBlocked;
+            setBlockPending(true);
+            try {
+              await updateOrg.mutateAsync({
+                id: o.id,
+                body: { isBlocked: nextBlocked },
+              });
+              show("Сохранено");
+              setBlockDialog(null);
+            } catch (err) {
+              onForbidden(err);
+              if (err instanceof ApiError && err.status !== 403) {
+                console.error(err);
+              }
+            } finally {
+              setBlockPending(false);
+            }
+          }}
+        />
       </div>
     </Page>
   );

@@ -1,5 +1,10 @@
 import { useMemo, useState } from "react";
 import { type AdminPlan, useAdminPlans, useAdminUpdatePlan } from "../../api/admin";
+import {
+  AllowedModelsEditor,
+  type AllowedModelsValue,
+  normalizeFromPlan,
+} from "../../components/admin/AllowedModelsEditor";
 import { useAdminForbiddenRedirect } from "../../hooks/useAdminForbiddenRedirect";
 import { useFlashMessage } from "../../hooks/useFlashMessage";
 import { ApiError } from "../../lib/apiClient";
@@ -16,60 +21,39 @@ type Draft = {
   name: string;
   maxReq: string;
   maxTok: string;
-  models: string;
+  models: AllowedModelsValue;
 };
 
-const textareaClass =
-  "min-h-[72px] w-full min-w-[180px] max-w-[280px] rounded-md border border-neutral-200 px-2 py-1.5 font-mono text-xs text-neutral-900 focus:border-neutral-300 focus:outline-none focus:ring-2 focus:ring-neutral-900/15 disabled:cursor-not-allowed disabled:opacity-60";
-
 function planToDraft(p: AdminPlan): Draft {
-  const am = p.allowedModels;
-  const modelsStr =
-    am === "*" || (typeof am === "string" && am.trim() === "*")
-      ? "*"
-      : JSON.stringify(am ?? []);
   return {
     name: p.name,
     maxReq: p.maxRequestsPerMonth == null ? "" : String(p.maxRequestsPerMonth),
     maxTok: p.maxTokensPerMonth == null ? "" : String(p.maxTokensPerMonth),
-    models: modelsStr,
+    models: normalizeFromPlan(p.allowedModels),
   };
 }
 
-/** @returns parsed value or throws on invalid JSON / shape */
-function parseAllowedModels(text: string): unknown {
-  const t = text.trim();
-  if (t === "*") return "*";
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(t) as unknown;
-  } catch {
-    throw new Error("Неверный формат");
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error("Неверный формат");
-  }
-  for (const x of parsed) {
-    if (typeof x !== "string" || !x.trim()) {
-      throw new Error("Неверный формат");
-    }
-  }
-  return parsed;
+function modelsEqual(a: AllowedModelsValue, b: AllowedModelsValue): boolean {
+  if (a === "*" && b === "*") return true;
+  if (a === "*" || b === "*") return false;
+  if (a.length !== b.length) return false;
+  const sa = [...a].sort().join("\0");
+  const sb = [...b].sort().join("\0");
+  return sa === sb;
 }
 
 export function AdminPlansPage() {
   const onForbidden = useAdminForbiddenRedirect();
   const { show, banner } = useFlashMessage();
-  const { data: plans, isLoading, error, refetch } = useAdminPlans();
+  const { data: plans, isLoading, error, refetch, isFetching } = useAdminPlans();
   const updatePlan = useAdminUpdatePlan();
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [modelsError, setModelsError] = useState<Record<string, string>>({});
   const [rowHint, setRowHint] = useState<Record<string, string>>({});
 
-  const getDraft = (p: AdminPlan): Draft =>
-    drafts[p.id] ?? planToDraft(p);
+  const getDraft = (p: AdminPlan): Draft => drafts[p.id] ?? planToDraft(p);
 
-  const setField = (id: string, p: AdminPlan, field: keyof Draft, value: string) => {
+  const setField = (id: string, p: AdminPlan, field: keyof Draft, value: string | AllowedModelsValue) => {
     if (field === "models") {
       setModelsError((e) => {
         const next = { ...e };
@@ -77,11 +61,17 @@ export function AdminPlansPage() {
         return next;
       });
     }
+    const base = getDraft(p);
     setDrafts((d) => ({
       ...d,
-      [id]: { ...getDraft(p), [field]: value },
+      [id]: {
+        ...base,
+        [field]: value,
+      } as Draft,
     }));
   };
+
+  const tableBusy = isFetching && !isLoading;
 
   const columns = useMemo<DataTableColumn<AdminPlan>[]>(
     () => [
@@ -97,13 +87,12 @@ export function AdminPlansPage() {
         header: "Название",
         cell: (p) => {
           const d = getDraft(p);
-          const rowBusy =
-            updatePlan.isPending && updatePlan.variables?.id === p.id;
+          const rowBusy = updatePlan.isPending && updatePlan.variables?.id === p.id;
           return (
             <Input
               id={`plan-name-${p.id}`}
               value={d.name}
-              disabled={rowBusy}
+              disabled={rowBusy || tableBusy}
               onChange={(e) => setField(p.id, p, "name", e.target.value)}
               className="min-w-[140px]"
             />
@@ -115,14 +104,13 @@ export function AdminPlansPage() {
         header: "Запр./мес",
         cell: (p) => {
           const d = getDraft(p);
-          const rowBusy =
-            updatePlan.isPending && updatePlan.variables?.id === p.id;
+          const rowBusy = updatePlan.isPending && updatePlan.variables?.id === p.id;
           return (
             <input
               id={`plan-mr-${p.id}`}
               type="number"
               min={0}
-              disabled={rowBusy}
+              disabled={rowBusy || tableBusy}
               className="w-24 rounded-md border border-neutral-200 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-60"
               placeholder="∞"
               value={d.maxReq}
@@ -136,14 +124,13 @@ export function AdminPlansPage() {
         header: "Токены/мес",
         cell: (p) => {
           const d = getDraft(p);
-          const rowBusy =
-            updatePlan.isPending && updatePlan.variables?.id === p.id;
+          const rowBusy = updatePlan.isPending && updatePlan.variables?.id === p.id;
           return (
             <input
               id={`plan-mt-${p.id}`}
               type="number"
               min={0}
-              disabled={rowBusy}
+              disabled={rowBusy || tableBusy}
               className="w-28 rounded-md border border-neutral-200 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-60"
               placeholder="∞"
               value={d.maxTok}
@@ -154,21 +141,18 @@ export function AdminPlansPage() {
       },
       {
         id: "models",
-        header: "Модели (* или JSON)",
+        header: "Модели",
         cell: (p) => {
           const d = getDraft(p);
-          const rowBusy =
-            updatePlan.isPending && updatePlan.variables?.id === p.id;
+          const rowBusy = updatePlan.isPending && updatePlan.variables?.id === p.id;
           const err = modelsError[p.id];
           return (
-            <div className="flex max-w-[280px] flex-col gap-1">
-              <textarea
-                id={`plan-am-${p.id}`}
-                className={textareaClass}
-                disabled={rowBusy}
-                aria-invalid={Boolean(err)}
+            <div className="flex flex-col gap-1">
+              <AllowedModelsEditor
+                planId={p.id}
                 value={d.models}
-                onChange={(e) => setField(p.id, p, "models", e.target.value)}
+                disabled={rowBusy || tableBusy}
+                onChange={(next) => setField(p.id, p, "models", next)}
               />
               {err ? (
                 <span className="text-xs text-red-600" role="alert">
@@ -189,16 +173,15 @@ export function AdminPlansPage() {
             d.name !== orig.name ||
             d.maxReq !== orig.maxReq ||
             d.maxTok !== orig.maxTok ||
-            d.models !== orig.models;
-          const rowBusy =
-            updatePlan.isPending && updatePlan.variables?.id === p.id;
+            !modelsEqual(d.models, orig.models);
+          const rowBusy = updatePlan.isPending && updatePlan.variables?.id === p.id;
           const hint = rowHint[p.id];
           return (
             <div className="flex min-w-[100px] flex-col gap-1">
               <Button
                 className="min-h-0 px-2 py-1 text-xs"
                 variant="secondary"
-                disabled={!changed || rowBusy}
+                disabled={!changed || rowBusy || tableBusy}
                 loading={rowBusy}
                 onClick={async () => {
                   setRowHint((h) => {
@@ -207,14 +190,16 @@ export function AdminPlansPage() {
                     return next;
                   });
                   let allowedModels: unknown;
-                  try {
-                    allowedModels = parseAllowedModels(d.models);
-                  } catch {
+                  if (d.models === "*") {
+                    allowedModels = "*";
+                  } else if (d.models.length === 0) {
                     setModelsError((e) => ({
                       ...e,
-                      [p.id]: "Неверный формат",
+                      [p.id]: "Выберите модели или «Все модели»",
                     }));
                     return;
+                  } else {
+                    allowedModels = d.models;
                   }
                   const body: {
                     name?: string;
@@ -287,31 +272,33 @@ export function AdminPlansPage() {
         },
       },
     ],
-    [drafts, modelsError, rowHint, updatePlan, onForbidden, show]
+    [drafts, modelsError, rowHint, updatePlan, onForbidden, show, tableBusy]
   );
 
   return (
     <Page
       title="Планы"
-      description="Модели: * или JSON-массив строк в многострочном поле."
+      description="Лимиты и список разрешённых моделей. «Все модели» = *; иначе явный набор — без JSON вручную."
     >
       <div className="space-y-4">
         {banner}
         {error ? (
           <ErrorState
-            message={
-              error instanceof Error ? error.message : "Ошибка загрузки"
-            }
+            message={error instanceof Error ? error.message : "Ошибка загрузки"}
             onRetry={() => void refetch()}
           />
         ) : (
-          <DataTable
-            columns={columns}
-            rows={plans ?? []}
-            getRowId={(p) => p.id}
-            isLoading={isLoading}
-            emptyTitle="Нет данных"
-          />
+          <div className={tableBusy ? "pointer-events-none opacity-70" : undefined}>
+            <DataTable
+              columns={columns}
+              rows={plans ?? []}
+              getRowId={(p) => p.id}
+              isLoading={isLoading}
+              loadingMode="skeleton"
+              skeletonRows={6}
+              emptyTitle="Нет планов"
+            />
+          </div>
         )}
       </div>
     </Page>
