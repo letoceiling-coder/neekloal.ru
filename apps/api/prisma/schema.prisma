@@ -22,6 +22,7 @@ enum LeadPipelineStatus {
   QUALIFIED
   WON
   LOST
+  CLOSED
 }
 
 enum ConversationThreadStatus {
@@ -37,11 +38,18 @@ enum ConversationSource {
   DASHBOARD
 }
 
+enum UserRole {
+  user
+  admin
+  root
+}
+
 // --- Core identity & tenancy ---
 
 model User {
   id        String    @id @default(uuid()) @db.Uuid
   email     String    @unique
+  role      UserRole  @default(user)
   passwordHash          String?   @map("password_hash")
   passwordResetToken    String?   @unique @map("password_reset_token")
   passwordResetExpires  DateTime? @map("password_reset_expires")
@@ -54,14 +62,52 @@ model User {
   initiatedAgentExecutions   AgentExecution[] @relation("ExecutionInitiator")
   leadStatusChanges          LeadStatusHistory[]
   conversationsCreated       Conversation[]   @relation("ConversationCreatedBy")
+  adminAuditLogs             AdminAuditLog[] @relation("AdminAuditActor")
 
   @@map("users")
+}
+
+model AdminAuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  adminId   String   @map("admin_id") @db.Uuid
+  admin     User     @relation("AdminAuditActor", fields: [adminId], references: [id], onDelete: Restrict)
+  action    String
+  entity    String
+  entityId  String   @map("entity_id") @db.Uuid
+  payload   Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([adminId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@map("admin_audit_logs")
+}
+
+model Plan {
+  id                  String   @id @default(uuid()) @db.Uuid
+  slug                String   @unique
+  name                String
+  maxRequestsPerMonth Int?     @map("max_requests_per_month")
+  maxTokensPerMonth   Int?     @map("max_tokens_per_month")
+  allowedModels       Json     @map("allowed_models")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  organizations Organization[]
+
+  @@map("plans")
 }
 
 model Organization {
   id        String    @id @default(uuid()) @db.Uuid
   name      String
   slug      String    @unique
+  planId    String    @map("plan_id") @db.Uuid
+  plan      Plan      @relation(fields: [planId], references: [id], onDelete: Restrict)
+  requestsUsed Int    @default(0) @map("requests_used")
+  tokensUsed   Int    @default(0) @map("tokens_used")
+  resetAt      DateTime @map("reset_at")
+  isBlocked    Boolean  @default(false) @map("is_blocked")
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
@@ -81,6 +127,7 @@ model Organization {
   knowledgeChunks   KnowledgeChunk[]
   usages            Usage[]
 
+  @@index([planId])
   @@map("organizations")
 }
 
@@ -199,6 +246,9 @@ model Lead {
   phone          String?
   source         String
   status         LeadPipelineStatus
+  userAgent      String?            @map("user_agent") @db.Text
+  referer        String?            @map("referer") @db.Text
+  firstMessage   String?            @map("first_message") @db.Text
   createdAt      DateTime           @default(now()) @map("created_at")
   updatedAt      DateTime           @updatedAt @map("updated_at")
   deletedAt      DateTime?          @map("deleted_at")
@@ -246,6 +296,10 @@ model Conversation {
   createdAt      DateTime                 @default(now()) @map("created_at")
   updatedAt      DateTime                 @updatedAt @map("updated_at")
   deletedAt      DateTime?                @map("deleted_at")
+  /// Виджет: уже отправлено напоминание при молчании пользователя; сбрасывается при новом сообщении пользователя.
+  widgetSilenceFollowUpSentAt DateTime?   @map("widget_silence_follow_up_sent_at")
+  /// Виджет: сколько авто follow-up отправлено за текущую «тишину» (сброс при сообщении пользователя). Макс. см. WIDGET_MAX_FOLLOWUPS_PER_CONVERSATION.
+  widgetFollowUpCount         Int         @default(0) @map("widget_follow_up_count")
 
   messages Message[]
   usages   Usage[]
@@ -255,6 +309,8 @@ model Conversation {
   @@index([organizationId, createdAt])
   @@index([leadId])
   @@index([assistantId])
+  @@index([widgetSilenceFollowUpSentAt])
+  @@index([widgetFollowUpCount])
   @@map("conversations")
 }
 
@@ -291,8 +347,13 @@ model AgentExecution {
   initiatedByUserId String @map("initiated_by_user_id") @db.Uuid
   initiatedBy    User      @relation("ExecutionInitiator", fields: [initiatedByUserId], references: [id], onDelete: Restrict)
   status         String
+  statusReason   String?   @map("status_reason")
   input          String    @db.Text
   output         String?   @db.Text
+  stepsCount     Int       @default(0) @map("steps_count")
+  toolCalls      Int       @default(0) @map("tool_calls")
+  durationMs     Int?      @map("duration_ms")
+  totalTokens    Int       @default(0) @map("total_tokens")
   metrics        Json?
   triggerMessageId String? @map("trigger_message_id") @db.Uuid
   triggerMessage Message?  @relation("ExecutionTrigger", fields: [triggerMessageId], references: [id], onDelete: SetNull)

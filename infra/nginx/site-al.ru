@@ -1,5 +1,7 @@
 # Активный прод: /etc/nginx/sites-enabled/site-al.ru (Certbot SSL).
 # SPA: root + try_files. После правок: nginx -t && systemctl reload nginx
+#
+# /api/ → backend :4000 с отрезанием префикса: запрос /api/admin/plans → upstream GET /admin/plans
 
 server {
     server_name site-al.ru;

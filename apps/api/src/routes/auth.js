@@ -2,6 +2,7 @@
 
 const crypto = require("crypto");
 const prisma = require("../lib/prisma");
+const { getInitialResetAt, ensureFreePlan } = require("../services/planAccess");
 const { signAccessToken } = require("../lib/jwt");
 const { hashPassword, verifyPassword } = require("../lib/password");
 
@@ -38,10 +39,16 @@ module.exports = async function authRoutes(fastify) {
         });
 
         const slug = `o-${crypto.randomBytes(6).toString("hex")}`;
+        const freePlan = await ensureFreePlan(tx);
         const org = await tx.organization.create({
           data: {
             name: `${email.split("@")[0] || "Workspace"}`,
             slug,
+            planId: freePlan.id,
+            resetAt: getInitialResetAt(),
+            requestsUsed: 0,
+            tokensUsed: 0,
+            isBlocked: false,
           },
         });
 

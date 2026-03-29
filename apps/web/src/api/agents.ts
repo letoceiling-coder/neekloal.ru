@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../lib/apiClient";
 import { queryKeys } from "../queryKeys";
 import { useAuthStore } from "../stores/authStore";
-import type { Agent } from "./types";
+import type { Agent, ChatReply } from "./types";
 
 export function useAgents() {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -32,5 +32,28 @@ export function useCreateAgent() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
     },
+  });
+}
+
+/** Запуск сценария через существующий POST /chat (assistant привязан к агенту на сервере). */
+export async function postAgentChat(
+  assistantId: string,
+  message: string
+): Promise<ChatReply> {
+  return apiClient.post<ChatReply>("/chat", {
+    assistantId: assistantId.trim(),
+    message: message.trim(),
+  });
+}
+
+export function useRunAgentChat() {
+  return useMutation({
+    mutationFn: ({
+      assistantId,
+      message,
+    }: {
+      assistantId: string;
+      message: string;
+    }) => postAgentChat(assistantId, message),
   });
 }

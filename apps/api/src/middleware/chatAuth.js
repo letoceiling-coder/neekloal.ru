@@ -49,6 +49,16 @@ module.exports = async function chatAuthMiddleware(request, reply) {
       if (!membership) {
         return reply.code(401).send({ error: "Unauthorized" });
       }
+      const org = await prisma.organization.findFirst({
+        where: { id: claims.organizationId, deletedAt: null },
+        select: { isBlocked: true },
+      });
+      if (!org) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+      if (org.isBlocked) {
+        return reply.code(403).send({ error: "Organization is blocked" });
+      }
       request.userId = user.id;
       request.organizationId = claims.organizationId;
       request.apiKeyId = null;
@@ -66,6 +76,17 @@ module.exports = async function chatAuthMiddleware(request, reply) {
     });
     if (!record || record.deletedAt) {
       return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    const orgForKey = await prisma.organization.findFirst({
+      where: { id: record.organizationId, deletedAt: null },
+      select: { isBlocked: true },
+    });
+    if (!orgForKey) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    if (orgForKey.isBlocked) {
+      return reply.code(403).send({ error: "Organization is blocked" });
     }
 
     let actorMembership = await prisma.membership.findFirst({

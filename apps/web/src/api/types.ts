@@ -21,6 +21,27 @@ export type CreateAssistantInput = {
   systemPrompt: string;
 };
 
+/** Инструмент агента (GET /agents include tools) */
+export type AgentTool = {
+  id: string;
+  name: string;
+  type: string;
+  config?: unknown;
+};
+
+/**
+ * Унифицированный шаг выполнения агента.
+ * Источник: POST /chat (через mapChatToSteps) или будущий API с реальными шагами.
+ */
+export type AgentExecutionStep = {
+  id: string;
+  type: "thinking" | "tool" | "response";
+  content?: string;
+  toolName?: string;
+  input?: unknown;
+  output?: unknown;
+};
+
 /** Элемент GET /agents */
 export type Agent = {
   id: string;
@@ -30,7 +51,7 @@ export type Agent = {
   assistantId: string | null;
   userId?: string;
   createdAt?: string;
-  tools?: unknown[];
+  tools?: AgentTool[];
 };
 
 /** Ожидаемый контракт GET /conversations (когда появится на бэкенде) */
@@ -43,4 +64,24 @@ export type Conversation = {
 
 export type CreateConversationInput = {
   assistantId: string;
+};
+
+/** Локальный статус доставки (без изменений API). */
+export type ChatMessageClientStatus = "sending" | "sent" | "failed";
+
+/** Сообщение в UI чата (история с сервера или локально после POST /chat). */
+export type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt?: string;
+  /** Только клиент: optimistic / ошибка сети. */
+  clientStatus?: ChatMessageClientStatus;
+};
+
+/** Ответ POST /chat */
+export type ChatReply = {
+  reply: string;
+  model: string;
+  warning?: string;
 };

@@ -7,7 +7,11 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
-    "db:push": "prisma db push"
+    "db:push": "prisma db push",
+    "db:seed": "node prisma/seed.js"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   },
   "keywords": [],
   "author": "",
@@ -20,7 +24,8 @@
     "bcryptjs": "^2.4.3",
     "dotenv": "^17.3.1",
     "fastify": "^5.8.4",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^6.10.0"
   },
   "devDependencies": {
     "prisma": "6.19.0"

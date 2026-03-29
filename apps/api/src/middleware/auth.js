@@ -50,6 +50,17 @@ module.exports = async function authMiddleware(request, reply) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
 
+    const org = await prisma.organization.findFirst({
+      where: { id: claims.organizationId, deletedAt: null },
+      select: { isBlocked: true },
+    });
+    if (!org) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    if (org.isBlocked) {
+      return reply.code(403).send({ error: "Organization is blocked" });
+    }
+
     request.userId = user.id;
     request.organizationId = claims.organizationId;
   } catch {
