@@ -59,6 +59,18 @@ export type UpdateAssistantInput = {
   name?: string;
   model?: string;
   systemPrompt?: string;
+  config?: Record<string, unknown> | null;
+};
+
+/** Result of POST /ai/auto-agent */
+export type AutoAgentResult = {
+  systemPrompt: string;
+  config: {
+    intents: Record<string, string[]>;
+    memory: string[];
+    funnel: string[];
+    validation: { maxSentences: number; questions: number };
+  };
 };
 
 export type UpdateAgentInput = {

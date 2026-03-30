@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "../lib/apiClient";
 import { queryKeys } from "../queryKeys";
 import { useAuthStore } from "../stores/authStore";
-import type { Assistant, CreateAssistantInput, UpdateAssistantInput } from "./types";
+import type { Assistant, AutoAgentResult, CreateAssistantInput, UpdateAssistantInput } from "./types";
 
 export function useAssistants() {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -42,5 +42,12 @@ export function useDeleteAssistant() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.assistants.all });
     },
+  });
+}
+
+export function useAutoAgent() {
+  return useMutation({
+    mutationFn: (body: { description: string; assistantId?: string }) =>
+      apiClient.post<AutoAgentResult>("/ai/auto-agent", body),
   });
 }

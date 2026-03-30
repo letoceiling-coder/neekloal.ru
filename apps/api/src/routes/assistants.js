@@ -54,6 +54,10 @@ module.exports = async function assistantsRoutes(fastify) {
     if (body.settings !== undefined) {
       data.settings = body.settings;
     }
+    if (body.config !== undefined) {
+      // null clears the config override; object sets it
+      data.config = body.config !== null && typeof body.config === "object" ? body.config : null;
+    }
 
     if (Object.keys(data).length === 0) {
       return reply.code(400).send({ error: "No valid fields to update" });
