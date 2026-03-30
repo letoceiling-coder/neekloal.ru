@@ -214,9 +214,9 @@ module.exports = async function knowledgeRoutes(fastify) {
       if (part.type === "field") {
         if (part.fieldname === "assistantId") assistantId = String(part.value ?? "").trim();
       } else if (isKnowledgeUploadFileField(part.fieldname)) {
-        const chunks = [];
-        for await (const chunk of part.file) chunks.push(chunk);
-        const buffer = Buffer.concat(chunks);
+        // Use toBuffer() — more reliable than manual chunk iteration in @fastify/multipart v9
+        const buffer = await part.toBuffer();
+        console.log("[upload] part received:", part.fieldname, part.filename, "size:", buffer.length);
         if (buffer.length > 0) {
           fileInfos.push({
             buffer,
@@ -224,8 +224,13 @@ module.exports = async function knowledgeRoutes(fastify) {
             mimetype: part.mimetype || "text/plain",
           });
         }
+      } else {
+        // Drain any unexpected file stream so the iterator can advance
+        if (typeof part.toBuffer === "function") await part.toBuffer().catch(() => {});
       }
     }
+
+    console.log("[upload] files collected:", fileInfos.length, "assistantId:", assistantId);
 
     if (!assistantId) {
       return reply.code(400).send({ error: "assistantId form field required" });

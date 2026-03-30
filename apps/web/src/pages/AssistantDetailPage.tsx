@@ -437,6 +437,7 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
     const list = e.target.files;
     if (!list?.length) return;
     const files = Array.from(list);
+    console.log("[upload] e.target.files.length =", list.length, files.map((f) => f.name));
     setUploadErr(null);
     setUploadDone(false);
     setUploading(true);
