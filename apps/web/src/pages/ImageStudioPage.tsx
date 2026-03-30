@@ -235,15 +235,18 @@ export function ImageStudioPage() {
 
   async function handleDelete(jobId: string) {
     setDeleting(true);
+    // DELETE requests must NOT send Content-Type without a body — use auth-only headers
+    const deleteHeaders = { Authorization: `Bearer ${accessToken ?? ""}` };
     try {
-      const res = await fetch(`${API}/image/${jobId}`, { method: "DELETE", headers });
-      if (res.ok) {
+      const res = await fetch(`${API}/image/${jobId}`, { method: "DELETE", headers: deleteHeaders });
+      // Treat any 2xx OR "already deleted" warning as success (idempotent)
+      if (res.ok || res.status === 404) {
         setHistory((prev) => prev.filter((j) => j.jobId !== jobId));
         if (activeJob?.jobId === jobId) { setActiveJob(null); setGenStage("idle"); }
         if (lightbox) setLightbox(null);
       } else {
-        const d = await res.json() as { error?: string };
-        setError(d.error ?? "Ошибка удаления");
+        const d = await res.json().catch(() => ({} as { error?: string }));
+        setError(d.error ?? `Ошибка удаления (HTTP ${res.status})`);
       }
     } catch {
       setError("Ошибка сети");

@@ -183,41 +183,74 @@ module.exports = async function imageRoutes(fastify) {
   // ── DELETE /image/:id ─────────────────────────────────────────────────────
   fastify.delete("/image/:id", { preHandler: [authMiddleware] }, async (request, reply) => {
     const { id } = request.params;
-    const queue = getImageQueue();
 
-    const job = await queue.getJob(id);
-    if (!job) {
-      return reply.code(404).send({ error: "Job not found" });
+    process.stdout.write(`[image:delete] id=${id} user=${request.userId}\n`);
+
+    if (!id || typeof id !== "string" || !id.trim()) {
+      return reply.code(400).send({ error: "Invalid id" });
     }
 
-    // Delete file from disk if exists
-    const localPath = job.returnvalue?.localPath;
-    if (localPath) {
+    const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
+    const path = require("path");
+
+    // Helper: try to delete a file, ignore ENOENT
+    function tryUnlink(filePath) {
       try {
-        fs.unlinkSync(localPath);
+        fs.unlinkSync(filePath);
+        process.stdout.write(`[image:delete] removed file: ${filePath}\n`);
+        return true;
       } catch (e) {
-        // File may already be gone — not a fatal error
         if (e.code !== "ENOENT") {
-          process.stderr.write(`[image:delete] unlink error: ${e.message}\n`);
+          process.stderr.write(`[image:delete] unlink error (${filePath}): ${e.message}\n`);
         }
+        return false;
       }
     }
 
-    // Remove job from queue
-    try {
-      await job.remove();
-    } catch { /* ignore if already removed */ }
+    let fileDeleted = false;
+    let jobFound = false;
 
-    // Release user job counter if needed
+    // 1. Try via BullMQ job (has exact localPath)
+    const queue = getImageQueue();
     try {
-      const redis = getCacheConnection();
-      const key = userJobKey(job.data?.userId);
-      if (key) {
-        const cur = Number(await redis.get(key)) || 0;
-        if (cur > 0) await redis.set(key, cur - 1, "EX", 300);
+      const job = await queue.getJob(id);
+      if (job) {
+        jobFound = true;
+        const localPath = job.returnvalue?.localPath;
+        if (localPath) fileDeleted = tryUnlink(localPath);
+
+        // Release user active-job counter
+        try {
+          const redis = getCacheConnection();
+          const key = userJobKey(job.data?.userId);
+          if (key) {
+            const cur = Number(await redis.get(key)) || 0;
+            if (cur > 0) await redis.set(key, cur - 1, "EX", 300);
+          }
+        } catch { /* ignore */ }
+
+        // Remove from queue
+        try { await job.remove(); } catch { /* ignore */ }
       }
-    } catch { /* ignore */ }
+    } catch (e) {
+      process.stderr.write(`[image:delete] queue lookup error: ${e.message}\n`);
+    }
 
-    return reply.send({ success: true, deleted: id });
+    // 2. Fallback: if job not in queue (BullMQ cleaned it up), try common extensions by jobId
+    if (!fileDeleted) {
+      for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
+        const candidate = path.join(OUTPUT_DIR, `${id}${ext}`);
+        if (tryUnlink(candidate)) { fileDeleted = true; break; }
+      }
+    }
+
+    process.stdout.write(`[image:delete] done — jobFound=${jobFound} fileDeleted=${fileDeleted}\n`);
+
+    // Always return success — idempotent operation
+    return reply.send({
+      success: true,
+      deleted: id,
+      ...((!jobFound && !fileDeleted) ? { warning: "Job and file not found, may have been already deleted" } : {}),
+    });
   });
 };
