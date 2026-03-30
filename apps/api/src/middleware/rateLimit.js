@@ -22,13 +22,6 @@ module.exports = async function rateLimitMiddleware(request, reply) {
     : `jwt:${request.userId ?? "anon"}:${request.organizationId ?? ""}`;
 
   const result = await incrementAndCheck(rateKey, limit, WINDOW_MS);
-  console.log("[rateLimit]", {
-    prefix: `${String(rateKey).slice(0, 16)}…`,
-    count: result.count,
-    limit,
-    resetAt: result.resetAt,
-    exceeded: result.exceeded,
-  });
 
   if (result.exceeded) {
     const retryAfterSec = Math.ceil((result.resetAt - Date.now()) / 1000);
