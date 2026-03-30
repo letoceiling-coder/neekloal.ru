@@ -36,7 +36,7 @@ async function fetchModelNames(baseUrl) {
 }
 
 /** Список по умолчанию, если Ollama недоступен или пуст. */
-const FALLBACK_MODEL_NAMES = ["llama3", "llama3.2", "mistral"];
+const FALLBACK_MODEL_NAMES = ["llama3:8b", "mistral:latest"];
 
 /**
  * Опционально: внешний URL (AI Gateway), отдающий JSON `{ "models": string[] }` или массив строк.
@@ -117,18 +117,21 @@ async function ensureModelAvailable(model, baseUrl) {
     return model;
   }
 
-  const fallbacks = ["llama3:8b", "llama3", "llama3:latest"];
+  const fallbacks = ["llama3:8b", "mistral:latest", "llama3", "llama3:latest"];
   for (const fb of fallbacks) {
     if (names.has(fb)) {
+      console.warn(`[modelRouter] MODEL FALLBACK: "${model}" not found → using "${fb}"`);
       return fb;
     }
   }
 
-  const first = names.values().next().value;
+  const first = [...names].find((n) => !n.includes("embed")) ?? names.values().next().value;
   if (first) {
+    console.warn(`[modelRouter] MODEL FALLBACK: "${model}" not found → using first available "${first}"`);
     return first;
   }
 
+  console.warn(`[modelRouter] MODEL FALLBACK: "${model}" not found, Ollama empty → "llama3:8b"`);
   return "llama3:8b";
 }
 

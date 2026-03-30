@@ -1741,6 +1741,8 @@ type ChatMsg = {
   text: string;
   knowledgeSource?: string;
   fsmStage?: string;
+  modelUsed?: string;
+  modelFallback?: boolean;
 };
 
 function ChatSection({ assistant }: { assistant: Assistant }) {
@@ -1797,6 +1799,8 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
               error?: string;
               knowledgeSource?: string;
               fsmStage?: string;
+              modelUsed?: string;
+              modelFallback?: boolean;
             };
             if (payload.token) {
               setMessages((prev) =>
@@ -1812,12 +1816,18 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
                 )
               );
             }
-            // "done" event carries knowledgeSource + fsmStage
-            if (payload.knowledgeSource != null) {
+            // "done" event carries knowledgeSource + fsmStage + modelUsed
+            if (payload.knowledgeSource != null || payload.modelUsed != null) {
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === botId
-                    ? { ...m, knowledgeSource: payload.knowledgeSource, fsmStage: payload.fsmStage }
+                    ? {
+                        ...m,
+                        knowledgeSource: payload.knowledgeSource,
+                        fsmStage: payload.fsmStage,
+                        modelUsed: payload.modelUsed,
+                        modelFallback: payload.modelFallback,
+                      }
                     : m
                 )
               );
@@ -1895,6 +1905,18 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
                         ({INTENT_LABEL[m.fsmStage]?.label ?? m.fsmStage})
                       </span>
                     )}
+                  </span>
+                )}
+                {m.role === "ai" && m.modelUsed && (
+                  <span className={cn(
+                    "mt-0.5 flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
+                    m.modelFallback
+                      ? "bg-amber-50 text-amber-700"
+                      : "bg-neutral-100 text-neutral-500"
+                  )}>
+                    <span>🤖</span>
+                    Модель: {m.modelUsed}
+                    {m.modelFallback && <span className="ml-1 opacity-70">(fallback)</span>}
                   </span>
                 )}
               </div>

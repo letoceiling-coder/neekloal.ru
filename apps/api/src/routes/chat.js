@@ -292,10 +292,11 @@ async function prepareChatContext(request, reply, fastify) {
       : assistant.systemPrompt,
   });
 
-  let model =
+  const requestedModel =
     assistant.model === "auto" ? resolveModel(message) : assistant.model;
-  model = await ensureModelAvailable(model, process.env.OLLAMA_URL);
-  console.log("MODEL SELECTED:", model);
+  let model = await ensureModelAvailable(requestedModel, process.env.OLLAMA_URL);
+  const modelFallback = model !== requestedModel;
+  console.log("MODEL SELECTED:", model, modelFallback ? `(fallback from "${requestedModel}")` : "");
 
   const estimatedInputTokens = estimateTokensFromMessage(message);
   const estimatedOutputTokens = Math.max(256, estimatedInputTokens * 2);
@@ -519,7 +520,7 @@ module.exports = async function chatRoutes(fastify) {
           assistantText: replyText,
         });
         return withWidgetSync(
-          { reply: replyText, model: modelOut, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage },
+          { reply: replyText, model: modelOut, modelUsed: modelOut, modelFallback, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage },
           isWidget,
           persistedAgent
         );
@@ -609,10 +610,10 @@ module.exports = async function chatRoutes(fastify) {
         assistantText: replyText,
       });
       return withWidgetSync(
-        { reply: replyText, model, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage },
-        isWidget,
-        persistedOllama
-      );
+        { reply: replyText, model, modelUsed: model, modelFallback, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage },
+          isWidget,
+          persistedOllama
+        );
     } catch (error) {
       fastify.log.error(error);
       return reply.code(500).send({ error: error.message || "Internal Server Error" });
@@ -790,7 +791,7 @@ module.exports = async function chatRoutes(fastify) {
                 streamedTokens += Math.round(obj.response.length / 4);
                 if (streamedTokens >= STREAM_MAX_TOKENS) {
                   // Cap reached — stop, do not error
-                  send("done", { model, truncated: true, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage });
+                  send("done", { model, modelUsed: model, modelFallback, truncated: true, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage });
                   streamEnded = true;
                   ollamaController.abort();
                   break outer;
@@ -842,7 +843,7 @@ module.exports = async function chatRoutes(fastify) {
         }).catch((e) => fastify.log.error(e, "persistChatTurn failed in stream"));
       }
 
-      if (!streamEnded) send("done", { model, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage });
+      if (!streamEnded) send("done", { model, modelUsed: model, modelFallback, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage });
     } catch (err) {
       if (err && err.name === "AbortError") {
         // expected on client disconnect or timeout — already handled
