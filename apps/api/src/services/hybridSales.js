@@ -3,6 +3,7 @@
 const prisma = require("../lib/prisma");
 const { detectIntent } = require("./intentDetector");
 const { routeKnowledgeByIntent } = require("./knowledgeRouter");
+const { getAssistantConfig } = require("./configLoader");
 
 const VALID_STAGES = new Set(["greeting", "qualification", "offer", "objection", "close"]);
 
@@ -41,10 +42,13 @@ function computeNextStage(current, intent) {
  * @param {unknown} p.message
  * @param {string} p.ragBlock
  * @param {string} p.dbFallbackBlock
+ * @param {{ config?: object|null } | null} [p.assistant]  Optional assistant record for config lookup
  * @returns {Promise<{ intent: string; stage: string; knowledgeSource: "intent"|"rag"; knowledgeBlock: string; context: object }>}
  */
 async function applyHybridSalesPipeline(p) {
-  const { intent } = detectIntent(p.message);
+  // Load assistant config (falls back to defaultAssistantConfig if assistant.config is null)
+  const assistantConfig = getAssistantConfig(p.assistant ?? {});
+  const { intent } = detectIntent(p.message, assistantConfig);
 
   let stage = "greeting";
   /** @type {string|null} */

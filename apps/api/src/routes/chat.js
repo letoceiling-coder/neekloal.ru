@@ -329,6 +329,7 @@ async function prepareChatContext(request, reply, fastify) {
       message,
       ragBlock: "",        // RAG data not available yet
       dbFallbackBlock: "", // DB fallback not loaded yet
+      assistant,           // pass for config-driven intent detection
     });
     knowledgeBlock = hybrid.knowledgeBlock;
     hybridMeta = {

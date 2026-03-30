@@ -183,6 +183,8 @@ model Assistant {
   model          String
   systemPrompt   String    @map("system_prompt") @db.Text
   settings       Json?
+  /// Per-assistant overrides: intents, funnel, memory, validation. Falls back to defaultAssistantConfig if null.
+  config         Json?
   /// Bumped on breaking prompt/model/RAG changes; conversations may record which version they started under.
   version        Int       @default(1)
   createdAt      DateTime  @default(now()) @map("created_at")

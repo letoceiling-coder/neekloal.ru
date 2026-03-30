@@ -3,16 +3,20 @@
 /**
  * Простой rule-based intent для продающего диалога (RU).
  * @param {unknown} message
- * @returns {{ intent: "pricing" | "objection" | "qualification_site" | "close" | "unknown" }}
+ * @param {{ intents?: Record<string, string[]> } | null} [config]
+ *   Optional assistant config. If provided and config.intents exists,
+ *   those keyword lists replace the built-in INTENTS (safe patch — fully backward-compatible).
+ * @returns {{ intent: string }}
  */
-const INTENTS = {
-  pricing: ["цена", "стоимость", "сколько", "бюджет", "ценник"],
-  objection: ["дорого", "дороговато", "слишком дорого"],
+
+// ─── Built-in defaults (used when no config.intents supplied) ───────────────
+const DEFAULT_INTENTS = {
+  pricing:            ["цена", "стоимость", "сколько", "бюджет", "ценник"],
+  objection:          ["дорого", "дороговато", "слишком дорого"],
   qualification_site: ["сайт", "лендинг"],
 };
 
-// Доп. close-эвристики (в задаче явно не перечислены, но FSM стадия close ожидается).
-const CLOSE_HINTS = ["куплю", "оформ", "оплат", "заключаем", "давайте договор"];
+const DEFAULT_CLOSE_HINTS = ["куплю", "оформ", "оплат", "заключаем", "давайте договор"];
 
 function normalize(text) {
   return String(text ?? "")
@@ -22,27 +26,43 @@ function normalize(text) {
 }
 
 function anyIncludes(text, arr) {
+  if (!Array.isArray(arr)) return false;
   for (const w of arr) {
     if (w && text.includes(w)) return true;
   }
   return false;
 }
 
-function detectIntent(message) {
+/**
+ * @param {unknown} message
+ * @param {{ intents?: Record<string, string[]> } | null} [config]
+ * @returns {{ intent: string }}
+ */
+function detectIntent(message, config) {
   const t = normalize(message);
   if (!t) return { intent: "unknown" };
 
-  // Приоритет: возражения → close → pricing → qualification_site
-  if (anyIncludes(t, INTENTS.objection)) return { intent: "objection" };
-  if (anyIncludes(t, CLOSE_HINTS) || anyIncludes(t, ["хочу купить", "готов купить"])) {
+  // ── Config-driven path (when assistant provides custom intents) ────────────
+  if (config && config.intents && typeof config.intents === "object") {
+    for (const [intent, keywords] of Object.entries(config.intents)) {
+      if (anyIncludes(t, keywords)) {
+        return { intent };
+      }
+    }
+    return { intent: "unknown" };
+  }
+
+  // ── Built-in path (backward-compatible, runs when no config.intents) ──────
+  // Priority: objection → close → pricing → qualification_site
+  if (anyIncludes(t, DEFAULT_INTENTS.objection)) return { intent: "objection" };
+  if (anyIncludes(t, DEFAULT_CLOSE_HINTS) || anyIncludes(t, ["хочу купить", "готов купить"])) {
     return { intent: "close" };
   }
-  if (anyIncludes(t, INTENTS.pricing) || /\bруб/.test(t) || t.includes("сколько стоит")) {
+  if (anyIncludes(t, DEFAULT_INTENTS.pricing) || /\bруб/.test(t) || t.includes("сколько стоит")) {
     return { intent: "pricing" };
   }
-  if (anyIncludes(t, INTENTS.qualification_site)) return { intent: "qualification_site" };
+  if (anyIncludes(t, DEFAULT_INTENTS.qualification_site)) return { intent: "qualification_site" };
 
-  // Расширение qualification_site для реальных формулировок
   if (
     t.includes("интернет-магазин") ||
     t.includes("интернет магазин") ||
