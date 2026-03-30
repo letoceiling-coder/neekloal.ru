@@ -19,6 +19,17 @@ module.exports = {
   /** Ordered FSM stages */
   funnel: ["greeting", "qualification", "offer", "objection", "close"],
 
+  /**
+   * Maps each FSM stage → intent label used for knowledge routing (Priority 0).
+   * Stages absent from this map skip stage-based knowledge lookup.
+   */
+  stageIntents: {
+    objection:     "objection",
+    qualification: "qualification_site",
+    offer:         "pricing",
+    close:         "close",
+  },
+
   /** Heuristic response validation */
   validation: {
     maxSentences: 3,

@@ -6,13 +6,10 @@ const { routeKnowledgeByIntent } = require("./knowledgeRouter");
 const { getAssistantConfig } = require("./configLoader");
 const { extractMemory } = require("./memoryExtractor");
 
+// ─── Built-in FSM defaults (used as fallback when config is absent) ──────────
 const VALID_STAGES = new Set(["greeting", "qualification", "offer", "objection", "close"]);
 
-/**
- * Maps FSM stage → intent label used for stage-based knowledge routing.
- * This is PRIORITY 0: the current stage always determines what knowledge to show,
- * regardless of what the user typed.
- */
+/** Maps FSM stage → intent for stage-based knowledge routing (Priority 0). */
 const STAGE_TO_INTENT = {
   objection:     "objection",
   qualification: "qualification_site",
@@ -21,6 +18,7 @@ const STAGE_TO_INTENT = {
 };
 
 /**
+ * Intent-driven stage transition — original logic, kept as fallback.
  * @param {string} current
  * @param {string} intent
  * @returns {string}
@@ -32,6 +30,32 @@ function computeNextStage(current, intent) {
   if (intent === "pricing") return "offer";
   if (intent === "close") return "close";
   return c;
+}
+
+/**
+ * Config-driven sequential stage advancement through config.funnel.
+ * Used when assistant.config.funnel is present.
+ * Falls back to computeNextStage when config.funnel is absent.
+ *
+ * @param {string} currentStage
+ * @param {string} intent         — still used if config.funnel is absent
+ * @param {{ funnel?: string[] } | null} config
+ * @returns {string}
+ */
+function getNextStage(currentStage, intent, config) {
+  const funnel = Array.isArray(config?.funnel) && config.funnel.length > 0
+    ? config.funnel
+    : null;
+
+  if (!funnel) {
+    // Fallback: original intent-driven logic
+    return computeNextStage(currentStage, intent);
+  }
+
+  const index = funnel.indexOf(currentStage);
+  if (index === -1) return funnel[0];                       // unknown stage → start
+  if (index + 1 >= funnel.length) return currentStage;     // already at end → stay
+  return funnel[index + 1];                                 // advance one step
 }
 
 /**
@@ -63,6 +87,20 @@ async function applyHybridSalesPipeline(p) {
       ? String(p.conversationId).trim()
       : null;
 
+  // Build config-aware valid-stage set and stage→intent map
+  const validStagesSet = Array.isArray(assistantConfig.funnel) && assistantConfig.funnel.length > 0
+    ? new Set(assistantConfig.funnel)
+    : VALID_STAGES;
+
+  const stageIntentMap =
+    assistantConfig.stageIntents && typeof assistantConfig.stageIntents === "object"
+      ? assistantConfig.stageIntents
+      : STAGE_TO_INTENT;
+
+  const defaultStage = (assistantConfig.funnel?.[0]) ?? "greeting";
+
+  console.log("[hybridSales] FUNNEL:", (assistantConfig.funnel ?? [...VALID_STAGES]).join(" → "));
+
   if (cid) {
     const conv = await prisma.conversation.findFirst({
       where: {
@@ -75,7 +113,7 @@ async function applyHybridSalesPipeline(p) {
     });
     if (conv) {
       convId = conv.id;
-      persistedStage = VALID_STAGES.has(conv.salesStage) ? conv.salesStage : "greeting";
+      persistedStage = validStagesSet.has(conv.salesStage) ? conv.salesStage : defaultStage;
       stage = persistedStage;
       if (conv.context && typeof conv.context === "object") {
         persistedContext = conv.context;
@@ -83,7 +121,8 @@ async function applyHybridSalesPipeline(p) {
     }
   }
 
-  const nextStage = computeNextStage(stage, intent);
+  const nextStage = getNextStage(stage, intent, assistantConfig);
+  console.log("[hybridSales] STAGE:", stage, "→", nextStage);
 
   if (convId && nextStage !== persistedStage) {
     await prisma.conversation.update({
@@ -116,7 +155,7 @@ async function applyHybridSalesPipeline(p) {
   // ─── Priority 0: stage-based routing ─────────────────────────────────────
   // The CURRENT FSM stage determines the knowledge block regardless of intent.
   // If found → skip RAG entirely (caller reads fsmKnowledgeFound).
-  const stageIntent = STAGE_TO_INTENT[stage];
+  const stageIntent = stageIntentMap[stage];
   if (stageIntent) {
     const stageKnowledge = await routeKnowledgeByIntent(p.assistantId, p.organizationId, stageIntent);
     if (stageKnowledge && stageKnowledge.trim()) {
@@ -151,6 +190,8 @@ function isHybridSalesEnabled() {
 module.exports = {
   applyHybridSalesPipeline,
   computeNextStage,
+  getNextStage,
   isHybridSalesEnabled,
   VALID_STAGES,
+  STAGE_TO_INTENT,
 };
