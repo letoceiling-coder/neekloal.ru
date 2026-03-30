@@ -5,6 +5,7 @@ const authMiddleware = require("../middleware/auth");
 const qdrant = require("../lib/qdrant");
 const { ingestKnowledgeDocument } = require("../services/rag");
 const { addIngestJob } = require("../queue/ragQueue");
+const { detectIntent } = require("../services/intentDetector");
 
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_URL_CHARS = 100_000;
@@ -166,6 +167,8 @@ module.exports = async function knowledgeRoutes(fastify) {
     if (!assistant) return reply.code(404).send({ error: "Assistant not found" });
 
     const text = String(content).trim();
+    const detectedIntent = detectIntent(text).intent;
+    const intent = detectedIntent === "unknown" ? null : detectedIntent;
     const row = await prisma.knowledge.create({
       data: {
         organizationId: request.organizationId,
@@ -173,6 +176,7 @@ module.exports = async function knowledgeRoutes(fastify) {
         type: "text",
         status: "processing",
         content: text,
+        intent,
       },
     });
 
@@ -259,6 +263,8 @@ module.exports = async function knowledgeRoutes(fastify) {
         continue;
       }
 
+      const detectedIntent = detectIntent(text).intent;
+      const intent = detectedIntent === "unknown" ? null : detectedIntent;
       const row = await prisma.knowledge.create({
         data: {
           organizationId: request.organizationId,
@@ -267,6 +273,7 @@ module.exports = async function knowledgeRoutes(fastify) {
           sourceName,
           status: "processing",
           content: text,
+          intent,
         },
       });
 
@@ -337,6 +344,8 @@ module.exports = async function knowledgeRoutes(fastify) {
       return reply.code(422).send({ error: "Extracted text is too short (< 50 chars)" });
     }
 
+    const detectedIntent = detectIntent(text).intent;
+    const intent = detectedIntent === "unknown" ? null : detectedIntent;
     const row = await prisma.knowledge.create({
       data: {
         organizationId: request.organizationId,
@@ -345,6 +354,7 @@ module.exports = async function knowledgeRoutes(fastify) {
         sourceName: url,
         status: "processing",
         content: text,
+        intent,
       },
     });
 

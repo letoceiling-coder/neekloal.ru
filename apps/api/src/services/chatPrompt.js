@@ -10,6 +10,7 @@
  * @param {string} [p.knowledge] — RAG / документы
  * @param {unknown} p.message — пользовательское сообщение
  * @param {string} [p.fsmStage] — этап воронки (greeting | qualification | offer | …)
+ * @param {unknown} [p.context] — sales memory JSON (из conversation.context)
  * @param {string} [p.appendAfterUser] — доп. блок после USER (история tool results, инструкции JSON)
  * @returns {string}
  */
@@ -31,16 +32,48 @@ function buildFinalPrompt(p) {
       ? String(p.fsmStage).trim()
       : "";
 
-  const parts = [`SYSTEM:\n${sys}\n\nОтвечай только на русском языке.`];
+  const goalBlock =
+    "ТВОЯ ЦЕЛЬ:\n" +
+    "* довести клиента до сделки\n" +
+    "* задавать вопросы\n" +
+    "* вести диалог";
+
+  const memory =
+    p.context != null
+      ? (() => {
+          try {
+            if (typeof p.context === "object") {
+              return JSON.stringify(p.context);
+            }
+          } catch {
+            // ignore
+          }
+          return String(p.context);
+        })()
+      : "";
+
+  const parts = [
+    `SYSTEM:\n${sys}\n\n${goalBlock}\n\nОтвечай только на русском языке.`,
+  ];
   if (agentRules) {
     parts.push(`AGENT:\n${agentRules}`);
   }
   if (fsm) {
     parts.push(
       `FSM:\nТекущий этап: ${fsm}\n` +
+        `FSM RULES:\n` +
+        `если stage = objection:\n` +
+        `* согласись\n` +
+        `* объясни ценность\n` +
+        `* задай вопрос\n\n` +
+        `если stage = qualification:\n` +
+        `* задай уточняющий вопрос\n\n` +
+        `если stage = close:\n` +
+        `* предложи созвон\n\n` +
         `Веди диалог как менеджер: учитывай этап, двигай к следующему шагу воронки, будь кратким.`
     );
   }
+  parts.push(`MEMORY:\n${memory ? memory : "(none)"}`);
   parts.push(`KNOWLEDGE:\n${kb || "(none)"}`);
 
   let userBlock = `USER:\n${userMsg}`;

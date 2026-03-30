@@ -66,8 +66,9 @@ function parseAgentJson(raw) {
  * @param {string} userMsg
  * @param {object} assistant — Prisma assistant
  * @param {string} reason
+ * @param {unknown} context
  */
-function buildFallbackPrompt(rules, kb, userMsg, assistant, reason, fsmStage) {
+function buildFallbackPrompt(rules, kb, userMsg, assistant, reason, fsmStage, context) {
   const agentBlock = `${rules}
 
 Reply helpfully in plain text for the user. Do not output JSON.
@@ -79,6 +80,7 @@ Note: ${reason}`;
     message: userMsg,
     agent: { rules: agentBlock },
     fsmStage,
+    context,
   });
 }
 
@@ -124,7 +126,7 @@ function toolExecutionLooksFailed(toolResultJson) {
  * @param {string} params.model
  * @param {object} params.agent — Prisma agent with tools[]
  */
-async function runAgent({ assistant, message, knowledgeBlock, model, agent, fsmStage }) {
+async function runAgent({ assistant, message, knowledgeBlock, model, agent, fsmStage, context }) {
   console.log("agent used", agent.id);
 
   const userMsg = message == null ? "" : String(message).trim();
@@ -153,6 +155,7 @@ OR
     message: userMsg,
     agent: { rules: agentPlannerRules },
     fsmStage,
+    context,
   });
 
   const firstRaw = await ollamaGenerate(model, firstPrompt);
@@ -199,7 +202,8 @@ OR
       userMsg,
       assistant,
       "The model requested a toolId that does not exist in TOOLS.",
-      fsmStage
+      fsmStage,
+      context
     );
     const fallback = await ollamaGenerate(model, fallbackPrompt);
     console.log({
@@ -230,7 +234,15 @@ OR
     const reason = executeThrew
       ? "Tool execution threw an error; apologize briefly and answer if you can."
       : `Tool returned failure or invalid payload: ${toolResult.slice(0, 500)}`;
-    const fallbackPrompt = buildFallbackPrompt(rules, kb, userMsg, assistant, reason);
+    const fallbackPrompt = buildFallbackPrompt(
+      rules,
+      kb,
+      userMsg,
+      assistant,
+      reason,
+      fsmStage,
+      context
+    );
     const fallback = await ollamaGenerate(model, fallbackPrompt);
     console.log({
       agentAction: "tool",
@@ -260,6 +272,7 @@ After reading TOOL RESULT below, write the final answer for the user in plain la
     agent: { rules: secondAgentRules },
     appendAfterUser: `TOOL RESULT:\n${toolResult}`,
     fsmStage,
+    context,
   });
 
   const finalText = await ollamaGenerate(model, secondPrompt);

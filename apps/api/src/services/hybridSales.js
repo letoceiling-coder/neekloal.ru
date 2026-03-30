@@ -29,7 +29,7 @@ function computeNextStage(current, intent) {
  * @param {unknown} p.message
  * @param {string} p.ragBlock
  * @param {string} p.dbFallbackBlock
- * @returns {Promise<{ intent: string; stage: string; knowledgeSource: "intent"|"rag"; knowledgeBlock: string }>}
+ * @returns {Promise<{ intent: string; stage: string; knowledgeSource: "intent"|"rag"; knowledgeBlock: string; context: object }>}
  */
 async function applyHybridSalesPipeline(p) {
   const { intent } = detectIntent(p.message);
@@ -38,6 +38,8 @@ async function applyHybridSalesPipeline(p) {
   /** @type {string|null} */
   let convId = null;
   let persistedStage = "greeting";
+  /** @type {object} */
+  let persistedContext = {};
 
   const cid =
     p.conversationId != null && String(p.conversationId).trim() !== ""
@@ -52,12 +54,15 @@ async function applyHybridSalesPipeline(p) {
         assistantId: p.assistantId,
         deletedAt: null,
       },
-      select: { id: true, salesStage: true },
+      select: { id: true, salesStage: true, context: true },
     });
     if (conv) {
       convId = conv.id;
       persistedStage = VALID_STAGES.has(conv.salesStage) ? conv.salesStage : "greeting";
       stage = persistedStage;
+      if (conv.context && typeof conv.context === "object") {
+        persistedContext = conv.context;
+      }
     }
   }
 
@@ -71,6 +76,36 @@ async function applyHybridSalesPipeline(p) {
   }
 
   stage = nextStage;
+
+  // ─── Memory updates (conversation.context) ───────────────────────────────
+  const t = String(p.message ?? "").toLowerCase();
+
+  let budget = null;
+  if (t.includes("бюджет")) {
+    const m = t.match(/бюджет[^0-9]{0,30}([0-9][0-9\s]{2,})(?:\s*(?:руб|р\.|₽))?/i);
+    if (m && m[1]) {
+      const n = parseInt(String(m[1]).replace(/\s+/g, ""), 10);
+      if (!Number.isNaN(n)) budget = n;
+    }
+  }
+
+  let projectType = null;
+  if (intent === "qualification_site" || t.includes("сайт") || t.includes("лендинг") || t.includes("интернет-магазин")) {
+    if (t.includes("интернет-магазин") || t.includes("интернет магазин")) projectType = "ecommerce";
+    else if (t.includes("лендинг")) projectType = "landing";
+    else if (t.includes("сайт") || t.includes("проект") || t.includes("разработк")) projectType = "website";
+  }
+
+  const memoryContext = { ...(persistedContext || {}) };
+  if (budget != null) memoryContext.budget = budget;
+  if (projectType) memoryContext.projectType = projectType;
+
+  if (convId && (budget != null || projectType)) {
+    await prisma.conversation.update({
+      where: { id: convId },
+      data: { context: memoryContext },
+    });
+  }
 
   let knowledgeSource = "rag";
   let knowledgeBlock = "";
@@ -86,7 +121,7 @@ async function applyHybridSalesPipeline(p) {
     knowledgeSource = "rag";
   }
 
-  return { intent, stage, knowledgeSource, knowledgeBlock };
+  return { intent, stage, knowledgeSource, knowledgeBlock, context: memoryContext };
 }
 
 function isHybridSalesEnabled() {

@@ -312,6 +312,8 @@ model Conversation {
   widgetFollowUpCount         Int         @default(0) @map("widget_follow_up_count")
   /// Sales hybrid FSM: greeting | qualification | offer | objection | close
   salesStage                  String      @default("greeting") @map("sales_stage")
+  /// Hybrid sales memory (e.g. { "budget": 30000, "projectType": "landing" }).
+  context                      Json?
 
   messages Message[]
   usages   Usage[]
@@ -411,6 +413,8 @@ model Knowledge {
   type           String
   /// Original file name or ingested URL for display.
   sourceName     String?   @map("source_name")
+  /// Intent label for hybrid sales routing.
+  intent         String?   @map("intent")
   /// Ingest lifecycle: "processing" | "ready" | "failed"
   status         String    @default("ready")
   content        String    @db.Text

@@ -9,10 +9,11 @@ const SOURCE_HINTS = {
   qualification_site: ["qualification", "сайт", "site", "проект", "бриф"],
 };
 
-const INTENT_LINE_RE = /^\s*(?:#+\s*)?(?:intent|интент)\s*[:：]\s*([a-z0-9_]+)\s*$/i;
-
 /**
- * Подобрать фрагменты базы знаний под intent (по sourceName / первой строке контента).
+ * Подобрать фрагменты базы знаний под intent.
+ * Приоритет:
+ *  1) knowledge.intent
+ *  2) sourceName/content подсказки (для обратной совместимости)
  * @param {string} assistantId
  * @param {string} organizationId
  * @param {string} intent — pricing | objection | qualification_site | …
@@ -34,7 +35,7 @@ async function routeKnowledgeByIntent(assistantId, organizationId, intent) {
       organizationId,
       deletedAt: null,
     },
-    select: { sourceName: true, content: true },
+    select: { intent: true, sourceName: true, content: true },
     orderBy: { createdAt: "asc" },
     take: 200,
   });
@@ -43,15 +44,13 @@ async function routeKnowledgeByIntent(assistantId, organizationId, intent) {
   for (const row of rows) {
     const name = String(row.sourceName ?? "").toLowerCase();
     const content = String(row.content ?? "");
-    const firstLine = content.split("\n")[0] ?? "";
-    const lineIntent = firstLine.match(INTENT_LINE_RE);
-    const tagged = lineIntent ? String(lineIntent[1]).toLowerCase() : "";
+    const tagged = row.intent != null ? String(row.intent).toLowerCase() : "";
 
     let hit = false;
-    if (tagged === intent.toLowerCase()) {
+    if (tagged && tagged === intent.toLowerCase()) {
       hit = true;
     }
-    if (!hit) {
+    if (!hit && !tagged) {
       for (const h of hints) {
         if (name.includes(h)) {
           hit = true;

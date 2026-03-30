@@ -210,10 +210,11 @@ async function ollamaGenerateNonStream(model, prompt) {
  * @param {string} knowledgeBlock
  * @param {unknown} message
  * @param {string|undefined} fsmStage
+ * @param {unknown} context
  * @param {string} draft
  * @returns {Promise<string>}
  */
-async function repairSalesReplyIfNeeded(model, chatAssistant, knowledgeBlock, message, fsmStage, draft) {
+async function repairSalesReplyIfNeeded(model, chatAssistant, knowledgeBlock, message, fsmStage, context, draft) {
   let text = String(draft ?? "").trim();
   for (let attempt = 0; attempt < 2 && !validateSalesReply(text).ok; attempt++) {
     const prompt = buildFinalPrompt({
@@ -223,6 +224,7 @@ async function repairSalesReplyIfNeeded(model, chatAssistant, knowledgeBlock, me
       knowledge: knowledgeBlock,
       message,
       fsmStage,
+      context,
       appendAfterUser:
         `Черновик ответа:\n${text}\n\n` +
         `Перепиши ответ целиком на русском: не более 3 предложений; ровно один вопрос (?); ` +
@@ -317,9 +319,10 @@ async function prepareChatContext(request, reply, fastify) {
     knowledgeRows.length > 0 ? knowledgeRows.map((k) => k.content).join("\n\n") : "";
 
   const hybridEnabled = isHybridSalesEnabled();
-  /** @type {{ intent: string; stage: string; knowledgeSource: string }} */
+  /** @type {{ intent: string; stage: string; knowledgeSource: string; context: object }} */
   let hybridMeta = { intent: "unknown", stage: "greeting", knowledgeSource: "rag" };
   let knowledgeBlock = "";
+  let hybridContext = {};
 
   if (hybridEnabled) {
     const hybrid = await applyHybridSalesPipeline({
@@ -335,7 +338,9 @@ async function prepareChatContext(request, reply, fastify) {
       intent: hybrid.intent,
       stage: hybrid.stage,
       knowledgeSource: hybrid.knowledgeSource,
+      context: hybrid.context,
     };
+    hybridContext = hybrid.context;
   } else {
     knowledgeBlock = String(ragBlock || "").trim() || dbFallbackBlock;
   }
@@ -374,6 +379,7 @@ async function prepareChatContext(request, reply, fastify) {
     hybridEnabled,
     hybridMeta,
     fsmStage: hybridEnabled ? hybridMeta.stage : undefined,
+    context: hybridEnabled ? hybridContext : undefined,
   };
 }
 
@@ -398,6 +404,7 @@ module.exports = async function chatRoutes(fastify) {
       hybridEnabled,
       hybridMeta,
       fsmStage,
+      context,
     } = ctx;
 
     if (hybridEnabled) {
@@ -407,6 +414,7 @@ module.exports = async function chatRoutes(fastify) {
             intent: hybridMeta.intent,
             stage: hybridMeta.stage,
             knowledgeSource: hybridMeta.knowledgeSource,
+            context: hybridMeta.context,
           },
         },
         "chat hybrid sales"
@@ -425,6 +433,7 @@ module.exports = async function chatRoutes(fastify) {
           agent: agentForChat,
           initiatedByUserId: uid,
           fsmStage,
+          context,
         });
         if (hybridEnabled) {
           replyText = await repairSalesReplyIfNeeded(
@@ -433,6 +442,7 @@ module.exports = async function chatRoutes(fastify) {
             knowledgeBlock,
             message,
             fsmStage,
+            context,
             replyText
           );
           const v = validateSalesReply(replyText);
@@ -487,6 +497,7 @@ module.exports = async function chatRoutes(fastify) {
         knowledge: knowledgeBlock,
         message,
         fsmStage,
+        context,
       });
       fastify.log.info({ prompt }, "chat prompt");
 
@@ -591,6 +602,7 @@ module.exports = async function chatRoutes(fastify) {
       hybridEnabled,
       hybridMeta,
       fsmStage,
+      context,
     } = ctx;
 
     if (hybridEnabled) {
@@ -600,6 +612,7 @@ module.exports = async function chatRoutes(fastify) {
             intent: hybridMeta.intent,
             stage: hybridMeta.stage,
             knowledgeSource: hybridMeta.knowledgeSource,
+            context: hybridMeta.context,
           },
         },
         "chat/stream hybrid sales"
@@ -661,6 +674,7 @@ module.exports = async function chatRoutes(fastify) {
           agent: agentForChat,
           initiatedByUserId: uid,
           fsmStage,
+          context,
         });
         if (hybridEnabled) {
           replyText = await repairSalesReplyIfNeeded(
@@ -669,6 +683,7 @@ module.exports = async function chatRoutes(fastify) {
             knowledgeBlock,
             message,
             fsmStage,
+            context,
             replyText
           );
         }
@@ -692,6 +707,7 @@ module.exports = async function chatRoutes(fastify) {
           knowledge: knowledgeBlock,
           message,
           fsmStage,
+          context,
         });
         fastify.log.info({ prompt }, "chat/stream prompt");
 
