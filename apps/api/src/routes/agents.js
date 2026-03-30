@@ -188,7 +188,7 @@ module.exports = async function agentsRoutes(fastify) {
     }
 
     // Try to pick the assistant's model, fall back to env default
-    let model = process.env.DEFAULT_MODEL || "llama3";
+    let model = process.env.DEFAULT_MODEL || "llama3:8b";
     if (assistantId) {
       const assistant = await prisma.assistant.findFirst({
         where: { id: assistantId, organizationId: request.organizationId, deletedAt: null },
