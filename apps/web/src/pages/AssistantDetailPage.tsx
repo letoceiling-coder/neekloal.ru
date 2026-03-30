@@ -370,6 +370,175 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
 
 // ─── Section: Knowledge ───────────────────────────────────────────────────────
 
+// ─── FileGuideModal ───────────────────────────────────────────────────────────
+
+const FILE_GUIDE_NAMES = [
+  { file: "pricing.txt",          intent: "Цены",        color: "bg-blue-50 text-blue-700 border-blue-100" },
+  { file: "objections.txt",       intent: "Возражения",  color: "bg-orange-50 text-orange-700 border-orange-100" },
+  { file: "qualification_site.txt", intent: "Вопросы",   color: "bg-purple-50 text-purple-700 border-purple-100" },
+  { file: "close.txt",            intent: "Закрытие",    color: "bg-green-50 text-green-700 border-green-100" },
+];
+
+const FILE_EXAMPLE = `Цены:
+
+Лендинг (1 страница): 50 000 ₽
+Корпоративный сайт:   150 000 ₽
+Интернет-магазин:     от 200 000 ₽
+
+Сроки: 2–4 недели.`;
+
+const FILE_RULES = [
+  "1 файл = 1 тема (не мешайте цены и возражения)",
+  "Пишите кратко — AI читает весь файл целиком",
+  "Конкретные цифры лучше расплывчатых фраз",
+  "Имя файла определяет тему автоматически",
+];
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  function handleCopy() {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  }
+  return (
+    <button
+      onClick={handleCopy}
+      className="flex items-center gap-1 rounded px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 transition-colors"
+      title="Скопировать"
+    >
+      {copied ? (
+        <>
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+            <path d="M2.5 7.5L5.5 10.5L11.5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          Скопировано
+        </>
+      ) : (
+        <>
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+            <rect x="4.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
+            <path d="M4.5 9.5H3a1 1 0 01-1-1V3a1 1 0 011-1h5.5a1 1 0 011 1v1.5" stroke="currentColor" strokeWidth="1.2"/>
+          </svg>
+          Копировать
+        </>
+      )}
+    </button>
+  );
+}
+
+function FileGuideModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+
+      {/* Panel */}
+      <div className="relative z-10 w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl ring-1 ring-black/5">
+        {/* Header */}
+        <div className="sticky top-0 z-10 flex items-center justify-between bg-white px-6 pt-5 pb-4 border-b border-neutral-100">
+          <div>
+            <h2 className="text-base font-semibold text-neutral-900">Как подготовить базу знаний</h2>
+            <p className="text-xs text-neutral-500 mt-0.5">AI сам понимает тему файла по его названию</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-6">
+
+          {/* Block 1 — filename → intent */}
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-3">
+              Названия файлов
+            </h3>
+            <div className="grid grid-cols-2 gap-2">
+              {FILE_GUIDE_NAMES.map(({ file, intent, color }) => (
+                <div
+                  key={file}
+                  className={cn("flex items-center justify-between rounded-lg border px-3 py-2.5", color)}
+                >
+                  <span className="font-mono text-xs font-medium">{file}</span>
+                  <span className="text-xs ml-2 shrink-0">→ {intent}</span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2.5 text-xs text-neutral-500">
+              Назовите файл точно как показано — AI автоматически привяжет его к нужному этапу продаж.
+            </p>
+          </section>
+
+          {/* Block 2 — example */}
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400">
+                Пример — pricing.txt
+              </h3>
+              <CopyButton text={FILE_EXAMPLE} />
+            </div>
+            <pre className="rounded-lg bg-neutral-950 px-4 py-3.5 text-xs leading-relaxed text-neutral-200 overflow-x-auto whitespace-pre-wrap">
+              {FILE_EXAMPLE}
+            </pre>
+          </section>
+
+          {/* Block 3 — rules */}
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-3">
+              Правила
+            </h3>
+            <ul className="space-y-2">
+              {FILE_RULES.map((rule, i) => (
+                <li key={i} className="flex items-start gap-2.5 text-sm text-neutral-700">
+                  <span className="mt-0.5 shrink-0 h-5 w-5 rounded-full bg-neutral-100 flex items-center justify-center text-xs font-semibold text-neutral-500">
+                    {i + 1}
+                  </span>
+                  {rule}
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          {/* Block 4 — how it works */}
+          <section className="rounded-xl bg-neutral-950 px-4 py-4">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 text-lg">⚡</span>
+              <div>
+                <p className="text-sm font-medium text-white">Как работает</p>
+                <p className="mt-1 text-xs text-neutral-400 leading-relaxed">
+                  Когда клиент спрашивает о ценах — AI находит <span className="text-neutral-200 font-mono">pricing.txt</span>{" "}
+                  и отвечает по нему. Когда возражает — использует <span className="text-neutral-200 font-mono">objections.txt</span>.
+                  Название файла = тема для AI.
+                </p>
+              </div>
+            </div>
+          </section>
+
+        </div>
+
+        {/* Footer */}
+        <div className="sticky bottom-0 bg-white border-t border-neutral-100 px-6 py-4">
+          <button
+            onClick={onClose}
+            className="w-full rounded-lg bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-neutral-700 transition-colors"
+          >
+            Понятно, начать загрузку
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type KInputTab = "text" | "file" | "url";
 
 const K_TABS: { id: KInputTab; label: string }[] = [
@@ -413,6 +582,7 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
   const [uploadErr, setUploadErr] = useState<string | null>(null);
   const [uploadDone, setUploadDone] = useState(false);
   const [uploadRows, setUploadRows] = useState<UploadFileRow[]>([]);
+  const [showFileGuide, setShowFileGuide] = useState(false);
 
   // URL
   const [urlInput, setUrlInput] = useState("");
@@ -554,10 +724,29 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
           {/* File */}
           {inputTab === "file" && (
             <div className="space-y-3">
-              <p className="text-xs text-neutral-500">
-                Можно выбрать <strong>несколько файлов</strong> сразу (до 64, по 10 MB каждый).
-                Форматы: <strong>.txt</strong>, <strong>.pdf</strong>.
-              </p>
+              {/* Guide modal */}
+              {showFileGuide && <FileGuideModal onClose={() => setShowFileGuide(false)} />}
+
+              {/* Info row */}
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-neutral-500">
+                  Можно выбрать <strong>несколько файлов</strong> сразу (до 64, по 10 MB каждый).
+                  Форматы: <strong>.txt</strong>, <strong>.pdf</strong>.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowFileGuide(true)}
+                  className="shrink-0 flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-600 hover:border-neutral-400 hover:text-neutral-900 transition-colors"
+                >
+                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none" className="text-neutral-400">
+                    <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.3"/>
+                    <path d="M7 6.5v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                    <circle cx="7" cy="4.5" r="0.75" fill="currentColor"/>
+                  </svg>
+                  Как подготовить файлы
+                </button>
+              </div>
+
               <label
                 htmlFor="knowledge-file"
                 className={cn(
