@@ -85,6 +85,167 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => v
   );
 }
 
+// ─── PromptGuideModal ─────────────────────────────────────────────────────────
+
+const PROMPT_EXAMPLE = `Ты — менеджер студии Neeklo.
+Отвечай кратко, без воды.
+Всегда задавай один уточняющий вопрос.
+Веди клиента к покупке.`;
+
+const PROMPT_BLOCKS = [
+  {
+    title: "Роль",
+    icon: "👤",
+    tip: "Назови кто ты и для чего",
+    example: "Ты — менеджер продаж веб-студии.",
+    color: "bg-blue-50 border-blue-100",
+    textColor: "text-blue-800",
+  },
+  {
+    title: "Стиль",
+    icon: "✍️",
+    tip: "Как отвечать: тон, длина",
+    example: "Отвечай коротко и уверенно.",
+    color: "bg-purple-50 border-purple-100",
+    textColor: "text-purple-800",
+  },
+  {
+    title: "Поведение",
+    icon: "🎯",
+    tip: "Что делать в каждом ответе",
+    example: "Задавай 1 вопрос. Веди к сделке.",
+    color: "bg-green-50 border-green-100",
+    textColor: "text-green-800",
+  },
+];
+
+const PROMPT_ERRORS = [
+  { text: "\"ты AI помощник\" — обезличивает, клиент не доверяет" },
+  { text: "длинные блоки текста — AI теряет фокус" },
+  { text: "инструкции без глагола — \"дружелюбный тон\" вместо \"общайся дружелюбно\"" },
+];
+
+function PromptGuideModal({ onUseExample, onClose }: { onUseExample: (t: string) => void; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+
+  function handleCopy() {
+    void navigator.clipboard.writeText(PROMPT_EXAMPLE).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  }
+
+  function handleUse() {
+    onUseExample(PROMPT_EXAMPLE);
+    onClose();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <div className="relative z-10 w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl ring-1 ring-black/5">
+
+        {/* Header */}
+        <div className="sticky top-0 z-10 flex items-center justify-between bg-white px-6 pt-5 pb-4 border-b border-neutral-100">
+          <div>
+            <h2 className="text-base font-semibold text-neutral-900">Как составить системный промпт</h2>
+            <p className="text-xs text-neutral-500 mt-0.5">3 блока — и AI работает как настоящий менеджер</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-6">
+
+          {/* Blocks */}
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-3">
+              Структура промпта
+            </h3>
+            <div className="space-y-2">
+              {PROMPT_BLOCKS.map((b) => (
+                <div key={b.title} className={cn("rounded-xl border p-4", b.color)}>
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-base">{b.icon}</span>
+                    <span className={cn("text-sm font-semibold", b.textColor)}>{b.title}</span>
+                    <span className="ml-auto text-xs text-neutral-500">{b.tip}</span>
+                  </div>
+                  <p className="font-mono text-xs text-neutral-700 bg-white/70 rounded-lg px-3 py-2">
+                    {b.example}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* Example */}
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400">
+                Готовый пример
+              </h3>
+              <button
+                onClick={handleCopy}
+                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 transition-colors"
+              >
+                {copied ? (
+                  <><svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2.5 7.5L5.5 10.5L11.5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Скопировано</>
+                ) : (
+                  <><svg width="12" height="12" viewBox="0 0 14 14" fill="none"><rect x="4.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2"/><path d="M4.5 9.5H3a1 1 0 01-1-1V3a1 1 0 011-1h5.5a1 1 0 011 1v1.5" stroke="currentColor" strokeWidth="1.2"/></svg>Копировать</>
+                )}
+              </button>
+            </div>
+            <pre className="rounded-lg bg-neutral-950 px-4 py-4 text-xs leading-relaxed text-neutral-200 whitespace-pre-wrap">
+              {PROMPT_EXAMPLE}
+            </pre>
+            <button
+              onClick={handleUse}
+              className="mt-2 w-full rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-2 text-xs font-medium text-neutral-700 hover:bg-neutral-100 transition-colors"
+            >
+              Вставить в промпт →
+            </button>
+          </section>
+
+          {/* Errors */}
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-3">
+              Частые ошибки
+            </h3>
+            <ul className="space-y-2">
+              {PROMPT_ERRORS.map((e, i) => (
+                <li key={i} className="flex items-start gap-2 text-sm text-neutral-700">
+                  <span className="mt-0.5 shrink-0 text-red-500">✕</span>
+                  {e.text}
+                </li>
+              ))}
+            </ul>
+          </section>
+
+        </div>
+
+        {/* Footer */}
+        <div className="sticky bottom-0 bg-white border-t border-neutral-100 px-6 py-4">
+          <button
+            onClick={onClose}
+            className="w-full rounded-lg bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-neutral-700 transition-colors"
+          >
+            Понятно
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Section: Basic ───────────────────────────────────────────────────────────
 
 function BasicSection({ assistant }: { assistant: Assistant }) {
@@ -99,6 +260,7 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
   const [model, setModel] = useState(assistant.model);
   const [systemPrompt, setSystemPrompt] = useState(assistant.systemPrompt);
   const [saved, setSaved] = useState(false);
+  const [showPromptGuide, setShowPromptGuide] = useState(false);
 
   async function handleSave(e: FormEvent) {
     e.preventDefault();
@@ -139,18 +301,38 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
             />
           </div>
           <div>
-            <label
-              htmlFor="basic-prompt"
-              className="block text-xs font-medium text-neutral-600"
-            >
-              Системный промпт
-            </label>
+            {showPromptGuide && (
+              <PromptGuideModal
+                onUseExample={(t) => setSystemPrompt(t)}
+                onClose={() => setShowPromptGuide(false)}
+              />
+            )}
+            <div className="flex items-center justify-between mb-1">
+              <label
+                htmlFor="basic-prompt"
+                className="text-xs font-medium text-neutral-600"
+              >
+                Системный промпт
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowPromptGuide(true)}
+                className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-xs font-medium text-neutral-600 hover:border-neutral-400 hover:text-neutral-900 transition-colors"
+              >
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" className="text-neutral-400">
+                  <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.3"/>
+                  <path d="M7 6.5v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                  <circle cx="7" cy="4.5" r="0.75" fill="currentColor"/>
+                </svg>
+                Как составить
+              </button>
+            </div>
             <textarea
               id="basic-prompt"
               rows={6}
               value={systemPrompt}
               onChange={(e) => setSystemPrompt(e.target.value)}
-              className="mt-1 w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
+              className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
               required
             />
           </div>
