@@ -35,4 +35,36 @@ function buildAutoAgentPrompt(description) {
   );
 }
 
-module.exports = { buildAutoAgentPrompt };
+/**
+ * Builds the LLM prompt to REFINE an existing config.
+ * @param {Record<string,unknown>} config   Current assistant config
+ * @param {string} systemPrompt             Current system prompt
+ * @param {string} instruction              What to change ("сделай агрессивнее")
+ * @returns {string}
+ */
+function buildRefinePrompt(config, systemPrompt, instruction) {
+  return (
+    "Ты — AI архитектор продаж. Улучши конфигурацию AI ассистента согласно инструкции.\n" +
+    "Отвечай СТРОГО в формате JSON — без markdown, без объяснений, только объект.\n\n" +
+    "Текущий systemPrompt:\n" +
+    String(systemPrompt ?? "").trim() +
+    "\n\nТекущий config (JSON):\n" +
+    JSON.stringify(config ?? {}, null, 2) +
+    "\n\nИнструкция для улучшения:\n" +
+    String(instruction ?? "").trim() +
+    "\n\n" +
+    "Верни улучшенный JSON строго по этой схеме:\n" +
+    "{\n" +
+    '  "systemPrompt": "...",\n' +
+    '  "config": {\n' +
+    '    "intents": { ... },\n' +
+    '    "memory": [...],\n' +
+    '    "funnel": [...],\n' +
+    '    "validation": { "maxSentences": 3, "questions": 1 }\n' +
+    '  }\n' +
+    "}\n\n" +
+    "Только JSON, никакого текста до или после.\n"
+  );
+}
+
+module.exports = { buildAutoAgentPrompt, buildRefinePrompt };

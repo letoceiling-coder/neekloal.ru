@@ -6,10 +6,11 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { useAssistants, useAutoAgent, usePatchAssistant } from "../api/assistants";
+import { useAssistants, useAutoAgent, useRefineAgent, usePatchAssistant } from "../api/assistants";
 import { useAgents, useAutoGenerateAgent, useCreateAgent, usePatchAgent } from "../api/agents";
 import { useCreateApiKey, usePatchApiKey, type CreateApiKeyResponse } from "../api/apiKeys";
 import {
@@ -246,7 +247,24 @@ function PromptGuideModal({ onUseExample, onClose }: { onUseExample: (t: string)
   );
 }
 
-// ─── AutoAgentModal ───────────────────────────────────────────────────────────
+// ─── AutoAgentModal — human-readable 4-block preview ─────────────────────────
+
+function SpinIcon() {
+  return (
+    <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+    </svg>
+  );
+}
+
+function SectionTitle({ children }: { children: ReactNode }) {
+  return (
+    <h3 className="text-xs font-semibold uppercase tracking-widest text-neutral-400 mb-3">
+      {children}
+    </h3>
+  );
+}
 
 function AutoAgentModal({
   assistant,
@@ -258,16 +276,38 @@ function AutoAgentModal({
   onApply: (result: AutoAgentResult) => void;
 }) {
   const autoAgent = useAutoAgent();
+  const refineAgent = useRefineAgent();
   const [description, setDescription] = useState("");
   const [result, setResult] = useState<AutoAgentResult | null>(null);
   const [applied, setApplied] = useState(false);
+  const [showRefine, setShowRefine] = useState(false);
+  const [refineInstruction, setRefineInstruction] = useState("");
+
+  const isGenerating = autoAgent.isPending;
+  const isRefining = refineAgent.isPending;
+  const isBusy = isGenerating || isRefining;
 
   async function handleGenerate() {
     if (!description.trim()) return;
     setResult(null);
     setApplied(false);
+    setShowRefine(false);
     const r = await autoAgent.mutateAsync({ description, assistantId: assistant.id });
     setResult(r);
+  }
+
+  async function handleRefine() {
+    if (!result || !refineInstruction.trim()) return;
+    setApplied(false);
+    const r = await refineAgent.mutateAsync({
+      config: result.config,
+      systemPrompt: result.systemPrompt,
+      instruction: refineInstruction,
+      assistantId: assistant.id,
+    });
+    setResult(r);
+    setShowRefine(false);
+    setRefineInstruction("");
   }
 
   function handleApply() {
@@ -277,19 +317,23 @@ function AutoAgentModal({
     setTimeout(onClose, 800);
   }
 
+  const ex = result?.explanation;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
-      <div className="relative z-10 w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl ring-1 ring-black/5">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      <div className="relative z-10 w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl bg-white shadow-2xl ring-1 ring-black/5">
 
         {/* Header */}
         <div className="sticky top-0 z-10 flex items-center justify-between bg-white px-6 pt-5 pb-4 border-b border-neutral-100">
           <div>
             <h2 className="text-base font-semibold text-neutral-900">⚡ Авто-настройка ассистента</h2>
-            <p className="text-xs text-neutral-500 mt-0.5">AI сгенерирует промпт и конфигурацию под ваш бизнес</p>
+            <p className="text-xs text-neutral-500 mt-0.5">
+              AI создаст промпт и конфигурацию под ваш бизнес за несколько секунд
+            </p>
           </div>
           <button
             onClick={onClose}
@@ -301,37 +345,40 @@ function AutoAgentModal({
           </button>
         </div>
 
-        <div className="px-6 py-5 space-y-5">
-          {/* Input */}
+        <div className="px-6 py-5 space-y-6">
+
+          {/* ── Input ─────────────────────────────────────────────────────── */}
           <div>
             <label className="block text-xs font-medium text-neutral-600 mb-1.5">
               Опишите ваш бизнес
             </label>
             <textarea
-              rows={3}
+              rows={2}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Например: Я занимаюсь натяжными потолками, хочу получать заявки с сайта"
-              className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900/15 resize-none"
+              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900/15 resize-none"
             />
-            <button
-              type="button"
-              onClick={() => void handleGenerate()}
-              disabled={autoAgent.isPending || !description.trim()}
-              className="mt-2 flex items-center gap-2 rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {autoAgent.isPending ? (
-                <>
-                  <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                  </svg>
-                  Генерирую…
-                </>
-              ) : (
-                <>⚡ Сгенерировать</>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleGenerate()}
+                disabled={isBusy || !description.trim()}
+                className="flex items-center gap-2 rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {isGenerating ? <><SpinIcon /> Генерирую…</> : <>⚡ Сгенерировать</>}
+              </button>
+              {result && !isGenerating && (
+                <button
+                  type="button"
+                  onClick={() => void handleGenerate()}
+                  disabled={isBusy}
+                  className="rounded-lg border border-neutral-200 px-3 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
+                >
+                  Перегенерировать
+                </button>
               )}
-            </button>
+            </div>
             {autoAgent.isError && (
               <p className="mt-2 text-xs text-red-600">
                 {autoAgent.error instanceof Error ? autoAgent.error.message : "Ошибка генерации"}
@@ -339,87 +386,194 @@ function AutoAgentModal({
             )}
           </div>
 
-          {/* Preview */}
-          {result && (
-            <div className="space-y-4">
-              {/* systemPrompt */}
+          {/* ── Loading state ─────────────────────────────────────────────── */}
+          {isGenerating && (
+            <div className="flex items-center gap-3 rounded-xl bg-neutral-50 px-5 py-6">
+              <SpinIcon />
               <div>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-2">
-                  Системный промпт
-                </h3>
-                <pre className="rounded-lg bg-neutral-950 px-4 py-4 text-xs leading-relaxed text-neutral-200 whitespace-pre-wrap">
-                  {result.systemPrompt}
-                </pre>
+                <p className="text-sm font-medium text-neutral-700">Анализирую ваш бизнес…</p>
+                <p className="text-xs text-neutral-500 mt-0.5">Обычно занимает 3–10 секунд</p>
               </div>
+            </div>
+          )}
 
-              {/* funnel */}
-              <div>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-2">
-                  Воронка продаж (funnel)
-                </h3>
+          {/* ── PREVIEW ───────────────────────────────────────────────────── */}
+          {ex && result && !isGenerating && (
+            <div className="space-y-5">
+
+              {/* Block 1 — Что получишь */}
+              <div className="rounded-xl border border-neutral-100 bg-gradient-to-br from-amber-50 to-orange-50 p-5">
+                <SectionTitle>🔥 Что получишь</SectionTitle>
+                <p className="text-sm text-neutral-800 leading-relaxed mb-4">{ex.summary}</p>
                 <div className="flex flex-wrap gap-2">
-                  {result.config.funnel.map((stage, i) => (
-                    <span
-                      key={stage}
-                      className="flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700"
-                    >
-                      <span className="opacity-50">{i + 1}.</span>
-                      {stage}
-                    </span>
-                  ))}
+                  <span className="flex items-center gap-1.5 rounded-full bg-white/80 border border-amber-100 px-3 py-1 text-xs font-medium text-amber-800">
+                    📍 {ex.meta.stagesCount} этапов в воронке
+                  </span>
+                  <span className="flex items-center gap-1.5 rounded-full bg-white/80 border border-amber-100 px-3 py-1 text-xs font-medium text-amber-800">
+                    💬 {ex.meta.intentsCount} намерений
+                  </span>
+                  <span className="flex items-center gap-1.5 rounded-full bg-white/80 border border-amber-100 px-3 py-1 text-xs font-medium text-amber-800">
+                    🧠 {ex.meta.memoryFieldsCount} полей памяти
+                  </span>
+                  <span className="flex items-center gap-1.5 rounded-full bg-white/80 border border-amber-100 px-3 py-1 text-xs font-medium text-amber-800">
+                    ✂️ макс. {ex.meta.maxSentences} предложения
+                  </span>
+                </div>
+                <div className="mt-4 rounded-lg bg-neutral-900 px-4 py-3">
+                  <p className="text-xs font-medium text-neutral-400 mb-1">Системный промпт</p>
+                  <p className="text-xs leading-relaxed text-neutral-200">{result.systemPrompt}</p>
                 </div>
               </div>
 
-              {/* intents */}
-              <div>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-2">
-                  Намерения (intents)
-                </h3>
+              {/* Block 2 — Как работает */}
+              <div className="rounded-xl border border-neutral-100 bg-white p-5">
+                <SectionTitle>🔥 Как работает</SectionTitle>
+                <div className="relative">
+                  {/* timeline line */}
+                  <div className="absolute left-5 top-6 bottom-2 w-px bg-neutral-100" />
+                  <div className="space-y-3">
+                    {ex.funnelDescription.map((step) => (
+                      <div key={step.stage} className="relative flex items-start gap-4 pl-1">
+                        <div className="relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white border-2 border-neutral-100 text-base">
+                          {step.icon}
+                        </div>
+                        <div className="flex-1 pt-1.5 pb-2">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-xs font-semibold text-neutral-900">{step.label}</span>
+                            <span className="text-xs text-neutral-400">#{step.step}</span>
+                          </div>
+                          <p className="text-xs text-neutral-500 leading-relaxed">{step.description}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Intent triggers (compact) */}
+                <div className="mt-4 pt-4 border-t border-neutral-50">
+                  <p className="text-xs font-medium text-neutral-500 mb-2">Триггеры ответов</p>
+                  <div className="space-y-2">
+                    {ex.intentsDescription.map((intent) => (
+                      <div key={intent.intent} className="flex items-start gap-2">
+                        <span className="text-sm">{intent.icon}</span>
+                        <div>
+                          <span className="text-xs font-medium text-neutral-700">{intent.label}: </span>
+                          <span className="text-xs text-neutral-500">
+                            {intent.triggers.slice(0, 4).join(", ")}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Block 3 — Что запоминает */}
+              <div className="rounded-xl border border-neutral-100 bg-white p-5">
+                <SectionTitle>🔥 Что запоминает</SectionTitle>
                 <div className="grid grid-cols-2 gap-2">
-                  {Object.entries(result.config.intents).map(([intent, keywords]) => (
-                    <div key={intent} className="rounded-lg border border-neutral-100 bg-neutral-50 px-3 py-2">
-                      <p className="text-xs font-semibold text-neutral-700 mb-1">{intent}</p>
-                      <p className="text-xs text-neutral-500 leading-relaxed">
-                        {(keywords as string[]).slice(0, 5).join(", ")}
-                      </p>
+                  {ex.memoryDescription.map((m) => (
+                    <div key={m.field} className="flex items-start gap-3 rounded-lg bg-green-50 border border-green-100 px-3 py-3">
+                      <span className="text-base mt-0.5">{m.icon}</span>
+                      <div>
+                        <p className="text-xs font-semibold text-green-900">{m.label}</p>
+                        <p className="text-xs text-green-700 mt-0.5 leading-snug">{m.desc}</p>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* memory */}
-              <div>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-2">
-                  Поля памяти (memory)
-                </h3>
-                <div className="flex flex-wrap gap-2">
-                  {result.config.memory.map((field) => (
-                    <span key={field} className="rounded-full bg-green-50 px-3 py-1 text-xs font-medium text-green-700">
-                      {field}
-                    </span>
+              {/* Block 4 — Пример диалога */}
+              <div className="rounded-xl border border-neutral-100 bg-white p-5">
+                <SectionTitle>🔥 Пример диалога</SectionTitle>
+                <div className="space-y-3">
+                  {ex.exampleDialog.map((msg, i) => (
+                    <div key={i} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
+                      <div className={cn(
+                        "max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+                        msg.role === "user"
+                          ? "bg-neutral-900 text-white rounded-br-sm"
+                          : "bg-neutral-100 text-neutral-800 rounded-bl-sm"
+                      )}>
+                        {msg.role === "ai" && msg.stageLabel && (
+                          <p className="text-xs font-medium text-neutral-400 mb-1">
+                            Этап: {msg.stageLabel}
+                          </p>
+                        )}
+                        {msg.text}
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>
+
+              {/* ✏️ Улучшить */}
+              <div className="rounded-xl border border-neutral-200 bg-white overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowRefine((v) => !v)}
+                  className="w-full flex items-center justify-between px-5 py-3.5 text-sm font-medium text-neutral-700 hover:bg-neutral-50 transition-colors"
+                >
+                  <span>✏️ Улучшить конфигурацию</span>
+                  <svg
+                    width="14" height="14" viewBox="0 0 14 14" fill="none"
+                    className={cn("transition-transform", showRefine && "rotate-180")}
+                  >
+                    <path d="M3 5l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+                {showRefine && (
+                  <div className="px-5 pb-5 border-t border-neutral-100 pt-4 space-y-3">
+                    <p className="text-xs text-neutral-500">
+                      Опишите что изменить — например: «сделай агрессивнее», «добавь возражение по срокам», «сократи воронку до 3 этапов»
+                    </p>
+                    <textarea
+                      rows={2}
+                      value={refineInstruction}
+                      onChange={(e) => setRefineInstruction(e.target.value)}
+                      placeholder="Например: сделай агрессивнее, добавь акцент на срочность"
+                      className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900/15 resize-none"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleRefine()}
+                        disabled={isBusy || !refineInstruction.trim()}
+                        className="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {isRefining ? <><SpinIcon /> Улучшаю…</> : <>✨ Применить улучшение</>}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setShowRefine(false); setRefineInstruction(""); }}
+                        className="rounded-lg border border-neutral-200 px-3 py-2 text-xs text-neutral-600 hover:bg-neutral-50 transition-colors"
+                      >
+                        Отмена
+                      </button>
+                    </div>
+                    {refineAgent.isError && (
+                      <p className="text-xs text-red-600">
+                        {refineAgent.error instanceof Error ? refineAgent.error.message : "Ошибка улучшения"}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
             </div>
           )}
         </div>
 
         {/* Footer */}
-        {result && (
+        {result && !isGenerating && (
           <div className="sticky bottom-0 bg-white border-t border-neutral-100 px-6 py-4 flex gap-3">
             <button
               onClick={handleApply}
-              disabled={applied}
+              disabled={applied || isBusy}
               className="flex-1 rounded-lg bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-neutral-700 disabled:opacity-60 transition-colors"
             >
               {applied ? "✓ Применено" : "Применить →"}
-            </button>
-            <button
-              onClick={() => void handleGenerate()}
-              disabled={autoAgent.isPending}
-              className="rounded-lg border border-neutral-200 px-4 py-2.5 text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
-            >
-              Перегенерировать
             </button>
           </div>
         )}

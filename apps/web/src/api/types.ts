@@ -62,7 +62,44 @@ export type UpdateAssistantInput = {
   config?: Record<string, unknown> | null;
 };
 
-/** Result of POST /ai/auto-agent */
+/** Human-readable explanation of auto-agent config */
+export type AutoAgentExplanation = {
+  summary: string;
+  funnelDescription: Array<{
+    step: number;
+    stage: string;
+    label: string;
+    icon: string;
+    description: string;
+  }>;
+  intentsDescription: Array<{
+    intent: string;
+    label: string;
+    icon: string;
+    triggers: string[];
+    description: string;
+  }>;
+  memoryDescription: Array<{
+    field: string;
+    label: string;
+    desc: string;
+    icon: string;
+  }>;
+  exampleDialog: Array<{
+    role: "user" | "ai";
+    text: string;
+    stage?: string;
+    stageLabel?: string;
+  }>;
+  meta: {
+    stagesCount: number;
+    intentsCount: number;
+    memoryFieldsCount: number;
+    maxSentences: number;
+  };
+};
+
+/** Result of POST /ai/auto-agent and POST /ai/auto-agent/refine */
 export type AutoAgentResult = {
   systemPrompt: string;
   config: {
@@ -71,6 +108,7 @@ export type AutoAgentResult = {
     funnel: string[];
     validation: { maxSentences: number; questions: number };
   };
+  explanation: AutoAgentExplanation;
 };
 
 export type UpdateAgentInput = {

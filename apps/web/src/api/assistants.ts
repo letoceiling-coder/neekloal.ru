@@ -3,6 +3,7 @@ import { apiClient } from "../lib/apiClient";
 import { queryKeys } from "../queryKeys";
 import { useAuthStore } from "../stores/authStore";
 import type { Assistant, AutoAgentResult, CreateAssistantInput, UpdateAssistantInput } from "./types";
+export type { AutoAgentResult };
 
 export function useAssistants() {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -49,5 +50,16 @@ export function useAutoAgent() {
   return useMutation({
     mutationFn: (body: { description: string; assistantId?: string }) =>
       apiClient.post<AutoAgentResult>("/ai/auto-agent", body),
+  });
+}
+
+export function useRefineAgent() {
+  return useMutation({
+    mutationFn: (body: {
+      config: AutoAgentResult["config"];
+      systemPrompt: string;
+      instruction: string;
+      assistantId?: string;
+    }) => apiClient.post<AutoAgentResult>("/ai/auto-agent/refine", body),
   });
 }
