@@ -502,6 +502,8 @@ module.exports = async function chatRoutes(fastify) {
             {
               reply: replyText,
               model: modelOut,
+              knowledgeSource: hybridMeta.knowledgeSource,
+              fsmStage: hybridMeta.stage,
               warning: usageWarningFromError(usage.error),
             },
             isWidget,
@@ -516,7 +518,11 @@ module.exports = async function chatRoutes(fastify) {
           userText: message,
           assistantText: replyText,
         });
-        return withWidgetSync({ reply: replyText, model: modelOut }, isWidget, persistedAgent);
+        return withWidgetSync(
+          { reply: replyText, model: modelOut, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage },
+          isWidget,
+          persistedAgent
+        );
       }
 
       const prompt = buildFinalPrompt({
@@ -586,6 +592,8 @@ module.exports = async function chatRoutes(fastify) {
           {
             reply: replyText,
             model,
+            knowledgeSource: hybridMeta.knowledgeSource,
+            fsmStage: hybridMeta.stage,
             warning: usageWarningFromError(usage.error),
           },
           isWidget,
@@ -600,7 +608,11 @@ module.exports = async function chatRoutes(fastify) {
         userText: message,
         assistantText: replyText,
       });
-      return withWidgetSync({ reply: replyText, model }, isWidget, persistedOllama);
+      return withWidgetSync(
+        { reply: replyText, model, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage },
+        isWidget,
+        persistedOllama
+      );
     } catch (error) {
       fastify.log.error(error);
       return reply.code(500).send({ error: error.message || "Internal Server Error" });
@@ -778,7 +790,7 @@ module.exports = async function chatRoutes(fastify) {
                 streamedTokens += Math.round(obj.response.length / 4);
                 if (streamedTokens >= STREAM_MAX_TOKENS) {
                   // Cap reached — stop, do not error
-                  send("done", { model, truncated: true });
+                  send("done", { model, truncated: true, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage });
                   streamEnded = true;
                   ollamaController.abort();
                   break outer;
@@ -830,7 +842,7 @@ module.exports = async function chatRoutes(fastify) {
         }).catch((e) => fastify.log.error(e, "persistChatTurn failed in stream"));
       }
 
-      if (!streamEnded) send("done", { model });
+      if (!streamEnded) send("done", { model, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage });
     } catch (err) {
       if (err && err.name === "AbortError") {
         // expected on client disconnect or timeout — already handled

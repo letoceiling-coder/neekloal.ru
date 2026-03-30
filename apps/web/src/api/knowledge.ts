@@ -9,6 +9,8 @@ export type KnowledgeItem = {
   type: "text" | "file" | "url";
   sourceName: string | null;
   status: "processing" | "ready" | "failed";
+  /** Intent label assigned at ingest time: "pricing" | "objection" | "qualification_site" | "close" | null */
+  intent: string | null;
   contentPreview: string;
   chunkCount: number;
   createdAt: string;

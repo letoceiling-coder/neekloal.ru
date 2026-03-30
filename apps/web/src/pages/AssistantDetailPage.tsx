@@ -561,6 +561,30 @@ function StatusBadge({ status }: { status: KnowledgeItem["status"] }) {
   );
 }
 
+const INTENT_LABEL: Record<string, { label: string; bg: string }> = {
+  pricing:            { label: "Цены",        bg: "bg-blue-50 text-blue-700 border-blue-200" },
+  objection:          { label: "Возражения",  bg: "bg-orange-50 text-orange-700 border-orange-200" },
+  qualification_site: { label: "Вопросы",     bg: "bg-purple-50 text-purple-700 border-purple-200" },
+  close:              { label: "Закрытие",    bg: "bg-green-50 text-green-700 border-green-200" },
+};
+
+function IntentBadge({ intent }: { intent: string | null }) {
+  if (!intent) return null;
+  const conf = INTENT_LABEL[intent] ?? { label: intent, bg: "bg-neutral-100 text-neutral-500 border-neutral-200" };
+  return (
+    <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium", conf.bg)}>
+      FSM · {conf.label}
+    </span>
+  );
+}
+
+const SOURCE_LABEL: Record<string, { label: string; icon: string; bg: string }> = {
+  fsm:    { label: "Этап диалога",  icon: "⚡", bg: "bg-green-50 text-green-700" },
+  intent: { label: "База знаний",   icon: "🎯", bg: "bg-blue-50 text-blue-700" },
+  rag:    { label: "База знаний",   icon: "🔍", bg: "bg-neutral-100 text-neutral-600" },
+  db:     { label: "База знаний",   icon: "📚", bg: "bg-neutral-100 text-neutral-600" },
+};
+
 type UploadFileRow = {
   name: string;
   status: "uploading" | "done" | "error";
@@ -865,8 +889,9 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
                   <p className="mt-0.5 line-clamp-2 text-xs text-neutral-500">
                     {item.contentPreview}
                   </p>
-                  <div className="mt-1.5 flex items-center gap-2">
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
                     <StatusBadge status={item.status} />
+                    <IntentBadge intent={item.intent} />
                     {item.chunkCount > 0 && (
                       <span className="text-xs text-neutral-400">
                         {item.chunkCount} чанков
@@ -1086,7 +1111,13 @@ function WidgetSection({ assistant }: { assistant: Assistant }) {
 
 // ─── Section: Chat ────────────────────────────────────────────────────────────
 
-type ChatMsg = { id: string; role: "user" | "ai"; text: string };
+type ChatMsg = {
+  id: string;
+  role: "user" | "ai";
+  text: string;
+  knowledgeSource?: string;
+  fsmStage?: string;
+};
 
 function ChatSection({ assistant }: { assistant: Assistant }) {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -1140,6 +1171,8 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
             const payload = JSON.parse(line.slice(5).trim()) as {
               token?: string;
               error?: string;
+              knowledgeSource?: string;
+              fsmStage?: string;
             };
             if (payload.token) {
               setMessages((prev) =>
@@ -1152,6 +1185,16 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === botId ? { ...m, text: `⚠ ${payload.error}` } : m
+                )
+              );
+            }
+            // "done" event carries knowledgeSource + fsmStage
+            if (payload.knowledgeSource != null) {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === botId
+                    ? { ...m, knowledgeSource: payload.knowledgeSource, fsmStage: payload.fsmStage }
+                    : m
                 )
               );
             }
@@ -1195,28 +1238,44 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
               Напишите сообщение для теста ассистента
             </p>
           )}
-          {messages.map((m) => (
-            <div
-              key={m.id}
-              className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}
-            >
+          {messages.map((m) => {
+            const srcConf = m.role === "ai" && m.knowledgeSource
+              ? SOURCE_LABEL[m.knowledgeSource] ?? null
+              : null;
+            return (
               <div
-                className={cn(
-                  "max-w-sm whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-relaxed",
-                  m.role === "user"
-                    ? "bg-neutral-900 text-white"
-                    : "bg-white text-neutral-800 shadow-sm ring-1 ring-neutral-200"
-                )}
+                key={m.id}
+                className={cn("flex flex-col", m.role === "user" ? "items-end" : "items-start")}
               >
-                {m.text ||
-                  (streaming && m.role === "ai" ? (
-                    <span className="animate-pulse text-neutral-400">●●●</span>
-                  ) : (
-                    ""
-                  ))}
+                <div
+                  className={cn(
+                    "max-w-sm whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-relaxed",
+                    m.role === "user"
+                      ? "bg-neutral-900 text-white"
+                      : "bg-white text-neutral-800 shadow-sm ring-1 ring-neutral-200"
+                  )}
+                >
+                  {m.text ||
+                    (streaming && m.role === "ai" ? (
+                      <span className="animate-pulse text-neutral-400">●●●</span>
+                    ) : (
+                      ""
+                    ))}
+                </div>
+                {srcConf && (
+                  <span className={cn("mt-1 flex items-center gap-1 rounded-full px-2 py-0.5 text-xs", srcConf.bg)}>
+                    <span>{srcConf.icon}</span>
+                    Ответ основан на: {srcConf.label}
+                    {m.knowledgeSource === "fsm" && m.fsmStage && (
+                      <span className="ml-1 opacity-70">
+                        ({INTENT_LABEL[m.fsmStage]?.label ?? m.fsmStage})
+                      </span>
+                    )}
+                  </span>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
           <div ref={bottomRef} />
         </div>
         <div className="flex gap-2">
