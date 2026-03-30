@@ -438,17 +438,23 @@ export function ImageStudioPage() {
               </p>
               {/* Progress steps */}
               <div className="mt-1 flex items-center gap-2">
-                {(["enhancing", "queuing", "rendering"] as GenStage[]).map((s, i) => (
-                  <div key={s} className="flex items-center gap-2">
-                    {i > 0 && <div className="h-px w-6 bg-neutral-200" />}
-                    <div className={cn(
-                      "h-2 w-2 rounded-full transition-all",
-                      genStage === s ? "scale-125 bg-violet-500" :
-                      (["queuing", "rendering"].indexOf(genStage) > i - 1 || genStage === "done")
-                        ? "bg-violet-300" : "bg-neutral-200"
-                    )} />
-                  </div>
-                ))}
+                {(["enhancing", "queuing", "rendering"] as const).map((s, i) => {
+                  const stageOrder: GenStage[] = ["enhancing", "queuing", "rendering"];
+                  const currentIdx = stageOrder.indexOf(genStage as GenStage);
+                  const stepIdx = stageOrder.indexOf(s);
+                  const isPast = currentIdx > stepIdx;
+                  const isCurrent = genStage === s;
+                  return (
+                    <div key={s} className="flex items-center gap-2">
+                      {i > 0 && <div className="h-px w-6 bg-neutral-200" />}
+                      <div className={cn(
+                        "h-2 w-2 rounded-full transition-all",
+                        isCurrent ? "scale-125 bg-violet-500" :
+                        isPast ? "bg-violet-300" : "bg-neutral-200"
+                      )} />
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
