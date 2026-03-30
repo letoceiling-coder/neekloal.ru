@@ -360,6 +360,8 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
 const AGENT_TEMPLATES = [
   {
     label: "Продажи",
+    icon: "💼",
+    desc: "Ведёт к покупке, отрабатывает возражения",
     rules: `Ты — продающий менеджер. Помогай клиентам выбрать продукт.
 - Активно предлагай решения исходя из потребностей
 - Отвечай кратко и по делу, без воды
@@ -368,6 +370,8 @@ const AGENT_TEMPLATES = [
   },
   {
     label: "Поддержка",
+    icon: "🛟",
+    desc: "Решает проблемы клиента шаг за шагом",
     rules: `Ты — специалист техподдержки. Цель — решить проблему клиента.
 - Уточняй детали проблемы перед ответом
 - Давай пошаговые инструкции решения
@@ -376,6 +380,8 @@ const AGENT_TEMPLATES = [
   },
   {
     label: "FAQ",
+    icon: "📖",
+    desc: "Отвечает строго по базе знаний",
     rules: `Ты — информационный помощник. Отвечай строго по базе знаний.
 - Отвечай точно и кратко только по известным данным
 - Если информации нет — честно сообщи об этом
@@ -384,13 +390,19 @@ const AGENT_TEMPLATES = [
   },
 ];
 
+const AGENT_CAPABILITIES = [
+  "Задаёт уточняющие вопросы",
+  "Обрабатывает возражения",
+  "Ведёт клиента к покупке",
+  "Управляет этапами диалога",
+];
+
 function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Agent[] }) {
   const linkedAgent = agents.find((a) => a.assistantId === assistant.id) ?? null;
   const patchAgent = usePatchAgent();
   const createAgent = useCreateAgent();
 
   const [rules, setRules] = useState(linkedAgent?.rules ?? "");
-  const [agentName, setAgentName] = useState("");
   const [agentRules, setAgentRules] = useState("");
   const [saved, setSaved] = useState(false);
 
@@ -406,32 +418,34 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
     setTimeout(() => setSaved(false), 2000);
   }
 
-  async function handleCreate(e: FormEvent) {
-    e.preventDefault();
-    const n = agentName.trim();
-    if (!n) return;
+  async function handleCreate(template?: typeof AGENT_TEMPLATES[number]) {
+    const r = template ? template.rules : agentRules;
+    const n = template ? `Агент · ${template.label}` : "Агент продаж";
     await createAgent.mutateAsync({
       name: n,
       type: "planner",
       mode: "v1",
       assistantId: assistant.id,
-      rules: agentRules || null,
+      rules: r || null,
     });
-    setAgentName("");
     setAgentRules("");
   }
 
+  // ── Agent exists ────────────────────────────────────────────────────────────
   if (linkedAgent) {
     return (
       <Card>
         <CardHeader className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-neutral-800">
-              Агент: {linkedAgent.name}
-            </h3>
-            <p className="mt-0.5 text-xs text-neutral-400">
-              Тип: {linkedAgent.type} · Режим: {linkedAgent.mode}
-            </p>
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-900 text-base">
+              🤖
+            </span>
+            <div>
+              <h3 className="text-sm font-semibold text-neutral-900">
+                Агент продаж — {linkedAgent.name}
+              </h3>
+              <p className="text-xs text-neutral-400">управляет диалогом · логикой · продажей</p>
+            </div>
           </div>
           <Link
             to={`/agents/${linkedAgent.id}`}
@@ -440,27 +454,40 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
             Полный редактор →
           </Link>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          {/* Capability chips */}
+          <div className="flex flex-wrap gap-2">
+            {AGENT_CAPABILITIES.map((cap) => (
+              <span
+                key={cap}
+                className="flex items-center gap-1.5 rounded-full bg-green-50 px-3 py-1 text-xs font-medium text-green-700"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <path d="M1.5 5.5L3.5 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                {cap}
+              </span>
+            ))}
+          </div>
+
+          {/* Rules editor */}
           <form onSubmit={(e) => void handleSaveRules(e)} className="space-y-3">
             <div>
-              <div className="mb-2 flex items-center gap-2">
-                <span className="text-xs font-medium text-neutral-500">Шаблоны:</span>
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-neutral-500">Шаблон:</span>
                 {AGENT_TEMPLATES.map((t) => (
                   <button
                     key={t.label}
                     type="button"
                     onClick={() => setRules(t.rules)}
-                    className="rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs text-neutral-600 hover:bg-white hover:border-neutral-300 transition-colors"
+                    className="flex items-center gap-1 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs text-neutral-600 hover:bg-white hover:border-neutral-300 transition-colors"
                   >
-                    {t.label}
+                    <span>{t.icon}</span> {t.label}
                   </button>
                 ))}
               </div>
-              <label
-                htmlFor="agent-rules"
-                className="block text-xs font-medium text-neutral-600"
-              >
-                Правила агента (rules)
+              <label htmlFor="agent-rules" className="block text-xs font-medium text-neutral-600 mb-1">
+                Правила поведения
               </label>
               <textarea
                 id="agent-rules"
@@ -468,7 +495,7 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
                 value={rules}
                 onChange={(e) => setRules(e.target.value)}
                 placeholder="Опишите инструкции для агента…"
-                className="mt-1 w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-xs text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
+                className="w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-xs text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
               />
             </div>
             <div className="flex items-center gap-3">
@@ -483,68 +510,78 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
     );
   }
 
+  // ── No agent ────────────────────────────────────────────────────────────────
   return (
     <Card>
       <CardHeader>
-        <h3 className="text-sm font-semibold text-neutral-800">Агент не подключён</h3>
-      </CardHeader>
-      <CardContent>
-        <p className="mb-4 text-sm text-neutral-500">
-          Агент добавляет расширенную логику: правила поведения, сценарии, инструменты.
-          Выберите шаблон или напишите свои правила.
-        </p>
-        <form onSubmit={(e) => void handleCreate(e)} className="space-y-3">
-          <Input
-            id="new-agent-name"
-            label="Имя агента"
-            value={agentName}
-            onChange={(e) => setAgentName(e.target.value)}
-            placeholder="Например, Support Agent"
-            required
-          />
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-neutral-100 text-base">
+            🤖
+          </span>
           <div>
-            <div className="mb-2 flex items-center gap-2">
-              <span className="text-xs font-medium text-neutral-500">Быстрые шаблоны:</span>
-              {AGENT_TEMPLATES.map((t) => (
-                <button
-                  key={t.label}
-                  type="button"
-                  onClick={() => {
-                    setAgentRules(t.rules);
-                    if (!agentName) setAgentName(t.label);
-                  }}
-                  className="rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs text-neutral-600 hover:bg-white hover:border-neutral-300 transition-colors"
-                >
+            <h3 className="text-sm font-semibold text-neutral-900">Агент продаж (логика поведения)</h3>
+            <p className="text-xs text-neutral-400">управляет диалогом · логикой · продажей</p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-5">
+
+        {/* No-agent explanation */}
+        <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-4">
+          <p className="text-sm font-medium text-amber-900 mb-2">
+            Ассистент сейчас просто отвечает на вопросы.
+          </p>
+          <p className="text-xs text-amber-700 mb-3">Подключите агента, чтобы AI:</p>
+          <ul className="space-y-1.5">
+            {AGENT_CAPABILITIES.map((cap) => (
+              <li key={cap} className="flex items-center gap-2 text-xs text-amber-800">
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-amber-200 text-amber-800">
+                  <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
+                    <path d="M1.5 5.5L3.5 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </span>
+                {cap}
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* One-click template buttons */}
+        <div>
+          <p className="text-xs font-medium text-neutral-500 mb-2">Выберите шаблон и подключите одним кликом:</p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {AGENT_TEMPLATES.map((t) => (
+              <button
+                key={t.label}
+                type="button"
+                disabled={createAgent.isPending}
+                onClick={() => void handleCreate(t)}
+                className="flex flex-col items-start gap-1 rounded-xl border-2 border-neutral-200 bg-white p-3.5 text-left hover:border-neutral-900 hover:bg-neutral-50 transition-all group"
+              >
+                <span className="text-xl">{t.icon}</span>
+                <span className="text-sm font-semibold text-neutral-800 group-hover:text-neutral-900">
                   {t.label}
-                </button>
-              ))}
-            </div>
-            <label
-              htmlFor="new-agent-rules"
-              className="block text-xs font-medium text-neutral-600"
-            >
-              Правила поведения
-            </label>
-            <textarea
-              id="new-agent-rules"
-              rows={6}
-              value={agentRules}
-              onChange={(e) => setAgentRules(e.target.value)}
-              placeholder="Добавьте правила поведения (например: продающий менеджер)"
-              className="mt-1 w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-xs text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
-            />
+                </span>
+                <span className="text-xs text-neutral-500">{t.desc}</span>
+              </button>
+            ))}
           </div>
-          <div className="flex items-center gap-3">
-            <Button type="submit" loading={createAgent.isPending}>
-              Создать агент
-            </Button>
-            {createAgent.isError && (
-              <span className="text-sm text-red-600">
-                {createAgent.error instanceof Error ? createAgent.error.message : "Ошибка"}
-              </span>
-            )}
-          </div>
-        </form>
+        </div>
+
+        {/* Main CTA */}
+        <Button
+          onClick={() => void handleCreate()}
+          loading={createAgent.isPending}
+          className="w-full"
+        >
+          Подключить агент продаж
+        </Button>
+        {createAgent.isError && (
+          <p className="text-sm text-red-600">
+            {createAgent.error instanceof Error ? createAgent.error.message : "Ошибка"}
+          </p>
+        )}
+
       </CardContent>
     </Card>
   );
