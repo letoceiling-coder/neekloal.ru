@@ -46,6 +46,13 @@ export function usePatchAgent() {
   });
 }
 
+export function useAutoGenerateAgent() {
+  return useMutation({
+    mutationFn: ({ input, assistantId }: { input: string; assistantId?: string }) =>
+      apiClient.post<{ rules: string }>("/agents/auto-generate", { input, assistantId }),
+  });
+}
+
 /** Запуск сценария через существующий POST /chat (assistant привязан к агенту на сервере). */
 export async function postAgentChat(
   assistantId: string,

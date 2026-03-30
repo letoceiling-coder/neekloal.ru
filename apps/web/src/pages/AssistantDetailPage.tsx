@@ -10,7 +10,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAssistants, usePatchAssistant } from "../api/assistants";
-import { useAgents, useCreateAgent, usePatchAgent } from "../api/agents";
+import { useAgents, useAutoGenerateAgent, useCreateAgent, usePatchAgent } from "../api/agents";
 import { useCreateApiKey, usePatchApiKey, type CreateApiKeyResponse } from "../api/apiKeys";
 import {
   useAddKnowledge,
@@ -570,10 +570,15 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
   const patchAgent = usePatchAgent();
   const createAgent = useCreateAgent();
 
+  const autoGenerate = useAutoGenerateAgent();
+
   const [rules, setRules] = useState(linkedAgent?.rules ?? "");
   const [agentRules, setAgentRules] = useState("");
   const [saved, setSaved] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
+  const [genInput, setGenInput] = useState("");
+  const [genPreview, setGenPreview] = useState<string | null>(null);
+  const [genInputError, setGenInputError] = useState("");
 
   useEffect(() => {
     if (linkedAgent) setRules(linkedAgent.rules ?? "");
@@ -587,8 +592,19 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
     setTimeout(() => setSaved(false), 2000);
   }
 
-  async function handleCreate(template?: typeof AGENT_TEMPLATES[number]) {
-    const r = template ? template.rules : agentRules;
+  async function handleAutoGenerate() {
+    const trimmed = genInput.trim();
+    if (!trimmed) {
+      setGenInputError("Опишите задачу, чтобы сгенерировать правила");
+      return;
+    }
+    setGenInputError("");
+    const result = await autoGenerate.mutateAsync({ input: trimmed, assistantId: assistant.id });
+    setGenPreview(result.rules);
+  }
+
+  async function handleCreate(template?: typeof AGENT_TEMPLATES[number], customRules?: string) {
+    const r = customRules ?? (template ? template.rules : agentRules);
     const n = template ? `Агент · ${template.label}` : "Агент продаж";
     await createAgent.mutateAsync({
       name: n,
@@ -598,6 +614,8 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
       rules: r || null,
     });
     setAgentRules("");
+    setGenPreview(null);
+    setGenInput("");
   }
 
   // ── Agent exists ────────────────────────────────────────────────────────────
@@ -637,6 +655,73 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
                 {cap}
               </span>
             ))}
+          </div>
+
+          {/* Auto-generate panel */}
+          <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="text-base">⚡</span>
+              <p className="text-xs font-semibold text-neutral-700">Сгенерировать правила с помощью AI</p>
+            </div>
+            <div className="space-y-1.5">
+              <textarea
+                rows={2}
+                value={genInput}
+                onChange={(e) => { setGenInput(e.target.value); setGenInputError(""); }}
+                placeholder="Опишите задачу агента, например: «бот для продаж сайтов в студии»"
+                className="w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
+              />
+              {genInputError && <p className="text-xs text-red-500">{genInputError}</p>}
+            </div>
+            <button
+              type="button"
+              disabled={autoGenerate.isPending}
+              onClick={() => void handleAutoGenerate()}
+              className="flex items-center gap-2 rounded-lg bg-neutral-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-neutral-700 disabled:opacity-50 transition-colors"
+            >
+              {autoGenerate.isPending ? (
+                <>
+                  <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeDashoffset="12"/>
+                  </svg>
+                  Генерирую…
+                </>
+              ) : (
+                <>⚡ Сгенерировать агента</>
+              )}
+            </button>
+            {autoGenerate.isError && (
+              <p className="text-xs text-red-500">
+                {autoGenerate.error instanceof Error ? autoGenerate.error.message : "Ошибка генерации"}
+              </p>
+            )}
+
+            {/* Preview */}
+            {genPreview && (
+              <div className="space-y-2 rounded-xl border border-green-200 bg-green-50 p-3.5">
+                <p className="text-xs font-semibold text-green-700">Результат генерации:</p>
+                <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-green-900">
+                  {genPreview}
+                </pre>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => { setRules(genPreview); setGenPreview(null); setGenInput(""); }}
+                    className="rounded-lg bg-green-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-600 transition-colors"
+                  >
+                    Использовать
+                  </button>
+                  <button
+                    type="button"
+                    disabled={autoGenerate.isPending}
+                    onClick={() => void handleAutoGenerate()}
+                    className="rounded-lg border border-green-300 bg-white px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50 disabled:opacity-50 transition-colors"
+                  >
+                    Сгенерировать заново
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Rules editor */}
@@ -750,9 +835,76 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
           </ul>
         </div>
 
+        {/* Auto-generate for new agent */}
+        <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="text-base">⚡</span>
+            <p className="text-xs font-semibold text-neutral-700">Сгенерировать правила с помощью AI</p>
+          </div>
+          <div className="space-y-1.5">
+            <textarea
+              rows={2}
+              value={genInput}
+              onChange={(e) => { setGenInput(e.target.value); setGenInputError(""); }}
+              placeholder="Опишите задачу агента, например: «бот для продаж сайтов в студии»"
+              className="w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
+            />
+            {genInputError && <p className="text-xs text-red-500">{genInputError}</p>}
+          </div>
+          <button
+            type="button"
+            disabled={autoGenerate.isPending}
+            onClick={() => void handleAutoGenerate()}
+            className="flex items-center gap-2 rounded-lg bg-neutral-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-neutral-700 disabled:opacity-50 transition-colors"
+          >
+            {autoGenerate.isPending ? (
+              <>
+                <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeDashoffset="12"/>
+                </svg>
+                Генерирую…
+              </>
+            ) : (
+              <>⚡ Сгенерировать агента</>
+            )}
+          </button>
+          {autoGenerate.isError && (
+            <p className="text-xs text-red-500">
+              {autoGenerate.error instanceof Error ? autoGenerate.error.message : "Ошибка генерации"}
+            </p>
+          )}
+
+          {genPreview && (
+            <div className="space-y-2 rounded-xl border border-green-200 bg-green-50 p-3.5">
+              <p className="text-xs font-semibold text-green-700">Результат генерации:</p>
+              <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-green-900">
+                {genPreview}
+              </pre>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => void handleCreate(undefined, genPreview)}
+                  disabled={createAgent.isPending}
+                  className="rounded-lg bg-green-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-600 disabled:opacity-50 transition-colors"
+                >
+                  Использовать
+                </button>
+                <button
+                  type="button"
+                  disabled={autoGenerate.isPending}
+                  onClick={() => void handleAutoGenerate()}
+                  className="rounded-lg border border-green-300 bg-white px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50 disabled:opacity-50 transition-colors"
+                >
+                  Сгенерировать заново
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* One-click template buttons */}
         <div>
-          <p className="text-xs font-medium text-neutral-500 mb-2">Выберите шаблон и подключите одним кликом:</p>
+          <p className="text-xs font-medium text-neutral-500 mb-2">Или выберите шаблон и подключите одним кликом:</p>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {AGENT_TEMPLATES.map((t) => (
               <button
