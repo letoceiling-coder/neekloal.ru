@@ -91,6 +91,12 @@ export type AutoAgentExplanation = {
     stage?: string;
     stageLabel?: string;
   }>;
+  knowledgeSuggestions?: Array<{
+    intent: string;
+    title: string;
+    hint: string;
+    example: string;
+  }>;
   meta: {
     stagesCount: number;
     intentsCount: number;

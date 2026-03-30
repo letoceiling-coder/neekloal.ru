@@ -82,6 +82,35 @@ export function useDeleteKnowledge(assistantId: string) {
   });
 }
 
+export type KnowledgeItemFull = KnowledgeItem & { content: string };
+
+export function useGetKnowledge() {
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiClient.get<KnowledgeItemFull>(`/knowledge/${id}`),
+  });
+}
+
+export type PatchKnowledgeInput = {
+  id: string;
+  assistantId: string;
+  content?: string;
+  intent?: string | null;
+};
+
+export function usePatchKnowledge() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: PatchKnowledgeInput) =>
+      apiClient.patch<KnowledgeItem>(`/knowledge/${id}`, body),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.knowledge.byAssistant(variables.assistantId),
+      });
+    },
+  });
+}
+
 export type KnowledgeUploadBatchResult = {
   items: KnowledgeItem[];
   errors: { sourceName: string; error: string }[];

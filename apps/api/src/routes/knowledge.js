@@ -446,6 +446,62 @@ module.exports = async function knowledgeRoutes(fastify) {
     return reply.code(200).send(result);
   });
 
+  // ─── GET /knowledge/:id ───────────────────────────────────────────────────
+  fastify.get("/knowledge/:id", { preHandler: authMiddleware }, async (request, reply) => {
+    const id = String(request.params.id || "").trim();
+    if (!id) return reply.code(400).send({ error: "id required" });
+
+    const row = await prisma.knowledge.findFirst({
+      where: { id, organizationId: request.organizationId },
+      select: {
+        id: true, assistantId: true, type: true, sourceName: true,
+        status: true, intent: true, content: true, contentPreview: true,
+        chunkCount: true, createdAt: true, updatedAt: true,
+      },
+    });
+    if (!row) return reply.code(404).send({ error: "Knowledge not found" });
+    return row;
+  });
+
+  // ─── PATCH /knowledge/:id ─────────────────────────────────────────────────
+  fastify.patch("/knowledge/:id", { preHandler: authMiddleware }, async (request, reply) => {
+    const id = String(request.params.id || "").trim();
+    if (!id) return reply.code(400).send({ error: "id required" });
+
+    const body = request.body && typeof request.body === "object" ? request.body : {};
+    /** @type {import('@prisma/client').Prisma.KnowledgeUpdateInput} */
+    const data = {};
+
+    if (body.content != null) {
+      const content = String(body.content).trim();
+      if (!content) return reply.code(400).send({ error: "content cannot be empty" });
+      data.content = content;
+      data.contentPreview = content.slice(0, 200);
+      data.status = "processing"; // will re-ingest
+    }
+    if (body.intent !== undefined) {
+      data.intent = body.intent ? String(body.intent).trim() : null;
+    }
+
+    if (Object.keys(data).length === 0) {
+      return reply.code(400).send({ error: "No valid fields to update" });
+    }
+
+    const existing = await prisma.knowledge.findFirst({
+      where: { id, organizationId: request.organizationId },
+    });
+    if (!existing) return reply.code(404).send({ error: "Knowledge not found" });
+
+    const updated = await prisma.knowledge.update({ where: { id }, data });
+
+    // Re-ingest if content changed
+    if (body.content != null) {
+      await enqueueOrIngest(fastify, { id, organizationId: request.organizationId, content: data.content }, existing.assistantId);
+    }
+
+    return updated;
+  });
+
   // ─── DELETE /knowledge/:id ────────────────────────────────────────────────
   fastify.delete("/knowledge/:id", { preHandler: authMiddleware }, async (request, reply) => {
     const id = String(request.params.id || "").trim();

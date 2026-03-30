@@ -143,12 +143,56 @@ function explainConfig(config, systemPrompt) {
     },
   ]);
 
+  // ── Knowledge suggestions ──────────────────────────────────────────────────
+  // One suggested knowledge entry per detected intent, using realistic templates.
+  const KNOWLEDGE_TEMPLATES = {
+    pricing: {
+      title: "Цены и тарифы",
+      hint:  "Опишите ваши цены, пакеты, условия оплаты",
+      example: "Стандарт: от X ₽\nПремиум: от Y ₽\nВключено: [что входит]\nСрок: [срок выполнения]",
+    },
+    objection: {
+      title: "Ответы на возражения",
+      hint:  "Напишите ответы на типичные возражения клиентов",
+      example: "«Дорого» → Наша цена включает [ценность]. Аналоги стоят дороже потому что…\n«Подумаю» → Что именно вас останавливает? Могу помочь с [вопрос].",
+    },
+    qualification: {
+      title: "Уточняющие вопросы",
+      hint:  "Вопросы для понимания потребности клиента",
+      example: "— Какой объём/площадь?\n— Для каких целей?\n— Какой срок?\n— Есть ли опыт с подобным?",
+    },
+    qualification_site: {
+      title: "О продукте / услуге",
+      hint:  "Что вы предлагаете, чем отличаетесь от конкурентов",
+      example: "Мы [описание]\nНаши клиенты получают:\n— [преимущество 1]\n— [преимущество 2]\nОтличие от конкурентов: [УТП]",
+    },
+    close: {
+      title: "Следующий шаг / Призыв к действию",
+      hint:  "Что предлагать клиенту на завершающем этапе",
+      example: "Предложение: «Давайте назначим звонок на 15 минут — я покажу примеры и рассчитаю стоимость.»\nКонтакт: [телефон / ссылка]",
+    },
+  };
+
+  const knowledgeSuggestions = Object.keys(intents)
+    .map((intent) => {
+      const tmpl = KNOWLEDGE_TEMPLATES[intent];
+      if (!tmpl) return null;
+      return {
+        intent,
+        title:   tmpl.title,
+        hint:    tmpl.hint,
+        example: tmpl.example,
+      };
+    })
+    .filter(Boolean);
+
   return {
     summary,
     funnelDescription,
     intentsDescription,
     memoryDescription,
     exampleDialog,
+    knowledgeSuggestions,
     meta: {
       stagesCount:       funnel.length,
       intentsCount:      Object.keys(intents).length,

@@ -18,8 +18,11 @@ import {
   useAddKnowledgeUrl,
   useDeleteKnowledge,
   useKnowledgeList,
+  useGetKnowledge,
+  usePatchKnowledge,
   uploadKnowledgeFiles,
   type KnowledgeItem,
+  type KnowledgeItemFull,
 } from "../api/knowledge";
 import { queryKeys } from "../queryKeys";
 import { useModels } from "../api/models";
@@ -273,7 +276,7 @@ function AutoAgentModal({
 }: {
   assistant: Assistant;
   onClose: () => void;
-  onApply: (result: AutoAgentResult) => void;
+  onApply: (result: AutoAgentResult, createKnowledge: boolean) => void;
 }) {
   const autoAgent = useAutoAgent();
   const refineAgent = useRefineAgent();
@@ -282,6 +285,7 @@ function AutoAgentModal({
   const [applied, setApplied] = useState(false);
   const [showRefine, setShowRefine] = useState(false);
   const [refineInstruction, setRefineInstruction] = useState("");
+  const [createKnowledge, setCreateKnowledge] = useState(true);
 
   const isGenerating = autoAgent.isPending;
   const isRefining = refineAgent.isPending;
@@ -312,7 +316,7 @@ function AutoAgentModal({
 
   function handleApply() {
     if (!result) return;
-    onApply(result);
+    onApply(result, createKnowledge);
     setApplied(true);
     setTimeout(onClose, 800);
   }
@@ -508,6 +512,36 @@ function AutoAgentModal({
                 </div>
               </div>
 
+              {/* Block 5 — База знаний (suggestions) */}
+              {ex.knowledgeSuggestions && ex.knowledgeSuggestions.length > 0 && (
+                <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-5">
+                  <SectionTitle>📚 Рекомендуемая база знаний</SectionTitle>
+                  <p className="mb-3 text-xs text-neutral-500 leading-relaxed">
+                    AI определил темы для базы знаний. При нажатии «Применить» мы создадим заготовки — вам останется только заполнить их содержанием.
+                  </p>
+                  <div className="space-y-2">
+                    {ex.knowledgeSuggestions.map((s) => (
+                      <div key={s.intent} className="rounded-lg border border-blue-100 bg-white px-4 py-3">
+                        <p className="text-xs font-semibold text-neutral-800 mb-0.5">{s.title}</p>
+                        <p className="text-xs text-neutral-500 mb-1.5">{s.hint}</p>
+                        <pre className="whitespace-pre-wrap rounded-md bg-neutral-50 px-3 py-2 font-mono text-xs text-neutral-600 border border-neutral-100">
+                          {s.example}
+                        </pre>
+                      </div>
+                    ))}
+                  </div>
+                  <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-neutral-700">
+                    <input
+                      type="checkbox"
+                      checked={createKnowledge}
+                      onChange={(e) => setCreateKnowledge(e.target.checked)}
+                      className="rounded border-neutral-300"
+                    />
+                    Создать заготовки базы знаний при применении
+                  </label>
+                </div>
+              )}
+
               {/* ✏️ Улучшить */}
               <div className="rounded-xl border border-neutral-200 bg-white overflow-hidden">
                 <button
@@ -611,13 +645,27 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
     setTimeout(() => setSaved(false), 2000);
   }
 
-  async function handleApplyAutoAgent(result: AutoAgentResult) {
+  const addKnowledge = useAddKnowledge();
+
+  async function handleApplyAutoAgent(result: AutoAgentResult, createKnowledge: boolean) {
     setSystemPrompt(result.systemPrompt);
     await patchAssistant.mutateAsync({
       id: assistant.id,
       systemPrompt: result.systemPrompt,
       config: result.config as Record<string, unknown>,
     });
+    if (createKnowledge && result.explanation?.knowledgeSuggestions?.length) {
+      for (const s of result.explanation.knowledgeSuggestions) {
+        try {
+          await addKnowledge.mutateAsync({
+            assistantId: assistant.id,
+            content: `# ${s.title}\n\n${s.hint}\n\n${s.example}`,
+          });
+        } catch {
+          // Non-critical — continue with others
+        }
+      }
+    }
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
   }
@@ -628,7 +676,7 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
         <AutoAgentModal
           assistant={assistant}
           onClose={() => setShowAutoAgent(false)}
-          onApply={(r) => void handleApplyAutoAgent(r)}
+          onApply={(r, ck) => void handleApplyAutoAgent(r, ck)}
         />
       )}
       <CardHeader>
@@ -714,8 +762,121 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
             )}
           </div>
         </form>
+
+        {/* Config view — shown when assistant has a saved config */}
+        {assistant.config && (
+          <AssistantConfigView config={assistant.config as AssistantConfig} />
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+// ─── AssistantConfigView ──────────────────────────────────────────────────────
+
+type AssistantConfig = {
+  funnel?: string[];
+  intents?: Record<string, string[]>;
+  memory?: string[];
+  validation?: { maxSentences?: number; questions?: number };
+};
+
+const STAGE_LABEL_MAP: Record<string, { label: string; icon: string }> = {
+  greeting:      { label: "Приветствие", icon: "👋" },
+  qualification: { label: "Квалификация", icon: "🔍" },
+  offer:         { label: "Предложение", icon: "💎" },
+  objection:     { label: "Возражение", icon: "🛡" },
+  close:         { label: "Закрытие", icon: "🤝" },
+};
+
+const INTENT_LABEL_MAP: Record<string, string> = {
+  pricing:            "💰 Цены",
+  objection:          "🛡 Возражения",
+  qualification_site: "🔍 Квалификация",
+  close:              "🤝 Закрытие",
+  greeting:           "👋 Приветствие",
+};
+
+const MEMORY_LABEL_MAP: Record<string, { label: string; icon: string }> = {
+  budget:      { label: "Бюджет", icon: "💰" },
+  projectType: { label: "Тип проекта", icon: "📦" },
+  timeline:    { label: "Срок", icon: "⏱" },
+  contactName: { label: "Имя", icon: "👤" },
+  phone:       { label: "Телефон", icon: "📞" },
+};
+
+function AssistantConfigView({ config }: { config: AssistantConfig }) {
+  const funnel = Array.isArray(config.funnel) ? config.funnel : [];
+  const intents = config.intents && typeof config.intents === "object" ? config.intents : {};
+  const memory = Array.isArray(config.memory) ? config.memory : [];
+
+  if (funnel.length === 0 && Object.keys(intents).length === 0 && memory.length === 0) return null;
+
+  return (
+    <div className="mt-5 rounded-xl border border-indigo-100 bg-gradient-to-b from-indigo-50/60 to-white p-4">
+      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-indigo-600">
+        ⚡ Конфигурация ассистента
+      </p>
+
+      {/* Funnel */}
+      {funnel.length > 0 && (
+        <div className="mb-4">
+          <p className="mb-1.5 text-xs font-medium text-neutral-500">Воронка продаж</p>
+          <div className="flex flex-wrap items-center gap-1">
+            {funnel.map((stage, i) => {
+              const s = STAGE_LABEL_MAP[stage] ?? { label: stage, icon: "▸" };
+              return (
+                <div key={stage} className="flex items-center gap-1">
+                  <span className="flex items-center gap-1 rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-800">
+                    {s.icon} {s.label}
+                  </span>
+                  {i < funnel.length - 1 && (
+                    <span className="text-xs text-neutral-400">→</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Intents */}
+      {Object.keys(intents).length > 0 && (
+        <div className="mb-4">
+          <p className="mb-1.5 text-xs font-medium text-neutral-500">Интенты</p>
+          <div className="flex flex-wrap gap-1.5">
+            {Object.keys(intents).map((intent) => (
+              <span
+                key={intent}
+                className="rounded-full border border-neutral-200 bg-white px-2.5 py-0.5 text-xs font-medium text-neutral-700"
+              >
+                {INTENT_LABEL_MAP[intent] ?? intent}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Memory */}
+      {memory.length > 0 && (
+        <div>
+          <p className="mb-1.5 text-xs font-medium text-neutral-500">Что запоминает</p>
+          <div className="flex flex-wrap gap-1.5">
+            {memory.map((field) => {
+              const m = MEMORY_LABEL_MAP[field] ?? { label: field, icon: "📌" };
+              return (
+                <span
+                  key={field}
+                  className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700"
+                >
+                  {m.icon} {m.label}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1607,6 +1768,38 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
   } = useKnowledgeList(assistant.id);
   const deleteKnowledge = useDeleteKnowledge(assistant.id);
 
+  // View / Edit
+  const getKnowledge = useGetKnowledge();
+  const patchKnowledge = usePatchKnowledge();
+  const [viewItem, setViewItem] = useState<KnowledgeItemFull | null>(null);
+  const [editItemId, setEditItemId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+
+  async function handleView(id: string) {
+    const full = await getKnowledge.mutateAsync(id);
+    setViewItem(full);
+  }
+
+  function handleStartEdit(item: KnowledgeItem) {
+    setEditItemId(item.id);
+    setEditContent(item.contentPreview ?? "");
+    // Load full content async
+    void getKnowledge.mutateAsync(item.id).then((full) => {
+      setEditContent(full.content ?? "");
+    });
+  }
+
+  async function handleSaveEdit(id: string) {
+    setEditSaving(true);
+    try {
+      await patchKnowledge.mutateAsync({ id, assistantId: assistant.id, content: editContent });
+      setEditItemId(null);
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
   async function handleAddText(e: FormEvent) {
     e.preventDefault();
     const t = text.trim();
@@ -1863,46 +2056,154 @@ function KnowledgeSection({ assistant }: { assistant: Assistant }) {
         {items.length > 0 && (
           <div className="space-y-2">
             {items.map((item) => (
-              <div
-                key={item.id}
-                className="flex items-start gap-3 rounded-lg border border-neutral-200 p-3"
-              >
-                <span className="mt-0.5 text-base leading-none">
-                  {typeIcon[item.type] ?? "📎"}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-neutral-800">
-                    {item.sourceName ?? `Текст ${item.id.slice(0, 8)}`}
-                  </p>
-                  <p className="mt-0.5 line-clamp-2 text-xs text-neutral-500">
-                    {item.contentPreview}
-                  </p>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                    <StatusBadge status={item.status} />
-                    <IntentBadge intent={item.intent} />
-                    {item.chunkCount > 0 && (
-                      <span className="text-xs text-neutral-400">
-                        {item.chunkCount} чанков
-                      </span>
-                    )}
+              <div key={item.id} className="rounded-lg border border-neutral-200 p-3">
+                {editItemId === item.id ? (
+                  /* ── Inline edit ── */
+                  <div className="space-y-2">
+                    <textarea
+                      rows={6}
+                      value={editContent}
+                      onChange={(e) => setEditContent(e.target.value)}
+                      className="w-full resize-y rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => void handleSaveEdit(item.id)}
+                        disabled={editSaving}
+                        className="rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-50 transition-colors"
+                      >
+                        {editSaving ? "Сохранение…" : "Сохранить"}
+                      </button>
+                      <button
+                        onClick={() => setEditItemId(null)}
+                        className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 transition-colors"
+                      >
+                        Отмена
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <button
-                  onClick={() => deleteKnowledge.mutate(item.id)}
-                  disabled={deleteKnowledge.isPending}
-                  className="shrink-0 rounded p-1 text-neutral-300 hover:bg-red-50 hover:text-red-500 transition-colors"
-                  title="Удалить"
-                >
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <path d="M2 4h10M5 4V2h4v2M5.5 6v5M8.5 6v5M3 4l.7 8h6.6L11 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
+                ) : (
+                  /* ── View row ── */
+                  <div className="flex items-start gap-3">
+                    <span className="mt-0.5 text-base leading-none">
+                      {typeIcon[item.type] ?? "📎"}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-neutral-800">
+                        {item.sourceName ?? `Текст ${item.id.slice(0, 8)}`}
+                      </p>
+                      <p className="mt-0.5 line-clamp-2 text-xs text-neutral-500">
+                        {item.contentPreview}
+                      </p>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                        <StatusBadge status={item.status} />
+                        <IntentBadge intent={item.intent} />
+                        {item.chunkCount > 0 && (
+                          <span className="text-xs text-neutral-400">
+                            {item.chunkCount} чанков
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {/* View */}
+                      <button
+                        onClick={() => void handleView(item.id)}
+                        disabled={getKnowledge.isPending}
+                        className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 transition-colors"
+                        title="Просмотр"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <ellipse cx="7" cy="7" rx="6" ry="4" stroke="currentColor" strokeWidth="1.2"/>
+                          <circle cx="7" cy="7" r="1.5" fill="currentColor"/>
+                        </svg>
+                      </button>
+                      {/* Edit */}
+                      <button
+                        onClick={() => handleStartEdit(item)}
+                        className="rounded p-1 text-neutral-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                        title="Редактировать"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <path d="M9.5 2.5l2 2L4.5 11.5H2.5v-2L9.5 2.5z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </button>
+                      {/* Delete */}
+                      <button
+                        onClick={() => deleteKnowledge.mutate(item.id)}
+                        disabled={deleteKnowledge.isPending}
+                        className="rounded p-1 text-neutral-300 hover:bg-red-50 hover:text-red-500 transition-colors"
+                        title="Удалить"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <path d="M2 4h10M5 4V2h4v2M5.5 6v5M8.5 6v5M3 4l.7 8h6.6L11 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
         )}
+
+        {/* View modal */}
+        {viewItem && (
+          <KnowledgeViewModal
+            item={viewItem}
+            onClose={() => setViewItem(null)}
+          />
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+// ─── KnowledgeViewModal ───────────────────────────────────────────────────────
+
+function KnowledgeViewModal({
+  item,
+  onClose,
+}: {
+  item: KnowledgeItemFull;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex max-h-[80vh] w-full max-w-xl flex-col rounded-xl bg-white shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-3.5">
+          <div>
+            <p className="text-sm font-semibold text-neutral-800">
+              {item.sourceName ?? `Запись ${item.id.slice(0, 8)}`}
+            </p>
+            {item.intent && (
+              <span className="mt-0.5 inline-block text-xs text-neutral-500">
+                Интент: {item.intent}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded p-1 text-neutral-400 hover:text-neutral-700 transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div className="overflow-y-auto px-5 py-4">
+          <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-neutral-800">
+            {item.content}
+          </pre>
+        </div>
+      </div>
+    </div>
   );
 }
 
