@@ -8,13 +8,14 @@ const fs = require("fs");
 const path = require("path");
 const { v4: uuidv4 } = require("uuid");
 const { getWorkerConnection } = require("../lib/redis");
+const prisma = require("../lib/prisma");
 
 const COMFYUI_URL = process.env.COMFYUI_URL || "http://188.124.55.89:8188";
 const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
 const PUBLIC_BASE = process.env.IMAGE_PUBLIC_BASE || "https://site-al.ru/uploads/images";
 
 const DEFAULT_NEGATIVE =
-  "blurry, low quality, bad anatomy, extra limbs, extra objects, distorted, watermark, text, ugly, deformed, out of focus, overexposed";
+  "blurry, low quality, bad anatomy, extra limbs, extra objects, distorted, watermark, text, ugly, deformed, out of focus, overexposed, underexposed, duplicate";
 
 // ── Workflow builders ────────────────────────────────────────────────────────
 
@@ -43,155 +44,59 @@ function buildTextWorkflow(prompt, width = 1024, height = 1024, negativePrompt, 
       class_type: "EmptyLatentImage",
       inputs: { batch_size: batchSize, height, width },
     },
-    "6": {
-      class_type: "CLIPTextEncode",
-      inputs: { clip: ["4", 1], text: prompt },
-    },
-    "7": {
-      class_type: "CLIPTextEncode",
-      inputs: { clip: ["4", 1], text: negativePrompt || DEFAULT_NEGATIVE },
-    },
-    "8": {
-      class_type: "VAEDecode",
-      inputs: { samples: ["3", 0], vae: ["4", 2] },
-    },
-    "9": {
-      class_type: "SaveImage",
-      inputs: { filename_prefix: "img_", images: ["8", 0] },
-    },
+    "6": { class_type: "CLIPTextEncode", inputs: { clip: ["4", 1], text: prompt } },
+    "7": { class_type: "CLIPTextEncode", inputs: { clip: ["4", 1], text: negativePrompt || DEFAULT_NEGATIVE } },
+    "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] } },
+    "9": { class_type: "SaveImage", inputs: { filename_prefix: "img_", images: ["8", 0] } },
   };
 }
 
 function buildReferenceWorkflow(prompt, negativePrompt, width, height, strength, referenceFilename) {
   return {
-    "1": {
-      class_type: "CheckpointLoaderSimple",
-      inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" },
-    },
-    "2": {
-      class_type: "CLIPTextEncode",
-      inputs: { clip: ["1", 1], text: prompt },
-    },
-    "3": {
-      class_type: "CLIPTextEncode",
-      inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE },
-    },
-    "4": {
-      class_type: "LoadImage",
-      inputs: { image: referenceFilename, upload: "image" },
-    },
-    "5": {
-      class_type: "ImageScale",
-      inputs: {
-        image: ["4", 0],
-        width,
-        height,
-        upscale_method: "lanczos",
-        crop: "disabled",
-      },
-    },
-    "6": {
-      class_type: "VAEEncode",
-      inputs: { pixels: ["5", 0], vae: ["1", 2] },
-    },
+    "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" } },
+    "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: prompt } },
+    "3": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE } },
+    "4": { class_type: "LoadImage", inputs: { image: referenceFilename, upload: "image" } },
+    "5": { class_type: "ImageScale", inputs: { image: ["4", 0], width, height, upscale_method: "lanczos", crop: "disabled" } },
+    "6": { class_type: "VAEEncode", inputs: { pixels: ["5", 0], vae: ["1", 2] } },
     "7": {
       class_type: "KSampler",
       inputs: {
-        cfg: 7,
-        denoise: Math.min(Math.max(Number(strength) || 0.5, 0.1), 1.0),
-        latent_image: ["6", 0],
-        model: ["1", 0],
-        negative: ["3", 0],
-        positive: ["2", 0],
-        sampler_name: "euler",
-        scheduler: "normal",
-        seed: Math.floor(Math.random() * 1e15),
-        steps: 20,
+        cfg: 7, denoise: Math.min(Math.max(Number(strength) || 0.5, 0.1), 1.0),
+        latent_image: ["6", 0], model: ["1", 0], negative: ["3", 0], positive: ["2", 0],
+        sampler_name: "euler", scheduler: "normal", seed: Math.floor(Math.random() * 1e15), steps: 20,
       },
     },
-    "8": {
-      class_type: "VAEDecode",
-      inputs: { samples: ["7", 0], vae: ["1", 2] },
-    },
-    "9": {
-      class_type: "SaveImage",
-      inputs: { filename_prefix: "ref_", images: ["8", 0] },
-    },
+    "8": { class_type: "VAEDecode", inputs: { samples: ["7", 0], vae: ["1", 2] } },
+    "9": { class_type: "SaveImage", inputs: { filename_prefix: "ref_", images: ["8", 0] } },
   };
 }
 
 function buildInpaintWorkflow(prompt, negativePrompt, width, height, referenceFilename, maskFilename) {
   return {
-    "1": {
-      class_type: "CheckpointLoaderSimple",
-      inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" },
-    },
-    "2": {
-      class_type: "CLIPTextEncode",
-      inputs: { clip: ["1", 1], text: prompt },
-    },
-    "3": {
-      class_type: "CLIPTextEncode",
-      inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE },
-    },
-    "4": {
-      class_type: "LoadImage",
-      inputs: { image: referenceFilename, upload: "image" },
-    },
-    "5": {
-      class_type: "ImageScale",
-      inputs: {
-        image: ["4", 0],
-        width,
-        height,
-        upscale_method: "lanczos",
-        crop: "disabled",
-      },
-    },
-    "6": {
-      class_type: "LoadImageMask",
-      inputs: { image: maskFilename, channel: "red", upload: "image" },
-    },
-    "7": {
-      class_type: "VAEEncode",
-      inputs: { pixels: ["5", 0], vae: ["1", 2] },
-    },
-    "8": {
-      class_type: "SetLatentNoiseMask",
-      inputs: { samples: ["7", 0], mask: ["6", 0] },
-    },
+    "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" } },
+    "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: prompt } },
+    "3": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE } },
+    "4": { class_type: "LoadImage", inputs: { image: referenceFilename, upload: "image" } },
+    "5": { class_type: "ImageScale", inputs: { image: ["4", 0], width, height, upscale_method: "lanczos", crop: "disabled" } },
+    "6": { class_type: "LoadImageMask", inputs: { image: maskFilename, channel: "red", upload: "image" } },
+    "7": { class_type: "VAEEncode", inputs: { pixels: ["5", 0], vae: ["1", 2] } },
+    "8": { class_type: "SetLatentNoiseMask", inputs: { samples: ["7", 0], mask: ["6", 0] } },
     "9": {
       class_type: "KSampler",
       inputs: {
-        cfg: 7,
-        denoise: 1.0,
-        latent_image: ["8", 0],
-        model: ["1", 0],
-        negative: ["3", 0],
-        positive: ["2", 0],
-        sampler_name: "euler",
-        scheduler: "normal",
-        seed: Math.floor(Math.random() * 1e15),
-        steps: 20,
+        cfg: 7, denoise: 1.0,
+        latent_image: ["8", 0], model: ["1", 0], negative: ["3", 0], positive: ["2", 0],
+        sampler_name: "euler", scheduler: "normal", seed: Math.floor(Math.random() * 1e15), steps: 20,
       },
     },
-    "10": {
-      class_type: "VAEDecode",
-      inputs: { samples: ["9", 0], vae: ["1", 2] },
-    },
-    "11": {
-      class_type: "SaveImage",
-      inputs: { filename_prefix: "inpaint_", images: ["10", 0] },
-    },
+    "10": { class_type: "VAEDecode", inputs: { samples: ["9", 0], vae: ["1", 2] } },
+    "11": { class_type: "SaveImage", inputs: { filename_prefix: "inpaint_", images: ["10", 0] } },
   };
 }
 
 // ── ComfyUI helpers ──────────────────────────────────────────────────────────
 
-/**
- * Upload an image buffer to ComfyUI's input folder.
- * Returns the filename ComfyUI assigned (use in workflow nodes).
- */
 async function uploadToComfyUI(imageBuffer, filename) {
   const formData = new FormData();
   const blob = new Blob([imageBuffer], { type: "image/png" });
@@ -211,25 +116,15 @@ async function uploadToComfyUI(imageBuffer, filename) {
   return data.name;
 }
 
-/**
- * Download image bytes from a URL (reference/mask images from our server).
- */
 async function downloadBuffer(url) {
   const res = await axios.get(url, { responseType: "arraybuffer", timeout: 20_000 });
   return Buffer.from(res.data);
 }
 
-/**
- * Submit a ComfyUI workflow and return the prompt_id.
- */
 async function submitWorkflow(workflow) {
   let queueData;
   try {
-    const res = await axios.post(
-      `${COMFYUI_URL}/prompt`,
-      { prompt: workflow },
-      { timeout: 15_000 }
-    );
+    const res = await axios.post(`${COMFYUI_URL}/prompt`, { prompt: workflow }, { timeout: 15_000 });
     queueData = res.data;
   } catch (e) {
     const detail = e.response?.data ? JSON.stringify(e.response.data).slice(0, 300) : e.message;
@@ -241,10 +136,6 @@ async function submitWorkflow(workflow) {
   return promptId;
 }
 
-/**
- * Poll ComfyUI until the prompt finishes or times out.
- * Returns array of output filenames (batch_size > 1 returns multiple).
- */
 async function waitForComfyOutput(promptId, timeoutMs = 180_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -269,9 +160,7 @@ async function waitForComfyOutput(promptId, timeoutMs = 180_000) {
         .filter((m) => m[0] === "execution_error")
         .map((m) => {
           const d = m[1];
-          if (d && typeof d === "object") {
-            return d.exception_message || d.message || JSON.stringify(d).slice(0, 300);
-          }
+          if (d && typeof d === "object") return d.exception_message || d.message || JSON.stringify(d).slice(0, 300);
           return String(d);
         })
         .join("; ");
@@ -289,11 +178,7 @@ async function waitForComfyOutput(promptId, timeoutMs = 180_000) {
   throw new Error("ComfyUI generation timed out (180s)");
 }
 
-/**
- * Download a generated image from ComfyUI and save to disk.
- * index=0 → {jobId}.png, index>0 → {jobId}_{index}.png
- */
-async function saveImage(filename, jobId, index = 0) {
+async function saveImageFile(filename, jobId, index = 0) {
   const url = `${COMFYUI_URL}/view?filename=${encodeURIComponent(filename)}&type=output`;
   const res = await axios.get(url, { responseType: "arraybuffer", timeout: 30_000 });
 
@@ -308,13 +193,49 @@ async function saveImage(filename, jobId, index = 0) {
 }
 
 /**
- * Save all ComfyUI output files for a job (variations support).
+ * Save all ComfyUI output images to disk + DB.
+ * Returns array of { id, localPath, publicUrl } for each image.
  */
-async function saveAllImages(filenames, jobId) {
+async function saveAllImages(filenames, jobData) {
+  const {
+    jobId, userId, organizationId,
+    prompt, originalPrompt, negativePrompt,
+    style, aspectRatio, mode,
+    width = 1024, height = 1024,
+  } = jobData;
+
   const results = [];
   for (let i = 0; i < filenames.length; i++) {
-    const saved = await saveImage(filenames[i], jobId, i);
-    results.push(saved);
+    const { localPath, publicUrl } = await saveImageFile(filenames[i], jobId, i);
+
+    // Persist to DB (non-fatal: log and continue if fails)
+    let dbId = uuidv4();
+    try {
+      const record = await prisma.generatedImage.create({
+        data: {
+          id: dbId,
+          jobId,
+          userId,
+          organizationId,
+          url: publicUrl,
+          localPath,
+          mode: mode || "text",
+          prompt: prompt || "",
+          originalPrompt: originalPrompt || null,
+          negativePrompt: negativePrompt || null,
+          style: style || null,
+          aspectRatio: aspectRatio || null,
+          width: Number(width) || 1024,
+          height: Number(height) || 1024,
+          variantIndex: i,
+        },
+      });
+      dbId = record.id;
+    } catch (e) {
+      process.stderr.write(`[imageWorker] DB save failed for image ${i}: ${e.message}\n`);
+    }
+
+    results.push({ id: dbId, localPath, publicUrl });
   }
   return results;
 }
@@ -325,22 +246,14 @@ const worker = new Worker(
   "image-generation",
   async (job) => {
     const {
-      prompt,
-      negativePrompt,
-      width = 1024,
-      height = 1024,
-      jobId,
-      mode = "text",
-      variations = 1,
-      referenceImageUrl,
-      strength = 0.5,
-      maskUrl,
+      prompt, negativePrompt, width = 1024, height = 1024, jobId,
+      mode = "text", variations = 1, referenceImageUrl, strength = 0.5, maskUrl,
+      style, aspectRatio,
     } = job.data;
 
     job.log(`[imageWorker] starting job=${job.id} mode=${mode} prompt="${prompt.slice(0, 60)}"`);
     process.stdout.write(`[imageWorker] job ${job.id} mode=${mode}\n`);
 
-    // 1. Health check
     await axios.get(`${COMFYUI_URL}/system_stats`, { timeout: 8000 }).catch(() => {
       throw new Error(`ComfyUI unreachable at ${COMFYUI_URL}`);
     });
@@ -348,11 +261,9 @@ const worker = new Worker(
     const finalJobId = jobId || job.id;
     const neg = negativePrompt || DEFAULT_NEGATIVE;
 
-    // 2. Branch by mode
     let filenames;
 
     if (mode === "variation") {
-      // Batch generation — multiple images in one ComfyUI pass
       const batchSize = Math.min(Math.max(Number(variations) || 4, 1), 8);
       process.stdout.write(`[imageWorker] variation mode, batchSize=${batchSize}\n`);
       const workflow = buildTextWorkflow(prompt, width, height, neg, batchSize);
@@ -385,7 +296,6 @@ const worker = new Worker(
       job.log(`[imageWorker] inpaint done`);
 
     } else {
-      // text (default)
       process.stdout.write(`[imageWorker] text mode, sending workflow\n`);
       const workflow = buildTextWorkflow(prompt, width, height, neg, 1);
       const promptId = await submitWorkflow(workflow);
@@ -393,30 +303,25 @@ const worker = new Worker(
       job.log(`[imageWorker] text done, files=${filenames.join(",")}`);
     }
 
-    // 3. Save all output images
-    const saved = await saveAllImages(filenames, finalJobId);
+    // Save to disk + DB
+    const saved = await saveAllImages(filenames, {
+      ...job.data,
+      jobId: finalJobId,
+    });
+
     job.log(`[imageWorker] saved ${saved.length} image(s)`);
 
     const urls = saved.map((s) => s.publicUrl);
     const localPaths = saved.map((s) => s.localPath);
+    const dbIds = saved.map((s) => s.id);
 
-    return {
-      url: urls[0],
-      urls,
-      localPath: localPaths[0],
-      localPaths,
-      mode,
-      count: saved.length,
-    };
+    return { url: urls[0], urls, localPath: localPaths[0], localPaths, dbIds, mode, count: saved.length };
   },
-  {
-    connection: getWorkerConnection(),
-    concurrency: 2,
-  }
+  { connection: getWorkerConnection(), concurrency: 2 }
 );
 
 worker.on("completed", (job, result) => {
-  process.stdout.write(`[imageWorker] job ${job.id} completed → ${result.urls.length} image(s) → ${result.url}\n`);
+  process.stdout.write(`[imageWorker] job ${job.id} completed → ${result.urls.length} image(s)\n`);
 });
 worker.on("failed", (job, err) => {
   process.stderr.write(`[imageWorker] job ${job?.id} failed: ${err.message}\n`);

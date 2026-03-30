@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   ImageIcon, Loader2, RefreshCw, Sparkles, X,
-  Download, Trash2, RotateCcw, Eye, Zap, Info,
-  Layers, SlidersHorizontal, Paintbrush, Upload,
+  Download, Trash2, RotateCcw, Eye, Info,
+  Layers, SlidersHorizontal, Paintbrush, Upload, Settings2,
 } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
 
@@ -13,19 +14,30 @@ const API = import.meta.env.VITE_API_URL ?? "/api";
 type ImageMode = "text" | "variation" | "reference" | "inpaint";
 
 interface ImageJob {
+  /** DB record id (preferred for delete) or BullMQ job id for legacy */
+  id?: string;
   jobId: string;
   status: "queued" | "waiting" | "active" | "completed" | "failed";
   mode?: ImageMode;
   prompt: string;
   originalPrompt?: string;
   negativePrompt?: string;
+  style?: string;
+  aspectRatio?: string;
   width: number;
   height: number;
   url?: string;
   urls?: string[];
+  dbIds?: string[];
   count?: number;
   error?: string;
   createdAt: string;
+}
+
+interface EnhanceApplied {
+  style: string | null;
+  aspectRatio: string | null;
+  systemPrompt: boolean;
 }
 
 interface RefImage {
@@ -71,19 +83,17 @@ const STAGE_LABELS: Record<GenStage, string> = {
   done:      "Готово",
 };
 
-const MODE_TABS: { id: ImageMode; label: string; icon: string }[] = [
-  { id: "text",      label: "Умный",        icon: "🧠" },
-  { id: "variation", label: "Вариации",     icon: "🎯" },
-  { id: "reference", label: "По образцу",   icon: "🖼" },
-  { id: "inpaint",   label: "Редактирование", icon: "✏️" },
-];
-
-const MODE_HINTS: Record<ImageMode, string> = {
-  text:      "Умный режим: промпт улучшается автоматически",
-  variation: "Генерация нескольких вариантов одновременно",
-  reference: "Генерация на основе загруженного изображения",
-  inpaint:   "Изменение конкретной области изображения",
-};
+/** Режим генерации (производный): не путать с smartMode. */
+function computeResolvedMode(
+  enableVariations: boolean,
+  referenceImage: RefImage | null,
+  maskImage: RefImage | null
+): ImageMode {
+  if (enableVariations) return "variation";
+  if (maskImage?.refUrl && referenceImage?.refUrl) return "inpaint";
+  if (referenceImage?.refUrl) return "reference";
+  return "text";
+}
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
@@ -118,9 +128,9 @@ function ImageUploadBox({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   return (
-    <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-medium text-neutral-700">{label}</label>
-      {hint && <p className="text-[11px] text-neutral-400">{hint}</p>}
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <label className="text-xs font-medium text-neutral-700 break-words">{label}</label>
+      {hint && <p className="text-[11px] text-neutral-400 break-words [overflow-wrap:anywhere]">{hint}</p>}
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
@@ -167,17 +177,14 @@ export function ImageStudioPage() {
   const accessToken = useAuthStore((s) => s.accessToken);
   const headers = { Authorization: `Bearer ${accessToken ?? ""}`, "Content-Type": "application/json" };
 
-  // Mode
-  const [activeMode, setActiveMode] = useState<ImageMode>("text");
+  const [prompt, setPrompt] = useState("");
+  const [style, setStyle] = useState("");
+  const [size, setSize] = useState(PRESET_SIZES[0]);
+  const [smartMode, setSmartMode] = useState(true);
+  const [enableVariations, setEnableVariations] = useState(false);
+  const [enableReference, setEnableReference] = useState(false);
+  const [enableInpaint, setEnableInpaint] = useState(false);
 
-  // Controls (shared)
-  const [prompt, setPrompt]           = useState("");
-  const [style, setStyle]             = useState("");
-  const [size, setSize]               = useState(PRESET_SIZES[0]);
-  const [autoEnhance, setAutoEnhance] = useState(true);
-  const [smartMode, setSmartMode]     = useState(true);
-
-  // Variation controls
   const [variationCount, setVariationCount] = useState(4);
 
   // Reference/Inpaint controls
@@ -193,17 +200,23 @@ export function ImageStudioPage() {
   const [activeJob, setActiveJob]             = useState<ImageJob | null>(null);
   const [lastEnhanced, setLastEnhanced]       = useState<{ prompt: string; negative: string } | null>(null);
   const [showEnhancedPrompt, setShowEnhancedPrompt] = useState(false);
+  const [enhanceApplied, setEnhanceApplied]   = useState<EnhanceApplied | null>(null);
 
   // UI state
   const [history, setHistory]               = useState<ImageJob[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [error, setError]                   = useState<string | null>(null);
   const [lightbox, setLightbox]             = useState<string | null>(null);
-  const [deleteModal, setDeleteModal]       = useState<{ jobId: string; url?: string } | null>(null);
+  const [deleteModal, setDeleteModal]       = useState<{ id: string; jobId: string; url?: string } | null>(null);
   const [deleting, setDeleting]             = useState(false);
 
-  const pollRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const generating = genStage !== "idle" && genStage !== "done";
+
+  const resolvedMode = useMemo(
+    () => computeResolvedMode(enableVariations, referenceImage, maskImage),
+    [enableVariations, referenceImage, maskImage]
+  );
 
   // ── Effects ─────────────────────────────────────────────────────────────────
 
@@ -217,16 +230,12 @@ export function ImageStudioPage() {
   }, [activeJobId]);
 
   useEffect(() => {
-    if (smartMode) setAutoEnhance(true);
-  }, [smartMode]);
+    if (!enableReference && !enableInpaint) setReferenceImage(null);
+  }, [enableReference, enableInpaint]);
 
-  // Reset mode-specific state when switching modes
   useEffect(() => {
-    setError(null);
-    setActiveJob(null);
-    setActiveJobId(null);
-    setGenStage("idle");
-  }, [activeMode]);
+    if (!enableInpaint) setMaskImage(null);
+  }, [enableInpaint]);
 
   // ── API helpers ──────────────────────────────────────────────────────────────
 
@@ -248,6 +257,8 @@ export function ImageStudioPage() {
       const res = await fetch(`${API}/image/status/${jobId}`, { headers });
       if (!res.ok) return;
       const job = await res.json() as ImageJob;
+      // Prefer first DB id as the canonical id for operations
+      if (job.dbIds?.length) job.id = job.dbIds[0];
       setActiveJob(job);
       if (job.status === "active") setGenStage("rendering");
       if (job.status === "completed" || job.status === "failed") {
@@ -310,28 +321,44 @@ export function ImageStudioPage() {
     setError(null);
     setLastEnhanced(null);
     setShowEnhancedPrompt(false);
+    setEnhanceApplied(null);
     setActiveJob(null);
 
-    const shouldEnhance = (activeMode === "text" || activeMode === "variation") && (smartMode || autoEnhance);
+    const modeForJob = computeResolvedMode(enableVariations, referenceImage, maskImage);
+    const shouldEnhance = smartMode;
 
     try {
       let finalPrompt = rawPrompt;
       let finalNegative: string | undefined;
 
-      // Enhance only for text/variation
       if (shouldEnhance) {
         setGenStage("enhancing");
         const res = await fetch(`${API}/image/enhance`, {
           method: "POST",
           headers,
-          body: JSON.stringify({ prompt: rawPrompt, style: style || undefined }),
+          body: JSON.stringify({
+            prompt: rawPrompt,
+            style: style || undefined,
+            aspectRatio: `${size.w}:${size.h}`,
+          }),
         });
         if (res.ok) {
-          const data = await res.json() as { enhancedPrompt?: string; negativePrompt?: string };
+          const data = await res.json() as {
+            enhancedPrompt?: string;
+            negativePrompt?: string;
+            appliedStyle?: string | null;
+            appliedAspectRatio?: string | null;
+            appliedSystemPrompt?: boolean;
+          };
           if (data.enhancedPrompt) {
             finalPrompt = data.enhancedPrompt;
             finalNegative = data.negativePrompt;
             setLastEnhanced({ prompt: data.enhancedPrompt, negative: data.negativePrompt ?? "" });
+            setEnhanceApplied({
+              style: data.appliedStyle ?? null,
+              aspectRatio: data.appliedAspectRatio ?? null,
+              systemPrompt: data.appliedSystemPrompt ?? false,
+            });
           }
         }
       }
@@ -342,21 +369,20 @@ export function ImageStudioPage() {
         prompt: finalPrompt,
         width: size.w,
         height: size.h,
-        mode: activeMode,
+        mode: modeForJob,
+        smartMode,
+        variations: enableVariations ? variationCount : 1,
+        aspectRatio: `${size.w}:${size.h}`,
       };
 
       if (finalNegative) body.negativePrompt = finalNegative;
-      if (!shouldEnhance && style) body.style = style;
+      if (style) body.style = style;
 
-      if (activeMode === "variation") {
-        body.variations = variationCount;
-      }
-      if (activeMode === "reference") {
+      if (modeForJob === "reference" || modeForJob === "inpaint") {
         body.referenceImageUrl = referenceImage?.refUrl;
         body.strength = strength;
       }
-      if (activeMode === "inpaint") {
-        body.referenceImageUrl = referenceImage?.refUrl;
+      if (modeForJob === "inpaint") {
         body.maskUrl = maskImage?.refUrl;
       }
 
@@ -365,7 +391,11 @@ export function ImageStudioPage() {
         headers,
         body: JSON.stringify(body),
       });
-      const data = await res.json() as { jobId?: string; error?: string };
+      const data = await res.json() as {
+        jobId?: string;
+        error?: string;
+        enhanceApplied?: EnhanceApplied | null;
+      };
 
       if (!res.ok) {
         setError(data.error ?? "Ошибка запуска генерации");
@@ -373,12 +403,17 @@ export function ImageStudioPage() {
         return;
       }
 
+      // If server enhanced (backend-only path), capture what was applied
+      if (data.enhanceApplied && !enhanceApplied) {
+        setEnhanceApplied(data.enhanceApplied);
+      }
+
       setGenStage("rendering");
       setActiveJobId(data.jobId!);
       setActiveJob({
         jobId: data.jobId!,
         status: "queued",
-        mode: activeMode,
+        mode: modeForJob,
         prompt: finalPrompt,
         originalPrompt: rawPrompt,
         width: size.w,
@@ -393,14 +428,16 @@ export function ImageStudioPage() {
 
   // ── Delete ───────────────────────────────────────────────────────────────────
 
-  async function handleDelete(jobId: string) {
+  async function handleDelete(imageId: string, jobId?: string) {
     setDeleting(true);
+    const deleteId = imageId || jobId || "";
     const deleteHeaders = { Authorization: `Bearer ${accessToken ?? ""}` };
     try {
-      const res = await fetch(`${API}/image/${jobId}`, { method: "DELETE", headers: deleteHeaders });
+      const res = await fetch(`${API}/image/${deleteId}`, { method: "DELETE", headers: deleteHeaders });
       if (res.ok || res.status === 404) {
-        setHistory((prev) => prev.filter((j) => j.jobId !== jobId));
-        if (activeJob?.jobId === jobId) { setActiveJob(null); setGenStage("idle"); }
+        setHistory((prev) => prev.filter((j) => (j.id ?? j.jobId) !== deleteId));
+        const match = activeJob?.id === deleteId || activeJob?.jobId === deleteId;
+        if (match) { setActiveJob(null); setGenStage("idle"); }
         if (lightbox) setLightbox(null);
       } else {
         const d = await res.json().catch(() => ({} as { error?: string }));
@@ -418,9 +455,10 @@ export function ImageStudioPage() {
 
   const canGenerate = (() => {
     if (!prompt.trim() || generating) return false;
-    if (activeMode === "reference" && !referenceImage?.refUrl) return false;
-    if (activeMode === "inpaint" && (!referenceImage?.refUrl || !maskImage?.refUrl)) return false;
     if (refUploading || maskUploading) return false;
+    if (enableVariations) return true;
+    if (enableInpaint) return !!(referenceImage?.refUrl && maskImage?.refUrl);
+    if (enableReference) return !!referenceImage?.refUrl;
     return true;
   })();
 
@@ -433,47 +471,80 @@ export function ImageStudioPage() {
     <div className="flex h-full min-h-0 flex-col gap-0 md:flex-row">
 
       {/* ══ LEFT PANEL ══════════════════════════════════════════════════════════ */}
-      <div className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-neutral-200 bg-white p-5 md:w-80 md:border-b-0 md:border-r">
+      <div className="flex min-w-0 w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-neutral-200 bg-white p-5 md:w-80 md:border-b-0 md:border-r [overflow-wrap:anywhere]">
 
         {/* Header */}
-        <div className="flex items-center gap-2">
-          <ImageIcon className="h-5 w-5 text-violet-500" />
-          <h1 className="text-base font-semibold text-neutral-900">Image Studio</h1>
+        <div className="flex items-center justify-between gap-2 break-words">
+          <div className="flex items-center gap-2">
+            <ImageIcon className="h-5 w-5 shrink-0 text-violet-500" />
+            <h1 className="text-base font-semibold text-neutral-900">Image Studio</h1>
+          </div>
+          <Link
+            to="/image-studio/settings"
+            title="Настройки"
+            className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-neutral-100 hover:text-neutral-600"
+          >
+            <Settings2 className="h-4 w-4" />
+          </Link>
         </div>
 
-        {/* Mode tabs */}
-        <div className="grid grid-cols-2 gap-1.5">
-          {MODE_TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveMode(tab.id)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition",
-                activeMode === tab.id
-                  ? "border-violet-400 bg-violet-600 text-white shadow-sm"
-                  : "border-neutral-200 bg-neutral-50 text-neutral-600 hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700"
-              )}
-            >
-              <span>{tab.icon}</span>
-              {tab.label}
-            </button>
-          ))}
+        {/* Режимы: чекбоксы (smartMode ≠ mode) */}
+        <div className="flex flex-col gap-2 rounded-xl border border-neutral-200 bg-neutral-50/80 p-3">
+          <p className="text-[11px] font-medium text-neutral-500">Настройки генерации</p>
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800">
+            <input
+              type="checkbox"
+              checked={smartMode}
+              onChange={(e) => setSmartMode(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-neutral-300 accent-violet-600"
+            />
+            <span className="break-words">Умный режим — улучшать промпт (AI)</span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800">
+            <input
+              type="checkbox"
+              checked={enableVariations}
+              onChange={(e) => setEnableVariations(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-neutral-300 accent-violet-600"
+            />
+            <span className="break-words">Вариации — несколько картинок за раз</span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800">
+            <input
+              type="checkbox"
+              checked={enableReference}
+              onChange={(e) => setEnableReference(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-neutral-300 accent-violet-600"
+            />
+            <span className="break-words">По образцу — img2img</span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800">
+            <input
+              type="checkbox"
+              checked={enableInpaint}
+              onChange={(e) => setEnableInpaint(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-neutral-300 accent-violet-600"
+            />
+            <span className="break-words">Редактирование — маска области</span>
+          </label>
         </div>
 
-        {/* Mode hint */}
-        <p className="flex items-center gap-1 text-[11px] text-neutral-400">
-          <Info className="h-3 w-3" />
-          {MODE_HINTS[activeMode]}
+        <p className="flex items-start gap-1 text-[11px] text-neutral-400 break-words">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" />
+          Сейчас: {resolvedMode === "text" && "текст → изображение"}
+          {resolvedMode === "variation" && "несколько вариантов"}
+          {resolvedMode === "reference" && "по загруженному образцу"}
+          {resolvedMode === "inpaint" && "замена по маске"}
+          {smartMode && " · умный промпт включён"}
         </p>
 
         {/* Prompt textarea */}
-        <div className="flex flex-col gap-1.5">
+        <div className="flex min-w-0 flex-col gap-1.5">
           <label className="text-xs font-medium text-neutral-700">Описание</label>
           <textarea
-            className="min-h-[80px] w-full resize-none rounded-xl border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-900 placeholder-neutral-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-100"
+            className="min-h-[80px] max-w-full resize-y rounded-xl border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-900 placeholder-neutral-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-100 break-words [overflow-wrap:anywhere]"
             placeholder={
-              activeMode === "inpaint"
+              enableInpaint
                 ? "Что должно появиться в выделенной области…"
                 : "Например: кот в сапогах…"
             }
@@ -481,13 +552,13 @@ export function ImageStudioPage() {
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleGenerate(); }}
           />
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-2">
             {PROMPT_EXAMPLES.map((ex) => (
               <button
                 key={ex}
                 type="button"
                 onClick={() => setPrompt(ex)}
-                className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 text-[11px] text-neutral-500 transition hover:border-violet-300 hover:text-violet-600"
+                className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 text-[11px] text-neutral-500 transition hover:border-violet-300 hover:text-violet-600 break-words max-w-full text-left"
               >
                 {ex}
               </button>
@@ -495,21 +566,20 @@ export function ImageStudioPage() {
           </div>
         </div>
 
-        {/* ── Variation controls ── */}
-        {activeMode === "variation" && (
-          <div className="flex flex-col gap-1.5">
+        {enableVariations && (
+          <div className="flex min-w-0 flex-col gap-1.5">
             <label className="flex items-center gap-1.5 text-xs font-medium text-neutral-700">
-              <Layers className="h-3.5 w-3.5" />
+              <Layers className="h-3.5 w-3.5 shrink-0" />
               Количество вариантов
             </label>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {[2, 4, 6].map((n) => (
                 <button
                   key={n}
                   type="button"
                   onClick={() => setVariationCount(n)}
                   className={cn(
-                    "flex-1 rounded-xl border py-2 text-sm font-semibold transition",
+                    "min-w-[3rem] flex-1 rounded-xl border py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
                     variationCount === n
                       ? "border-violet-400 bg-violet-50 text-violet-700"
                       : "border-neutral-200 bg-neutral-50 text-neutral-500 hover:border-neutral-300"
@@ -522,25 +592,24 @@ export function ImageStudioPage() {
           </div>
         )}
 
-        {/* ── Reference controls ── */}
-        {(activeMode === "reference" || activeMode === "inpaint") && (
+        {(enableReference || enableInpaint) && (
           <ImageUploadBox
-            label={activeMode === "inpaint" ? "Исходное изображение" : "Образец"}
-            hint={activeMode === "reference" ? "Генерация будет похожа на этот образец" : undefined}
+            label={enableInpaint ? "Исходное изображение" : "Образец"}
+            hint={enableInpaint ? undefined : "Генерация будет похожа на этот образец"}
             image={referenceImage}
             uploading={refUploading}
             onSelect={handleSelectRef}
           />
         )}
 
-        {activeMode === "reference" && (
-          <div className="flex flex-col gap-1.5">
-            <label className="flex items-center justify-between text-xs font-medium text-neutral-700">
-              <span className="flex items-center gap-1.5">
-                <SlidersHorizontal className="h-3.5 w-3.5" />
+        {resolvedMode === "reference" && (
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <label className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-neutral-700">
+              <span className="flex items-center gap-1.5 break-words">
+                <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
                 Сходство с образцом
               </span>
-              <span className="text-violet-600 font-semibold">{Math.round(strength * 100)}%</span>
+              <span className="shrink-0 text-violet-600 font-semibold">{Math.round(strength * 100)}%</span>
             </label>
             <input
               type="range"
@@ -549,16 +618,16 @@ export function ImageStudioPage() {
               step={0.05}
               value={strength}
               onChange={(e) => setStrength(Number(e.target.value))}
-              className="w-full accent-violet-600"
+              className="w-full max-w-full accent-violet-600"
             />
-            <div className="flex justify-between text-[10px] text-neutral-400">
-              <span>Больше творчества</span>
-              <span>Ближе к образцу</span>
+            <div className="flex flex-wrap justify-between gap-1 text-[10px] text-neutral-400">
+              <span className="break-words">Больше творчества</span>
+              <span className="break-words">Ближе к образцу</span>
             </div>
           </div>
         )}
 
-        {activeMode === "inpaint" && (
+        {enableInpaint && (
           <ImageUploadBox
             label="Маска (область изменения)"
             hint="Белый = изменить, чёрный = оставить"
@@ -568,45 +637,42 @@ export function ImageStudioPage() {
           />
         )}
 
-        {/* ── Style presets (text + variation only) ── */}
-        {(activeMode === "text" || activeMode === "variation") && (
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-neutral-700">Стиль</label>
-            <div className="grid grid-cols-2 gap-1.5">
-              {STYLE_PRESETS.map((s) => (
-                <button
-                  key={s.value}
-                  type="button"
-                  onClick={() => setStyle(style === s.value ? "" : s.value)}
-                  className={cn(
-                    "flex flex-col gap-0.5 rounded-xl border p-2.5 text-left transition",
-                    style === s.value
-                      ? "border-violet-400 bg-violet-50"
-                      : "border-neutral-200 bg-neutral-50 hover:border-neutral-300 hover:bg-white"
-                  )}
-                >
-                  <span className="text-base leading-none">{s.emoji}</span>
-                  <span className={cn("text-xs font-semibold", style === s.value ? "text-violet-700" : "text-neutral-700")}>
-                    {s.label}
-                  </span>
-                  <span className="text-[10px] text-neutral-400 leading-tight">{s.desc}</span>
-                </button>
-              ))}
-            </div>
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <label className="text-xs font-medium text-neutral-700">Стиль</label>
+          <div className="grid grid-cols-2 gap-1.5">
+            {STYLE_PRESETS.map((s) => (
+              <button
+                key={s.value}
+                type="button"
+                onClick={() => setStyle(style === s.value ? "" : s.value)}
+                className={cn(
+                  "flex min-w-0 flex-col gap-0.5 rounded-xl border p-2.5 text-left transition break-words",
+                  style === s.value
+                    ? "border-violet-400 bg-violet-50"
+                    : "border-neutral-200 bg-neutral-50 hover:border-neutral-300 hover:bg-white"
+                )}
+              >
+                <span className="text-base leading-none">{s.emoji}</span>
+                <span className={cn("text-xs font-semibold break-words", style === s.value ? "text-violet-700" : "text-neutral-700")}>
+                  {s.label}
+                </span>
+                <span className="text-[10px] text-neutral-400 leading-tight break-words">{s.desc}</span>
+              </button>
+            ))}
           </div>
-        )}
+        </div>
 
         {/* Size presets */}
-        <div className="flex flex-col gap-1.5">
+        <div className="flex min-w-0 flex-col gap-1.5">
           <label className="text-xs font-medium text-neutral-700">Формат</label>
-          <div className="grid grid-cols-4 gap-1.5">
+          <div className="flex flex-wrap gap-2">
             {PRESET_SIZES.map((s) => (
               <button
                 key={s.label}
                 type="button"
                 onClick={() => setSize(s)}
                 className={cn(
-                  "rounded-lg border py-1.5 text-xs font-medium transition",
+                  "rounded-lg border px-3 py-1.5 text-xs font-medium transition",
                   size.label === s.label
                     ? "border-violet-400 bg-violet-50 text-violet-700"
                     : "border-neutral-200 bg-neutral-50 text-neutral-500 hover:border-neutral-300"
@@ -616,38 +682,8 @@ export function ImageStudioPage() {
               </button>
             ))}
           </div>
-          <p className="text-[11px] text-neutral-400">{size.w} × {size.h} px</p>
+          <p className="text-[11px] text-neutral-400 break-words">{size.w} × {size.h} px</p>
         </div>
-
-        {/* Smart mode toggle (text/variation only) */}
-        {(activeMode === "text" || activeMode === "variation") && (
-          <div className="flex items-center justify-between">
-            <button
-              type="button"
-              onClick={() => setSmartMode((v) => !v)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition",
-                smartMode
-                  ? "border-violet-400 bg-violet-600 text-white shadow-sm"
-                  : "border-neutral-200 bg-neutral-50 text-neutral-500 hover:border-neutral-300"
-              )}
-            >
-              <Zap className="h-3.5 w-3.5" />
-              Smart Mode
-            </button>
-            {!smartMode && (
-              <label className="flex cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={autoEnhance}
-                  onChange={(e) => setAutoEnhance(e.target.checked)}
-                  className="h-4 w-4 rounded border-neutral-300 accent-violet-600"
-                />
-                <span className="text-xs text-neutral-600">+AI промпт</span>
-              </label>
-            )}
-          </div>
-        )}
 
         {/* Error */}
         {error && (
@@ -669,7 +705,7 @@ export function ImageStudioPage() {
           disabled={!canGenerate}
           onClick={() => handleGenerate()}
           className={cn(
-            "relative flex items-center justify-center gap-2 rounded-xl px-4 py-3.5 text-sm font-semibold transition",
+            "relative flex w-full max-w-full flex-wrap items-center justify-center gap-2 rounded-xl px-4 py-3.5 text-sm font-semibold transition",
             !canGenerate
               ? "cursor-not-allowed bg-neutral-100 text-neutral-400"
               : "bg-violet-600 text-white shadow-sm hover:bg-violet-700 active:scale-[0.98]"
@@ -677,24 +713,26 @@ export function ImageStudioPage() {
         >
           {generating ? (
             <>
-              <Loader2 className="h-4 w-4 animate-spin" />
-              {STAGE_LABELS[genStage]}
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+              <span className="break-words text-center">{STAGE_LABELS[genStage]}</span>
             </>
           ) : (
             <>
-              {activeMode === "inpaint" ? (
-                <Paintbrush className="h-4 w-4" />
-              ) : activeMode === "variation" ? (
-                <Layers className="h-4 w-4" />
+              {resolvedMode === "inpaint" ? (
+                <Paintbrush className="h-4 w-4 shrink-0" />
+              ) : resolvedMode === "variation" ? (
+                <Layers className="h-4 w-4 shrink-0" />
               ) : (
-                <Sparkles className="h-4 w-4" />
+                <Sparkles className="h-4 w-4 shrink-0" />
               )}
-              {activeMode === "variation" ? `Создать ${variationCount} варианта` :
-               activeMode === "reference" ? "По образцу" :
-               activeMode === "inpaint"   ? "Применить маску" :
-               "Сгенерировать"}
-              {(activeMode === "text" || activeMode === "variation") && (smartMode || autoEnhance) && (
-                <span className="ml-1 rounded-full bg-white/20 px-1.5 py-0.5 text-[10px] font-medium">+AI</span>
+              <span className="break-words text-center">
+                {resolvedMode === "variation" ? `Создать ${variationCount} варианта` :
+                 resolvedMode === "reference" ? "По образцу" :
+                 resolvedMode === "inpaint"   ? "Применить маску" :
+                 "Сгенерировать"}
+              </span>
+              {smartMode && (
+                <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[10px] font-medium">+AI</span>
               )}
             </>
           )}
@@ -713,10 +751,10 @@ export function ImageStudioPage() {
             </div>
             <div className="flex flex-col items-center gap-2">
               <p className="text-sm font-semibold text-neutral-700">{STAGE_LABELS[genStage]}</p>
-              <p className="max-w-xs text-center text-xs text-neutral-400">
+              <p className="max-w-full px-2 text-center text-xs text-neutral-400 break-words [overflow-wrap:anywhere]">
                 {activeJob?.originalPrompt ?? prompt}
               </p>
-              {activeMode === "variation" && (
+              {(activeJob?.mode === "variation" || enableVariations) && (
                 <p className="text-xs text-violet-500">Генерируем {variationCount} вариантов…</p>
               )}
               <div className="mt-1 flex items-center gap-2">
@@ -751,6 +789,7 @@ export function ImageStudioPage() {
                 onToggle={() => setShowEnhancedPrompt((v) => !v)}
               />
             )}
+            <SmartFeedback applied={enhanceApplied} />
             <div className="flex items-center justify-between">
               <p className="text-sm font-semibold text-neutral-700">
                 🎯 {resultUrls.length} вариантов
@@ -767,7 +806,7 @@ export function ImageStudioPage() {
                     onClick={() => setLightbox(url)}
                   />
                   <div className="absolute inset-0 flex items-end justify-center bg-gradient-to-t from-black/60 to-transparent p-3 opacity-0 transition-opacity group-hover:opacity-100">
-                    <div className="flex gap-1.5">
+                    <div className="flex flex-wrap justify-center gap-2">
                       <a
                         href={url}
                         download
@@ -779,7 +818,7 @@ export function ImageStudioPage() {
                       </a>
                       <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); setDeleteModal({ jobId: activeJob.jobId }); }}
+                        onClick={(e) => { e.stopPropagation(); setDeleteModal({ id: activeJob.id ?? activeJob.jobId, jobId: activeJob.jobId }); }}
                         className="flex items-center gap-1 rounded-full bg-red-500/90 px-2.5 py-1.5 text-xs font-medium text-white shadow transition hover:bg-red-500"
                       >
                         <Trash2 className="h-3 w-3" />
@@ -793,7 +832,7 @@ export function ImageStudioPage() {
                 </div>
               ))}
             </div>
-            <p className="text-center text-xs text-neutral-400 italic">
+            <p className="max-w-full px-2 text-center text-xs text-neutral-400 italic break-words [overflow-wrap:anywhere]">
               "{activeJob.originalPrompt ?? activeJob.prompt}"
             </p>
           </div>
@@ -808,6 +847,7 @@ export function ImageStudioPage() {
                 onToggle={() => setShowEnhancedPrompt((v) => !v)}
               />
             )}
+            <SmartFeedback applied={enhanceApplied} />
             {activeJob.mode && activeJob.mode !== "text" && (
               <div className="flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-3 py-1">
                 <span className="text-xs font-medium text-violet-700">
@@ -824,7 +864,7 @@ export function ImageStudioPage() {
                 onClick={() => setLightbox(activeJob.url!)}
               />
               <div className="absolute inset-0 flex items-end justify-center rounded-2xl bg-gradient-to-t from-black/60 to-transparent p-4 opacity-0 transition-opacity group-hover:opacity-100">
-                <div className="flex gap-2">
+                <div className="flex max-w-full flex-wrap justify-center gap-2">
                   <a
                     href={activeJob.url}
                     download
@@ -844,7 +884,7 @@ export function ImageStudioPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); setDeleteModal({ jobId: activeJob.jobId, url: activeJob.url }); }}
+                    onClick={(e) => { e.stopPropagation(); setDeleteModal({ id: activeJob.id ?? activeJob.jobId, jobId: activeJob.jobId, url: activeJob.url }); }}
                     className="flex items-center gap-1.5 rounded-full bg-red-500/90 px-3 py-1.5 text-xs font-medium text-white shadow transition hover:bg-red-500"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -853,7 +893,7 @@ export function ImageStudioPage() {
                 </div>
               </div>
             </div>
-            <p className="max-w-md text-center text-xs text-neutral-400 italic">
+            <p className="max-w-full px-2 text-center text-xs text-neutral-400 italic break-words [overflow-wrap:anywhere] md:max-w-md">
               "{activeJob.originalPrompt ?? activeJob.prompt}"
             </p>
           </div>
@@ -888,15 +928,15 @@ export function ImageStudioPage() {
             <div className="rounded-3xl border-2 border-dashed border-neutral-200 bg-white p-14">
               <ImageIcon className="mx-auto h-14 w-14 text-neutral-200" />
             </div>
-            <div>
+            <div className="max-w-md break-words px-2 [overflow-wrap:anywhere]">
               <p className="text-sm font-semibold text-neutral-600">
-                {activeMode === "text"      && "Введите описание и нажмите Сгенерировать"}
-                {activeMode === "variation" && "Введите описание и выберите количество вариантов"}
-                {activeMode === "reference" && "Загрузите образец и введите описание"}
-                {activeMode === "inpaint"   && "Загрузите изображение и маску области"}
+                {resolvedMode === "text"      && "Введите описание и нажмите Сгенерировать"}
+                {resolvedMode === "variation" && `Введите описание — будет создано ${variationCount} вариантов`}
+                {resolvedMode === "reference" && "Загрузите образец и опишите желаемый результат"}
+                {resolvedMode === "inpaint"   && "Загрузите изображение и маску области изменения"}
               </p>
               <p className="mt-1 text-xs text-neutral-400">
-                {MODE_HINTS[activeMode]}
+                Можно сочетать умный режим с вариациями, образцом или маской.
               </p>
             </div>
           </div>
@@ -932,7 +972,7 @@ export function ImageStudioPage() {
                   const url = job.urls?.[0] ?? job.url;
                   if (url) setLightbox(url);
                 }}
-                onDelete={() => setDeleteModal({ jobId: job.jobId, url: job.url })}
+                onDelete={() => setDeleteModal({ id: job.id ?? job.jobId, jobId: job.jobId, url: job.url })}
                 onRegenerate={() => handleGenerate(job.originalPrompt ?? job.prompt)}
               />
             ))}
@@ -992,7 +1032,7 @@ export function ImageStudioPage() {
                 <button
                   type="button"
                   disabled={deleting}
-                  onClick={() => handleDelete(deleteModal.jobId)}
+                  onClick={() => handleDelete(deleteModal.id, deleteModal.jobId)}
                   className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-red-500 py-2.5 text-sm font-semibold text-white transition hover:bg-red-600 disabled:opacity-50"
                 >
                   {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
@@ -1003,6 +1043,28 @@ export function ImageStudioPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Smart mode feedback ───────────────────────────────────────────────────────
+
+function SmartFeedback({ applied }: { applied: EnhanceApplied | null }) {
+  if (!applied) return null;
+  const items: string[] = [];
+  if (applied.style) items.push(`стиль: ${applied.style}`);
+  if (applied.aspectRatio) items.push(`формат: ${applied.aspectRatio}`);
+  if (applied.systemPrompt) items.push("системный промпт");
+  if (!items.length) return null;
+
+  return (
+    <div className="flex w-full max-w-lg flex-wrap items-center gap-2 rounded-xl border border-violet-100 bg-violet-50 px-3 py-2">
+      <span className="shrink-0 text-xs font-medium text-violet-700">✨ Умный режим применил:</span>
+      {items.map((item) => (
+        <span key={item} className="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-[11px] text-violet-600 break-words">
+          {item}
+        </span>
+      ))}
     </div>
   );
 }
@@ -1034,7 +1096,7 @@ function EnhancedBadge({
       {show && (
         <div className="rounded-xl border border-amber-200 bg-white p-3">
           <p className="text-[11px] font-medium text-neutral-500 mb-1">Улучшенный промпт:</p>
-          <p className="text-xs text-neutral-700 leading-relaxed">{enhanced.prompt}</p>
+          <p className="text-xs text-neutral-700 leading-relaxed break-words [overflow-wrap:anywhere]">{enhanced.prompt}</p>
         </div>
       )}
     </div>
@@ -1079,7 +1141,7 @@ function HistoryCard({
               ×{job.urls!.length}
             </span>
           )}
-          <div className="absolute inset-0 flex items-center justify-center gap-1.5 bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+          <div className="absolute inset-0 flex flex-wrap items-center justify-center gap-2 bg-black/40 px-1 opacity-0 transition-opacity group-hover:opacity-100">
             <button
               type="button"
               title="Открыть"
@@ -1134,7 +1196,7 @@ function HistoryCard({
           </button>
         )}
       </div>
-      <p className="line-clamp-2 text-[11px] leading-snug text-neutral-500">
+      <p className="line-clamp-2 text-[11px] leading-snug text-neutral-500 break-words [overflow-wrap:anywhere]">
         {job.originalPrompt ?? job.prompt}
       </p>
     </div>

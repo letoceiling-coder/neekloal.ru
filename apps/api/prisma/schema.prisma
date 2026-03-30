@@ -487,3 +487,38 @@ model RateLimitState {
 
   @@map("rate_limit_state")
 }
+
+/// One row per generated image (each variation is its own row)
+model GeneratedImage {
+  id             String   @id @default(uuid()) @db.Uuid
+  jobId          String   @map("job_id")             /// BullMQ job / batch UUID
+  userId         String   @map("user_id") @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  url            String
+  localPath      String   @map("local_path")
+  mode           String   @default("text")
+  prompt         String   @db.Text
+  originalPrompt String?  @map("original_prompt") @db.Text
+  negativePrompt String?  @map("negative_prompt") @db.Text
+  style          String?
+  aspectRatio    String?  @map("aspect_ratio")
+  width          Int      @default(1024)
+  height         Int      @default(1024)
+  variantIndex   Int      @default(0) @map("variant_index")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, createdAt])
+  @@index([jobId])
+  @@map("generated_images")
+}
+
+/// Per-user image generation preferences / system prompt
+model UserImageSettings {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @unique @map("user_id") @db.Uuid
+  imageSystemPrompt String?  @map("image_system_prompt") @db.Text
+  useSystemPrompt   Boolean  @default(false) @map("use_system_prompt")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("user_image_settings")
+}

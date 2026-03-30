@@ -9,14 +9,9 @@ const DEFAULT_NEGATIVE =
 
 /**
  * Extract JSON from an LLM response that may be wrapped in markdown code fences.
- * @param {string} raw
- * @returns {{ enhancedPrompt: string; negativePrompt: string } | null}
  */
 function safeParseJSON(raw) {
-  // Strip markdown code fences
   let cleaned = raw.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
-
-  // Find the first { ... } block
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start === -1 || end === -1 || end < start) return null;
@@ -40,12 +35,27 @@ function safeParseJSON(raw) {
 /**
  * Build the LLM prompt for SDXL prompt engineering.
  * @param {string} userPrompt
- * @param {string} [style]
- * @returns {string}
+ * @param {{ style?: string; aspectRatio?: string; systemPrompt?: string }} opts
  */
-function buildEnhancerPrompt(userPrompt, style) {
+function buildEnhancerPrompt(userPrompt, opts = {}) {
+  const { style, aspectRatio, systemPrompt } = opts;
+
   const styleHint = style ? ` Use ${style} visual style.` : "";
-  return `You are an expert prompt engineer for Stable Diffusion SDXL image generation.
+  const ratioHint = aspectRatio
+    ? ` The image will be in ${aspectRatio} aspect ratio — adjust composition accordingly (e.g. ${
+        aspectRatio === "16:9" || aspectRatio === "4:3"
+          ? "wide landscape composition, horizon lines"
+          : aspectRatio === "9:16"
+          ? "vertical portrait composition, tall framing"
+          : "centered square composition"
+      }).`
+    : "";
+
+  const sysHint = systemPrompt
+    ? `\n\nAdditional instructions from the user:\n${systemPrompt}`
+    : "";
+
+  return `You are an expert prompt engineer for Stable Diffusion SDXL image generation.${sysHint}
 
 Transform the user input into a highly detailed, professional image generation prompt.
 
@@ -54,7 +64,7 @@ Rules:
 - Specify the subject clearly and concisely
 - Add art style (e.g. cinematic, illustration, Pixar 3D, anime, photorealistic)${styleHint}
 - Add lighting description (e.g. cinematic lighting, soft diffused light, golden hour)
-- Add composition (e.g. centered, full body, close-up portrait, wide angle)
+- Add composition suited for the aspect ratio${ratioHint}
 - Add quality descriptors (ultra detailed, 8k, masterpiece, sharp focus)
 - Keep it under 120 words
 - Write in English regardless of input language
@@ -75,21 +85,34 @@ User input: "${userPrompt}"`;
  * Falls back to original prompt + default negative on any error.
  *
  * @param {string} userPrompt
- * @param {{ style?: string }} [options]
- * @returns {Promise<{ enhancedPrompt: string; negativePrompt: string; enhanced: boolean }>}
+ * @param {{ style?: string; aspectRatio?: string; systemPrompt?: string }} [options]
+ * @returns {Promise<{
+ *   enhancedPrompt: string;
+ *   negativePrompt: string;
+ *   enhanced: boolean;
+ *   appliedStyle: string | null;
+ *   appliedAspectRatio: string | null;
+ *   appliedSystemPrompt: boolean;
+ * }>}
  */
 async function enhancePrompt(userPrompt, options = {}) {
-  const { style } = options;
+  const { style, aspectRatio, systemPrompt } = options;
   process.stdout.write(`[enhancer] input: "${userPrompt.slice(0, 80)}"\n`);
 
   try {
-    const llmPrompt = buildEnhancerPrompt(userPrompt, style);
+    const llmPrompt = buildEnhancerPrompt(userPrompt, { style, aspectRatio, systemPrompt });
     const raw = await generateText(OLLAMA_MODEL, llmPrompt);
     const parsed = safeParseJSON(raw);
 
     if (parsed) {
       process.stdout.write(`[enhancer] output: "${parsed.enhancedPrompt.slice(0, 80)}"\n`);
-      return { ...parsed, enhanced: true };
+      return {
+        ...parsed,
+        enhanced: true,
+        appliedStyle: style || null,
+        appliedAspectRatio: aspectRatio || null,
+        appliedSystemPrompt: !!(systemPrompt && systemPrompt.trim()),
+      };
     }
 
     process.stdout.write(`[enhancer] JSON parse failed, using fallback. raw="${raw.slice(0, 80)}"\n`);
@@ -97,11 +120,13 @@ async function enhancePrompt(userPrompt, options = {}) {
     process.stdout.write(`[enhancer] LLM error: ${err.message}\n`);
   }
 
-  // Fallback
   return {
     enhancedPrompt: userPrompt,
     negativePrompt: DEFAULT_NEGATIVE,
     enhanced: false,
+    appliedStyle: null,
+    appliedAspectRatio: null,
+    appliedSystemPrompt: false,
   };
 }
 
