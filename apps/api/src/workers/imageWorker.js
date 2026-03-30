@@ -81,21 +81,41 @@ async function waitForComfyOutput(promptId, timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 2000));
-    const { data: history } = await axios.get(`${COMFYUI_URL}/history/${promptId}`, { timeout: 8000 });
-    const entry = history[promptId];
-    if (!entry) continue;
 
-    const { status, outputs } = entry;
-    if (status?.status_str === "error" || status?.completed === false && status?.status_str !== "queued") {
-      const msgs = (status?.messages || []).map((m) => m[1]).join("; ");
-      throw new Error(`ComfyUI error: ${msgs}`);
+    let history;
+    try {
+      const res = await axios.get(`${COMFYUI_URL}/history/${promptId}`, { timeout: 8000 });
+      history = res.data;
+    } catch (e) {
+      process.stderr.write(`[imageWorker] poll error: ${e.message}\n`);
+      continue;
     }
 
-    // Find image outputs
+    const entry = history[promptId];
+    if (!entry) continue; // still queued / running
+
+    const { status, outputs } = entry;
+
+    // Only throw on explicit error (not while executing/queued)
+    if (status?.status_str === "error") {
+      const msgs = (status?.messages || [])
+        .filter((m) => m[0] === "execution_error")
+        .map((m) => {
+          const d = m[1];
+          if (d && typeof d === "object") {
+            return d.exception_message || d.message || JSON.stringify(d).slice(0, 300);
+          }
+          return String(d);
+        })
+        .join("; ");
+      throw new Error(`ComfyUI error: ${msgs || "unknown"}`);
+    }
+
+    // Find image outputs (present when status = "success")
     const files = [];
     for (const nodeOut of Object.values(outputs || {})) {
       for (const img of nodeOut.images || []) {
-        files.push(img.filename);
+        if (img.filename) files.push(img.filename);
       }
     }
     if (files.length > 0) return files;
@@ -138,13 +158,22 @@ const worker = new Worker(
 
     // 2. Submit workflow
     const workflow = buildWorkflow(prompt, width, height);
-    const { data: queueData } = await axios.post(
-      `${COMFYUI_URL}/prompt`,
-      { prompt: workflow },
-      { timeout: 15_000 }
-    );
+    process.stdout.write(`[imageWorker] sending workflow to ComfyUI ${COMFYUI_URL}/prompt\n`);
+    let queueData;
+    try {
+      const res = await axios.post(
+        `${COMFYUI_URL}/prompt`,
+        { prompt: workflow },
+        { timeout: 15_000 }
+      );
+      queueData = res.data;
+    } catch (e) {
+      const detail = e.response?.data ? JSON.stringify(e.response.data).slice(0, 300) : e.message;
+      throw new Error(`ComfyUI /prompt rejected: ${detail}`);
+    }
     const promptId = queueData.prompt_id;
-    if (!promptId) throw new Error("ComfyUI did not return a prompt_id");
+    if (!promptId) throw new Error(`ComfyUI did not return prompt_id. Response: ${JSON.stringify(queueData).slice(0, 200)}`);
+    process.stdout.write(`[imageWorker] ComfyUI accepted job, promptId=${promptId}\n`);
     job.log(`[imageWorker] queued promptId=${promptId}`);
 
     // 3. Poll until done
