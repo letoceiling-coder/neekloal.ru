@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("fs");
 const { v4: uuidv4 } = require("uuid");
 const authMiddleware = require("../middleware/auth");
 const { getImageQueue } = require("../queues/imageQueue");
@@ -161,10 +162,11 @@ module.exports = async function imageRoutes(fastify) {
       jobId: job.id,
       status: state,
       prompt: job.data?.prompt ?? "",
+      originalPrompt: job.data?.originalPrompt ?? job.data?.prompt ?? "",
       width: job.data?.width ?? 1024,
       height: job.data?.height ?? 1024,
       url: job.returnvalue?.url ?? null,
-      error: state === "failed" ? (job.failedReason ?? "failed") : null,
+      error: state === "failed" ? (job.failedReason ?? "Image generation failed") : null,
       createdAt: new Date(job.timestamp).toISOString(),
     });
 
@@ -176,5 +178,46 @@ module.exports = async function imageRoutes(fastify) {
     ].slice(0, 20);
 
     return { items, total: items.length };
+  });
+
+  // ── DELETE /image/:id ─────────────────────────────────────────────────────
+  fastify.delete("/image/:id", { preHandler: [authMiddleware] }, async (request, reply) => {
+    const { id } = request.params;
+    const queue = getImageQueue();
+
+    const job = await queue.getJob(id);
+    if (!job) {
+      return reply.code(404).send({ error: "Job not found" });
+    }
+
+    // Delete file from disk if exists
+    const localPath = job.returnvalue?.localPath;
+    if (localPath) {
+      try {
+        fs.unlinkSync(localPath);
+      } catch (e) {
+        // File may already be gone — not a fatal error
+        if (e.code !== "ENOENT") {
+          process.stderr.write(`[image:delete] unlink error: ${e.message}\n`);
+        }
+      }
+    }
+
+    // Remove job from queue
+    try {
+      await job.remove();
+    } catch { /* ignore if already removed */ }
+
+    // Release user job counter if needed
+    try {
+      const redis = getCacheConnection();
+      const key = userJobKey(job.data?.userId);
+      if (key) {
+        const cur = Number(await redis.get(key)) || 0;
+        if (cur > 0) await redis.set(key, cur - 1, "EX", 300);
+      }
+    } catch { /* ignore */ }
+
+    return reply.send({ success: true, deleted: id });
   });
 };
