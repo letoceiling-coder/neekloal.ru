@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("fs");
+const path = require("path");
 const { v4: uuidv4 } = require("uuid");
 const authMiddleware = require("../middleware/auth");
 const { getImageQueue } = require("../queues/imageQueue");
@@ -11,18 +12,58 @@ const MAX_WIDTH = 2048;
 const MAX_HEIGHT = 2048;
 const MIN_DIM = 256;
 
-// Per-user concurrent job limit
 const USER_JOB_LIMIT = 1;
 
-/**
- * Key for tracking active job count per user in Redis.
- * TTL = 5 min (guard against leaked keys).
- */
+const REFS_DIR = process.env.IMAGE_REFS_DIR || "/var/www/site-al.ru/uploads/refs";
+const REFS_PUBLIC = process.env.IMAGE_REFS_PUBLIC || "https://site-al.ru/uploads/refs";
+const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
+
+const VALID_MODES = ["text", "variation", "reference", "inpaint"];
+
 function userJobKey(userId) {
   return `image:active:${userId}`;
 }
 
 module.exports = async function imageRoutes(fastify) {
+  // Register multipart for the upload-ref endpoint
+  await fastify.register(require("@fastify/multipart"), {
+    limits: { fileSize: 20 * 1024 * 1024, files: 2, fields: 4 },
+  });
+
+  // ── POST /image/upload-ref ────────────────────────────────────────────────
+  // Upload a reference or mask image. Returns a public URL to use in generate.
+  fastify.post("/image/upload-ref", { preHandler: [authMiddleware] }, async (request, reply) => {
+    let file;
+    try {
+      file = await request.file();
+    } catch (e) {
+      return reply.code(400).send({ error: "Multipart file expected" });
+    }
+    if (!file) {
+      return reply.code(400).send({ error: "No file provided" });
+    }
+
+    const ext = path.extname(file.filename).toLowerCase() || ".png";
+    const allowed = [".png", ".jpg", ".jpeg", ".webp"];
+    if (!allowed.includes(ext)) {
+      return reply.code(400).send({ error: "Only PNG, JPG, WEBP images allowed" });
+    }
+
+    fs.mkdirSync(REFS_DIR, { recursive: true });
+
+    const id = uuidv4();
+    const savedName = `${id}${ext}`;
+    const localPath = path.join(REFS_DIR, savedName);
+
+    const buf = await file.toBuffer();
+    fs.writeFileSync(localPath, buf);
+
+    const refUrl = `${REFS_PUBLIC}/${savedName}`;
+    process.stdout.write(`[image:upload-ref] saved ${localPath} → ${refUrl}\n`);
+
+    return reply.send({ refUrl, id, filename: savedName });
+  });
+
   // ── POST /image/enhance ───────────────────────────────────────────────────
   fastify.post("/image/enhance", { preHandler: [authMiddleware] }, async (request, reply) => {
     const { prompt, style } = request.body || {};
@@ -42,16 +83,36 @@ module.exports = async function imageRoutes(fastify) {
 
   // ── POST /image/generate ──────────────────────────────────────────────────
   fastify.post("/image/generate", { preHandler: [authMiddleware] }, async (request, reply) => {
-    // negativePrompt supplied = prompt already enhanced by client (skip auto-enhance)
-    const { prompt, width = 1024, height = 1024, negativePrompt, style } = request.body || {};
+    const {
+      prompt,
+      width = 1024,
+      height = 1024,
+      negativePrompt,
+      style,
+      mode = "text",
+      variations = 4,
+      referenceImageUrl,
+      strength = 0.5,
+      maskUrl,
+    } = request.body || {};
 
     if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
       return reply.code(400).send({ error: "prompt is required" });
     }
+
+    const resolvedMode = VALID_MODES.includes(mode) ? mode : "text";
+
+    if (resolvedMode === "reference" && !referenceImageUrl) {
+      return reply.code(400).send({ error: "referenceImageUrl required for reference mode" });
+    }
+    if (resolvedMode === "inpaint" && (!referenceImageUrl || !maskUrl)) {
+      return reply.code(400).send({ error: "referenceImageUrl and maskUrl required for inpaint mode" });
+    }
+
     const w = Math.min(Math.max(Number(width) || 1024, MIN_DIM), MAX_WIDTH);
     const h = Math.min(Math.max(Number(height) || 1024, MIN_DIM), MAX_HEIGHT);
 
-    // Per-user rate: max 1 active job at a time
+    // Per-user rate limit
     const redis = getCacheConnection();
     let activeCount = 0;
     try {
@@ -60,15 +121,15 @@ module.exports = async function imageRoutes(fastify) {
 
     if (activeCount >= USER_JOB_LIMIT) {
       return reply.code(429).send({
-        error: "You already have an active generation. Please wait for it to finish.",
+        error: "Идёт активная генерация. Подождите завершения.",
       });
     }
 
-    // Auto-enhance only if client hasn't already provided an enhanced prompt+negative
+    // Auto-enhance only for text/variation modes (not reference/inpaint where prompt is often short/specific)
     let finalPrompt = prompt.trim();
     let finalNegative = negativePrompt || null;
 
-    if (!finalNegative) {
+    if (!finalNegative && (resolvedMode === "text" || resolvedMode === "variation")) {
       const enhanced = await enhancePrompt(finalPrompt, { style: style || undefined });
       finalPrompt = enhanced.enhancedPrompt;
       finalNegative = enhanced.negativePrompt;
@@ -88,16 +149,20 @@ module.exports = async function imageRoutes(fastify) {
         jobId,
         userId: request.userId,
         organizationId: request.organizationId,
+        mode: resolvedMode,
+        variations: Math.min(Math.max(Number(variations) || 4, 1), 8),
+        referenceImageUrl: referenceImageUrl || null,
+        strength: Math.min(Math.max(Number(strength) || 0.5, 0.1), 1.0),
+        maskUrl: maskUrl || null,
       },
       { jobId }
     );
 
-    // Track active job
     try {
       await redis.set(userJobKey(request.userId), activeCount + 1, "EX", 300);
     } catch { /* ignore */ }
 
-    return reply.code(202).send({ jobId, status: "queued", message: "Generation started" });
+    return reply.code(202).send({ jobId, status: "queued", mode: resolvedMode, message: "Генерация начата" });
   });
 
   // ── GET /image/status/:id ─────────────────────────────────────────────────
@@ -113,7 +178,6 @@ module.exports = async function imageRoutes(fastify) {
     const state = await job.getState();
     const result = job.returnvalue;
 
-    // Release user job counter on completion/failure
     if (state === "completed" || state === "failed") {
       try {
         const redis = getCacheConnection();
@@ -126,6 +190,7 @@ module.exports = async function imageRoutes(fastify) {
     const response = {
       jobId: id,
       status: state,
+      mode: job.data.mode || "text",
       prompt: job.data.prompt,
       originalPrompt: job.data.originalPrompt ?? job.data.prompt,
       negativePrompt: job.data.negativePrompt ?? null,
@@ -134,11 +199,13 @@ module.exports = async function imageRoutes(fastify) {
       createdAt: new Date(job.timestamp).toISOString(),
     };
 
-    if (state === "completed" && result?.url) {
+    if (state === "completed" && result) {
       response.url = result.url;
+      response.urls = result.urls || [result.url];
+      response.count = result.count || 1;
     }
     if (state === "failed") {
-      response.error = job.failedReason || "Generation failed";
+      response.error = job.failedReason || "Ошибка генерации. Попробуйте изменить описание";
     }
     if (state === "active") {
       response.progress = job.progress || 0;
@@ -161,12 +228,15 @@ module.exports = async function imageRoutes(fastify) {
     const toItem = (job, state) => ({
       jobId: job.id,
       status: state,
+      mode: job.data?.mode || "text",
       prompt: job.data?.prompt ?? "",
       originalPrompt: job.data?.originalPrompt ?? job.data?.prompt ?? "",
       width: job.data?.width ?? 1024,
       height: job.data?.height ?? 1024,
       url: job.returnvalue?.url ?? null,
-      error: state === "failed" ? (job.failedReason ?? "Image generation failed") : null,
+      urls: job.returnvalue?.urls ?? (job.returnvalue?.url ? [job.returnvalue.url] : null),
+      count: job.returnvalue?.count ?? null,
+      error: state === "failed" ? (job.failedReason ?? "Ошибка генерации. Попробуйте изменить описание") : null,
       createdAt: new Date(job.timestamp).toISOString(),
     });
 
@@ -190,10 +260,6 @@ module.exports = async function imageRoutes(fastify) {
       return reply.code(400).send({ error: "Invalid id" });
     }
 
-    const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
-    const path = require("path");
-
-    // Helper: try to delete a file, ignore ENOENT
     function tryUnlink(filePath) {
       try {
         fs.unlinkSync(filePath);
@@ -210,16 +276,17 @@ module.exports = async function imageRoutes(fastify) {
     let fileDeleted = false;
     let jobFound = false;
 
-    // 1. Try via BullMQ job (has exact localPath)
     const queue = getImageQueue();
     try {
       const job = await queue.getJob(id);
       if (job) {
         jobFound = true;
-        const localPath = job.returnvalue?.localPath;
-        if (localPath) fileDeleted = tryUnlink(localPath);
+        // Delete all files (support variations with multiple localPaths)
+        const localPaths = job.returnvalue?.localPaths || (job.returnvalue?.localPath ? [job.returnvalue.localPath] : []);
+        for (const lp of localPaths) {
+          if (tryUnlink(lp)) fileDeleted = true;
+        }
 
-        // Release user active-job counter
         try {
           const redis = getCacheConnection();
           const key = userJobKey(job.data?.userId);
@@ -229,24 +296,31 @@ module.exports = async function imageRoutes(fastify) {
           }
         } catch { /* ignore */ }
 
-        // Remove from queue
         try { await job.remove(); } catch { /* ignore */ }
       }
     } catch (e) {
       process.stderr.write(`[image:delete] queue lookup error: ${e.message}\n`);
     }
 
-    // 2. Fallback: if job not in queue (BullMQ cleaned it up), try common extensions by jobId
+    // Fallback: scan by jobId with common extensions and variation suffixes
     if (!fileDeleted) {
-      for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
-        const candidate = path.join(OUTPUT_DIR, `${id}${ext}`);
-        if (tryUnlink(candidate)) { fileDeleted = true; break; }
+      const exts = [".png", ".jpg", ".jpeg", ".webp"];
+      // Try base + variations (_1 through _8)
+      const suffixes = ["", "_1", "_2", "_3", "_4", "_5", "_6", "_7"];
+      outer: for (const suffix of suffixes) {
+        for (const ext of exts) {
+          const candidate = path.join(OUTPUT_DIR, `${id}${suffix}${ext}`);
+          if (tryUnlink(candidate)) {
+            fileDeleted = true;
+            if (suffix === "") break outer; // single image found
+            // continue deleting remaining variation files
+          }
+        }
       }
     }
 
     process.stdout.write(`[image:delete] done — jobFound=${jobFound} fileDeleted=${fileDeleted}\n`);
 
-    // Always return success — idempotent operation
     return reply.send({
       success: true,
       deleted: id,
