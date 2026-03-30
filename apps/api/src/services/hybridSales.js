@@ -7,6 +7,18 @@ const { routeKnowledgeByIntent } = require("./knowledgeRouter");
 const VALID_STAGES = new Set(["greeting", "qualification", "offer", "objection", "close"]);
 
 /**
+ * Maps FSM stage → intent label used for stage-based knowledge routing.
+ * This is PRIORITY 0: the current stage always determines what knowledge to show,
+ * regardless of what the user typed.
+ */
+const STAGE_TO_INTENT = {
+  objection:     "objection",
+  qualification: "qualification_site",
+  offer:         "pricing",
+  close:         "close",
+};
+
+/**
  * @param {string} current
  * @param {string} intent
  * @returns {string}
@@ -109,19 +121,37 @@ async function applyHybridSalesPipeline(p) {
 
   let knowledgeSource = "rag";
   let knowledgeBlock = "";
+  let fsmKnowledgeFound = false;
 
-  const routed = await routeKnowledgeByIntent(p.assistantId, p.organizationId, intent);
-  if (routed && routed.trim()) {
-    knowledgeBlock = routed.trim();
-    knowledgeSource = "intent";
-  } else {
-    const rag = String(p.ragBlock ?? "").trim();
-    const db = String(p.dbFallbackBlock ?? "").trim();
-    knowledgeBlock = rag || db;
-    knowledgeSource = "rag";
+  // ─── Priority 0: stage-based routing ─────────────────────────────────────
+  // The CURRENT FSM stage determines the knowledge block regardless of intent.
+  // If found → skip RAG entirely (caller reads fsmKnowledgeFound).
+  const stageIntent = STAGE_TO_INTENT[stage];
+  if (stageIntent) {
+    const stageKnowledge = await routeKnowledgeByIntent(p.assistantId, p.organizationId, stageIntent);
+    if (stageKnowledge && stageKnowledge.trim()) {
+      knowledgeBlock = stageKnowledge.trim();
+      knowledgeSource = "fsm";
+      fsmKnowledgeFound = true;
+    }
   }
 
-  return { intent, stage, knowledgeSource, knowledgeBlock, context: memoryContext };
+  // ─── Priority 1: intent-based routing (only if stage had no knowledge) ────
+  if (!fsmKnowledgeFound) {
+    const routed = await routeKnowledgeByIntent(p.assistantId, p.organizationId, intent);
+    if (routed && routed.trim()) {
+      knowledgeBlock = routed.trim();
+      knowledgeSource = "intent";
+    } else {
+      // ─── Priority 2: RAG / DB fallback ──────────────────────────────────
+      const rag = String(p.ragBlock ?? "").trim();
+      const db = String(p.dbFallbackBlock ?? "").trim();
+      knowledgeBlock = rag || db;
+      knowledgeSource = "rag";
+    }
+  }
+
+  return { intent, stage, knowledgeSource, knowledgeBlock, fsmKnowledgeFound, context: memoryContext };
 }
 
 function isHybridSalesEnabled() {

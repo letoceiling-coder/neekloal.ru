@@ -9,7 +9,7 @@ const { resolveModel, ensureModelAvailable } = require("../services/modelRouter"
 const { finalizeChatUsage, preCheckChatBeforeLlm } = require("../services/planAccess");
 const { buildFinalPrompt } = require("../services/chatPrompt");
 const { applyHybridSalesPipeline, isHybridSalesEnabled } = require("../services/hybridSales");
-const { validateSalesReply } = require("../services/salesReplyValidator");
+const { validateSalesReply, validateByStage } = require("../services/salesReplyValidator");
 const chatAuthMiddleware = require("../middleware/chatAuth");
 const rateLimitMiddleware = require("../middleware/rateLimit");
 const { widgetChatRateLimit } = require("../middleware/widgetRateLimit");
@@ -216,7 +216,14 @@ async function ollamaGenerateNonStream(model, prompt) {
  */
 async function repairSalesReplyIfNeeded(model, chatAssistant, knowledgeBlock, message, fsmStage, context, draft) {
   let text = String(draft ?? "").trim();
-  for (let attempt = 0; attempt < 2 && !validateSalesReply(text).ok; attempt++) {
+  // Use stage-aware validation: close stage has hard requirement for call cue
+  for (let attempt = 0; attempt < 2 && !validateByStage(text, fsmStage).ok; attempt++) {
+    const stageHint =
+      fsmStage === "close"
+        ? "ВАЖНО: ответ ОБЯЗАН содержать предложение созвона или встречи."
+        : fsmStage === "objection"
+        ? "ВАЖНО: сначала согласись, объясни ценность, задай один вопрос."
+        : "Перепиши ответ целиком: не более 3 предложений; ровно один вопрос; явный следующий шаг.";
     const prompt = buildFinalPrompt({
       assistant: chatAssistant,
       systemPrompt: chatAssistant.systemPrompt,
@@ -227,8 +234,7 @@ async function repairSalesReplyIfNeeded(model, chatAssistant, knowledgeBlock, me
       context,
       appendAfterUser:
         `Черновик ответа:\n${text}\n\n` +
-        `Перепиши ответ целиком на русском: не более 3 предложений; ровно один вопрос (?); ` +
-        `явный следующий шаг (что сделать клиенту дальше).`,
+        `${stageHint} Ответ только на русском языке.`,
     });
     text = (await ollamaGenerateNonStream(model, prompt)).trim();
   }
@@ -305,44 +311,67 @@ async function prepareChatContext(request, reply, fastify) {
     return null;
   }
 
-  let ragBlock = "";
-  if (qdrant.isRagEnabled()) {
-    const retrieved = await retrieveForChat(fastify, assistant.id, message, 5);
-    ragBlock = retrieved.knowledgeBlock;
-  }
-  const knowledgeRows = await prisma.knowledge.findMany({
-    where: { assistantId: assistant.id, organizationId: assistant.organizationId, deletedAt: null },
-    orderBy: { createdAt: "asc" },
-    take: 20,
-  });
-  const dbFallbackBlock =
-    knowledgeRows.length > 0 ? knowledgeRows.map((k) => k.content).join("\n\n") : "";
-
   const hybridEnabled = isHybridSalesEnabled();
-  /** @type {{ intent: string; stage: string; knowledgeSource: string; context: object }} */
-  let hybridMeta = { intent: "unknown", stage: "greeting", knowledgeSource: "rag" };
+  /** @type {{ intent: string; stage: string; knowledgeSource: string; fsmKnowledgeFound: boolean; context: object }} */
+  let hybridMeta = { intent: "unknown", stage: "greeting", knowledgeSource: "rag", fsmKnowledgeFound: false };
   let knowledgeBlock = "";
   let hybridContext = {};
 
   if (hybridEnabled) {
+    // ── Phase 1: FSM stage lookup + stage-based & intent-based knowledge routing ──
+    // RAG is NOT called here. hybridSales will use stage-based routing (priority 0)
+    // then intent-based (priority 1). Returns fsmKnowledgeFound=true when stage matched.
     const hybrid = await applyHybridSalesPipeline({
       organizationId: assistant.organizationId,
       assistantId: assistant.id,
       conversationId: body.conversationId,
       message,
-      ragBlock: ragBlock || "",
-      dbFallbackBlock,
+      ragBlock: "",        // RAG data not available yet
+      dbFallbackBlock: "", // DB fallback not loaded yet
     });
     knowledgeBlock = hybrid.knowledgeBlock;
     hybridMeta = {
       intent: hybrid.intent,
       stage: hybrid.stage,
       knowledgeSource: hybrid.knowledgeSource,
+      fsmKnowledgeFound: hybrid.fsmKnowledgeFound,
       context: hybrid.context,
     };
     hybridContext = hybrid.context;
+
+    // ── Phase 2: RAG + DB fallback — only when FSM AND intent routing both missed ──
+    if (!hybrid.fsmKnowledgeFound && !knowledgeBlock) {
+      if (qdrant.isRagEnabled()) {
+        const retrieved = await retrieveForChat(fastify, assistant.id, message, 5);
+        knowledgeBlock = retrieved.knowledgeBlock || "";
+        if (knowledgeBlock) hybridMeta.knowledgeSource = "rag";
+      }
+      if (!knowledgeBlock) {
+        const kRows = await prisma.knowledge.findMany({
+          where: { assistantId: assistant.id, organizationId: assistant.organizationId, deletedAt: null },
+          orderBy: { createdAt: "asc" },
+          take: 20,
+        });
+        knowledgeBlock = kRows.length > 0 ? kRows.map((k) => k.content).join("\n\n") : "";
+        if (knowledgeBlock) hybridMeta.knowledgeSource = "db";
+      }
+    }
   } else {
-    knowledgeBlock = String(ragBlock || "").trim() || dbFallbackBlock;
+    // Non-hybrid: always RAG → DB fallback
+    let ragBlock = "";
+    if (qdrant.isRagEnabled()) {
+      const retrieved = await retrieveForChat(fastify, assistant.id, message, 5);
+      ragBlock = retrieved.knowledgeBlock || "";
+    }
+    if (!ragBlock) {
+      const kRows = await prisma.knowledge.findMany({
+        where: { assistantId: assistant.id, organizationId: assistant.organizationId, deletedAt: null },
+        orderBy: { createdAt: "asc" },
+        take: 20,
+      });
+      ragBlock = kRows.length > 0 ? kRows.map((k) => k.content).join("\n\n") : "";
+    }
+    knowledgeBlock = ragBlock;
   }
 
   const agentRecord = await prisma.agent.findFirst({
@@ -445,9 +474,9 @@ module.exports = async function chatRoutes(fastify) {
             context,
             replyText
           );
-          const v = validateSalesReply(replyText);
+          const v = validateByStage(replyText, fsmStage);
           if (!v.ok) {
-            fastify.log.warn({ reasons: v.reasons }, "sales reply still invalid after repair (agent)");
+            fastify.log.warn({ reasons: v.reasons, stage: fsmStage }, "sales reply still invalid after repair (agent)");
           }
         }
 
@@ -529,9 +558,9 @@ module.exports = async function chatRoutes(fastify) {
           fsmStage,
           replyText
         );
-        const v = validateSalesReply(replyText);
+        const v = validateByStage(replyText, fsmStage);
         if (!v.ok) {
-          fastify.log.warn({ reasons: v.reasons }, "sales reply still invalid after repair");
+          fastify.log.warn({ reasons: v.reasons, stage: fsmStage }, "sales reply still invalid after repair");
         }
       }
 
@@ -771,10 +800,10 @@ module.exports = async function chatRoutes(fastify) {
       }
 
       if (hybridEnabled && fullText && !agentForChat) {
-        const v = validateSalesReply(fullText);
+        const v = validateByStage(fullText, fsmStage);
         if (!v.ok) {
           fastify.log.warn(
-            { hybridSalesReplyValidation: v.reasons, path: "stream" },
+            { hybridSalesReplyValidation: v.reasons, stage: fsmStage, path: "stream" },
             "stream reply did not pass sales validation"
           );
         }

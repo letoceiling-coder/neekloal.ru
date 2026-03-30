@@ -36,6 +36,16 @@ function hasNextStepCue(text) {
 }
 
 /**
+ * Для stage=close ответ ОБЯЗАН содержать предложение созвона/встречи.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function hasCallCue(text) {
+  const t = String(text).toLowerCase();
+  return /созвон|созвониться|позвон|встреч|записать|запишу|когда вам удобно|удобн.*время|назначим|договоримся|обсудим по|по телефон|в zoom|онлайн встреч/.test(t);
+}
+
+/**
  * @param {string} reply
  * @returns {{ ok: boolean; reasons: string[] }}
  */
@@ -67,4 +77,45 @@ function validateSalesReply(reply) {
   return { ok: reasons.length === 0, reasons };
 }
 
-module.exports = { validateSalesReply, countSentences, countQuestions, hasNextStepCue };
+/**
+ * Stage-aware validation.
+ * For stage=close the reply MUST contain a call/meeting proposal — hard requirement.
+ * For other stages falls back to generic validateSalesReply.
+ *
+ * @param {string} reply
+ * @param {string} [stage]
+ * @returns {{ ok: boolean; reasons: string[] }}
+ */
+function validateByStage(reply, stage) {
+  const text = String(reply ?? "").trim();
+
+  if (stage === "close") {
+    const reasons = [];
+    if (!text) {
+      reasons.push("empty");
+      return { ok: false, reasons };
+    }
+    if (!hasCallCue(text)) {
+      reasons.push("close:no_call_cue — ответ ОБЯЗАН предложить созвон");
+    }
+    return { ok: reasons.length === 0, reasons };
+  }
+
+  // For objection stage: must have next-step cue
+  if (stage === "objection") {
+    const base = validateSalesReply(reply);
+    return base;
+  }
+
+  // Default: generic check
+  return validateSalesReply(reply);
+}
+
+module.exports = {
+  validateSalesReply,
+  validateByStage,
+  countSentences,
+  countQuestions,
+  hasNextStepCue,
+  hasCallCue,
+};
