@@ -72,6 +72,77 @@ function buildReferenceWorkflow(prompt, negativePrompt, width, height, strength,
   };
 }
 
+/**
+ * ControlNet workflow — uses comfyui_controlnet_aux preprocessors + SD1.5 ControlNet models.
+ *
+ * controlType: "canny" | "pose"
+ * strength: 0.1–1.0 (ControlNet conditioning strength, default 0.8)
+ *
+ * Requires:
+ *   - custom_nodes/comfyui_controlnet_aux
+ *   - models/controlnet/control_v11p_sd15_canny.pth (for canny)
+ *   - models/controlnet/control_v11p_sd15_openpose.pth (for pose)
+ *   - models/checkpoints/v1-5-pruned-emaonly.safetensors (SD1.5 base)
+ */
+function buildControlNetWorkflow(prompt, negativePrompt, width, height, referenceFilename, controlType, strength) {
+  const cnStrength = Math.min(Math.max(Number(strength) || 0.8, 0.1), 1.0);
+
+  // Preprocessor node class varies by control type
+  const preprocessorClass = controlType === "pose"
+    ? "DWPreprocessor"
+    : "CannyEdgePreprocessor";
+  const preprocessorInputs = controlType === "pose"
+    ? { image: ["4", 0], detect_hand: "enable", detect_body: "enable", detect_face: "enable", resolution: Math.min(width, height) }
+    : { image: ["4", 0], low_threshold: 100, high_threshold: 200, resolution: Math.min(width, height) };
+
+  const cnModelFile = controlType === "pose"
+    ? "control_v11p_sd15_openpose.pth"
+    : "control_v11p_sd15_canny.pth";
+
+  return {
+    "1": {
+      class_type: "CheckpointLoaderSimple",
+      inputs: { ckpt_name: "v1-5-pruned-emaonly.safetensors" },
+    },
+    "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: prompt } },
+    "3": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE } },
+    "4": { class_type: "LoadImage", inputs: { image: referenceFilename, upload: "image" } },
+    "5": { class_type: preprocessorClass, inputs: preprocessorInputs },
+    "6": {
+      class_type: "ControlNetLoader",
+      inputs: { control_net_name: cnModelFile },
+    },
+    "7": {
+      class_type: "ControlNetApply",
+      inputs: {
+        conditioning: ["2", 0],
+        control_net: ["6", 0],
+        image: ["5", 0],
+        strength: cnStrength,
+      },
+    },
+    "8": {
+      class_type: "EmptyLatentImage",
+      inputs: { batch_size: 1, height, width },
+    },
+    "9": {
+      class_type: "KSampler",
+      inputs: {
+        cfg: 7, denoise: 1,
+        latent_image: ["8", 0], model: ["1", 0],
+        negative: ["3", 0], positive: ["7", 0],
+        sampler_name: "euler", scheduler: "normal",
+        seed: Math.floor(Math.random() * 1e15), steps: 20,
+      },
+    },
+    "10": { class_type: "VAEDecode", inputs: { samples: ["9", 0], vae: ["1", 2] } },
+    "11": {
+      class_type: "SaveImage",
+      inputs: { filename_prefix: `cn_${controlType}_`, images: ["10", 0] },
+    },
+  };
+}
+
 function buildInpaintWorkflow(prompt, negativePrompt, width, height, referenceFilename, maskFilename) {
   return {
     "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" } },
@@ -248,7 +319,7 @@ const worker = new Worker(
     const {
       prompt, negativePrompt, width = 1024, height = 1024, jobId,
       mode = "text", variations = 1, referenceImageUrl, strength = 0.5, maskUrl,
-      style, aspectRatio,
+      controlType = "canny", style, aspectRatio,
     } = job.data;
 
     job.log(`[imageWorker] starting job=${job.id} mode=${mode} prompt="${prompt.slice(0, 60)}"`);
@@ -294,6 +365,19 @@ const worker = new Worker(
       const promptId = await submitWorkflow(workflow);
       filenames = await waitForComfyOutput(promptId);
       job.log(`[imageWorker] inpaint done`);
+
+    } else if (mode === "controlnet") {
+      if (!referenceImageUrl) throw new Error("referenceImageUrl required for controlnet mode");
+      const validTypes = ["canny", "pose"];
+      const resolvedType = validTypes.includes(controlType) ? controlType : "canny";
+      process.stdout.write(`[imageWorker] controlnet mode, type=${resolvedType}, downloading input image...\n`);
+      const buf = await downloadBuffer(referenceImageUrl);
+      const comfyFn = await uploadToComfyUI(buf, `cn_${finalJobId}.png`);
+      const workflow = buildControlNetWorkflow(prompt, neg, width, height, comfyFn, resolvedType, strength);
+      process.stdout.write(`[imageWorker] submitting ControlNet workflow (${resolvedType})...\n`);
+      const promptId = await submitWorkflow(workflow);
+      filenames = await waitForComfyOutput(promptId);
+      job.log(`[imageWorker] controlnet done, files=${filenames.join(",")}`);
 
     } else {
       process.stdout.write(`[imageWorker] text mode, sending workflow\n`);

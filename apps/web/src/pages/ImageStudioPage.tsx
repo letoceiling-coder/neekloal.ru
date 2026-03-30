@@ -11,7 +11,8 @@ const API = import.meta.env.VITE_API_URL ?? "/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type ImageMode = "text" | "variation" | "reference" | "inpaint";
+type ImageMode = "text" | "variation" | "reference" | "inpaint" | "controlnet";
+type ControlType = "canny" | "pose";
 
 interface ImageJob {
   /** DB record id (preferred for delete) or BullMQ job id for legacy */
@@ -83,13 +84,20 @@ const STAGE_LABELS: Record<GenStage, string> = {
   done:      "Готово",
 };
 
+const CONTROL_TYPES: { id: ControlType; label: string; hint: string }[] = [
+  { id: "canny", label: "Контур (Canny)", hint: "Строгий контурный контроль — идеально для архитектуры, объектов" },
+  { id: "pose",  label: "Поза (Pose)",    hint: "Контроль положения тела — идеально для персонажей" },
+];
+
 /** Режим генерации (производный): не путать с smartMode. */
 function computeResolvedMode(
   enableVariations: boolean,
+  enableControlNet: boolean,
   referenceImage: RefImage | null,
   maskImage: RefImage | null
 ): ImageMode {
   if (enableVariations) return "variation";
+  if (enableControlNet && referenceImage?.refUrl) return "controlnet";
   if (maskImage?.refUrl && referenceImage?.refUrl) return "inpaint";
   if (referenceImage?.refUrl) return "reference";
   return "text";
@@ -184,6 +192,8 @@ export function ImageStudioPage() {
   const [enableVariations, setEnableVariations] = useState(false);
   const [enableReference, setEnableReference] = useState(false);
   const [enableInpaint, setEnableInpaint] = useState(false);
+  const [enableControlNet, setEnableControlNet] = useState(false);
+  const [controlType, setControlType] = useState<ControlType>("canny");
 
   const [variationCount, setVariationCount] = useState(4);
 
@@ -214,8 +224,8 @@ export function ImageStudioPage() {
   const generating = genStage !== "idle" && genStage !== "done";
 
   const resolvedMode = useMemo(
-    () => computeResolvedMode(enableVariations, referenceImage, maskImage),
-    [enableVariations, referenceImage, maskImage]
+    () => computeResolvedMode(enableVariations, enableControlNet, referenceImage, maskImage),
+    [enableVariations, enableControlNet, referenceImage, maskImage]
   );
 
   // ── Effects ─────────────────────────────────────────────────────────────────
@@ -230,8 +240,8 @@ export function ImageStudioPage() {
   }, [activeJobId]);
 
   useEffect(() => {
-    if (!enableReference && !enableInpaint) setReferenceImage(null);
-  }, [enableReference, enableInpaint]);
+    if (!enableReference && !enableInpaint && !enableControlNet) setReferenceImage(null);
+  }, [enableReference, enableInpaint, enableControlNet]);
 
   useEffect(() => {
     if (!enableInpaint) setMaskImage(null);
@@ -324,7 +334,7 @@ export function ImageStudioPage() {
     setEnhanceApplied(null);
     setActiveJob(null);
 
-    const modeForJob = computeResolvedMode(enableVariations, referenceImage, maskImage);
+    const modeForJob = computeResolvedMode(enableVariations, enableControlNet, referenceImage, maskImage);
     const shouldEnhance = smartMode;
 
     try {
@@ -373,6 +383,7 @@ export function ImageStudioPage() {
         smartMode,
         variations: enableVariations ? variationCount : 1,
         aspectRatio: `${size.w}:${size.h}`,
+        ...(modeForJob === "controlnet" ? { controlType } : {}),
       };
 
       if (finalNegative) body.negativePrompt = finalNegative;
@@ -458,6 +469,7 @@ export function ImageStudioPage() {
     if (refUploading || maskUploading) return false;
     if (enableVariations) return true;
     if (enableInpaint) return !!(referenceImage?.refUrl && maskImage?.refUrl);
+    if (enableControlNet) return !!referenceImage?.refUrl;
     if (enableReference) return !!referenceImage?.refUrl;
     return true;
   })();
@@ -527,7 +539,48 @@ export function ImageStudioPage() {
             />
             <span className="break-words">Редактирование — маска области</span>
           </label>
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800">
+            <input
+              type="checkbox"
+              checked={enableControlNet}
+              onChange={(e) => {
+                setEnableControlNet(e.target.checked);
+                if (e.target.checked) { setEnableInpaint(false); setEnableReference(false); }
+              }}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-neutral-300 accent-violet-600"
+            />
+            <span className="break-words">🧬 ControlNet — контроль формы/позы</span>
+          </label>
         </div>
+
+        {/* ControlNet type + hint */}
+        {enableControlNet && (
+          <div className="flex flex-col gap-2 rounded-xl border border-violet-100 bg-violet-50 p-3">
+            <p className="text-[11px] font-medium text-violet-700">Тип контроля</p>
+            <div className="flex flex-col gap-2">
+              {CONTROL_TYPES.map((ct) => (
+                <label key={ct.id} className="flex cursor-pointer items-start gap-2">
+                  <input
+                    type="radio"
+                    name="controlType"
+                    value={ct.id}
+                    checked={controlType === ct.id}
+                    onChange={() => setControlType(ct.id)}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-violet-600"
+                  />
+                  <div>
+                    <p className="text-xs font-medium text-neutral-800">{ct.label}</p>
+                    <p className="text-[10px] text-neutral-500 break-words">{ct.hint}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <p className="mt-1 flex items-start gap-1 text-[10px] text-violet-500">
+              <Info className="mt-0.5 h-3 w-3 shrink-0" />
+              Используйте изображение как основу композиции. Загрузите фото ниже.
+            </p>
+          </div>
+        )}
 
         <p className="flex items-start gap-1 text-[11px] text-neutral-400 break-words">
           <Info className="mt-0.5 h-3 w-3 shrink-0" />
@@ -535,6 +588,7 @@ export function ImageStudioPage() {
           {resolvedMode === "variation" && "несколько вариантов"}
           {resolvedMode === "reference" && "по загруженному образцу"}
           {resolvedMode === "inpaint" && "замена по маске"}
+          {resolvedMode === "controlnet" && `🧬 ControlNet (${controlType})`}
           {smartMode && " · умный промпт включён"}
         </p>
 
@@ -592,10 +646,10 @@ export function ImageStudioPage() {
           </div>
         )}
 
-        {(enableReference || enableInpaint) && (
+        {(enableReference || enableInpaint || enableControlNet) && (
           <ImageUploadBox
-            label={enableInpaint ? "Исходное изображение" : "Образец"}
-            hint={enableInpaint ? undefined : "Генерация будет похожа на этот образец"}
+            label={enableControlNet ? "Исходное изображение (для ControlNet)" : enableInpaint ? "Исходное изображение" : "Образец"}
+            hint={enableControlNet ? "Форма/поза этого изображения будет перенесена в генерацию" : enableInpaint ? undefined : "Генерация будет похожа на этот образец"}
             image={referenceImage}
             uploading={refUploading}
             onSelect={handleSelectRef}
@@ -851,8 +905,9 @@ export function ImageStudioPage() {
             {activeJob.mode && activeJob.mode !== "text" && (
               <div className="flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-3 py-1">
                 <span className="text-xs font-medium text-violet-700">
-                  {activeJob.mode === "reference" && "🖼 По образцу"}
-                  {activeJob.mode === "inpaint"   && "✏️ Редактирование"}
+                  {activeJob.mode === "reference"   && "🖼 По образцу"}
+                  {activeJob.mode === "inpaint"    && "✏️ Редактирование"}
+                  {activeJob.mode === "controlnet" && "🧬 ControlNet"}
                 </span>
               </div>
             )}
@@ -1106,10 +1161,11 @@ function EnhancedBadge({
 // ── History card ──────────────────────────────────────────────────────────────
 
 const MODE_ICON: Record<string, string> = {
-  text:      "🧠",
-  variation: "🎯",
-  reference: "🖼",
-  inpaint:   "✏️",
+  text:       "🧠",
+  variation:  "🎯",
+  reference:  "🖼",
+  inpaint:    "✏️",
+  controlnet: "🧬",
 };
 
 function HistoryCard({

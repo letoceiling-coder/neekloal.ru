@@ -19,7 +19,7 @@ const REFS_DIR = process.env.IMAGE_REFS_DIR || "/var/www/site-al.ru/uploads/refs
 const REFS_PUBLIC = process.env.IMAGE_REFS_PUBLIC || "https://site-al.ru/uploads/refs";
 const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
 
-const VALID_MODES = ["text", "variation", "reference", "inpaint"];
+const VALID_MODES = ["text", "variation", "reference", "inpaint", "controlnet"];
 
 function userJobKey(userId) { return `image:active:${userId}`; }
 
@@ -85,6 +85,7 @@ module.exports = async function imageRoutes(fastify) {
       mode = "text", smartMode,
       variations = 4,
       referenceImageUrl, strength = 0.5, maskUrl,
+      controlType = "canny",
     } = request.body || {};
 
     if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
@@ -98,6 +99,10 @@ module.exports = async function imageRoutes(fastify) {
     if (resolvedMode === "inpaint" && (!referenceImageUrl || !maskUrl)) {
       return reply.code(400).send({ error: "referenceImageUrl and maskUrl required for inpaint mode" });
     }
+    if (resolvedMode === "controlnet" && !referenceImageUrl) {
+      return reply.code(400).send({ error: "referenceImageUrl required for controlnet mode" });
+    }
+    const resolvedControlType = ["canny", "pose"].includes(controlType) ? controlType : "canny";
 
     const w = Math.min(Math.max(Number(width) || 1024, MIN_DIM), MAX_WIDTH);
     const h = Math.min(Math.max(Number(height) || 1024, MIN_DIM), MAX_HEIGHT);
@@ -146,6 +151,7 @@ module.exports = async function imageRoutes(fastify) {
       referenceImageUrl: referenceImageUrl || null,
       strength: Math.min(Math.max(Number(strength) || 0.5, 0.1), 1.0),
       maskUrl: maskUrl || null,
+      controlType: resolvedControlType,
       style: style || null,
       aspectRatio: aspectRatio || null,
     }, { jobId });
@@ -376,6 +382,72 @@ module.exports = async function imageRoutes(fastify) {
       success: true,
       deleted: id,
       ...(!dbDeleted && !fileDeleted ? { warning: "Not found, may have been already deleted" } : {}),
+    });
+  });
+
+  // ── POST /image/controlnet ────────────────────────────────────────────────
+  // Convenience alias — identical to POST /image/generate with mode=controlnet
+  fastify.post("/image/controlnet", { preHandler: [authMiddleware] }, async (request, reply) => {
+    const body = request.body || {};
+    // Inject mode=controlnet and re-use the generate handler via internal redirect
+    request.body = { ...body, mode: "controlnet" };
+
+    // Re-run validation and queueing inline (same logic as /image/generate)
+    const {
+      prompt, width = 1024, height = 1024,
+      negativePrompt, style, aspectRatio,
+      smartMode, referenceImageUrl, strength = 0.8,
+      controlType = "canny",
+    } = request.body;
+
+    if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
+      return reply.code(400).send({ error: "prompt is required" });
+    }
+    if (!referenceImageUrl) {
+      return reply.code(400).send({ error: "referenceImageUrl is required for ControlNet" });
+    }
+    const resolvedControlType = ["canny", "pose"].includes(controlType) ? controlType : "canny";
+
+    const w = Math.min(Math.max(Number(width) || 512, 256), 1024);
+    const h = Math.min(Math.max(Number(height) || 512, 256), 1024);
+    const useSmartEnhance = smartMode !== false;
+
+    const redis = getCacheConnection();
+    let activeCount = 0;
+    try { activeCount = Number(await redis.get(`image:active:${request.userId}`)) || 0; } catch { /* allow */ }
+    if (activeCount >= USER_JOB_LIMIT) {
+      return reply.code(429).send({ error: "Идёт активная генерация. Подождите завершения." });
+    }
+
+    let finalPrompt = prompt.trim();
+    let finalNegative = negativePrompt || null;
+    let enhanceResult = null;
+    if (!finalNegative && useSmartEnhance) {
+      const userSettings = await prisma.userImageSettings.findUnique({ where: { userId: request.userId } }).catch(() => null);
+      const systemPrompt = userSettings?.useSystemPrompt ? (userSettings.imageSystemPrompt || null) : null;
+      enhanceResult = await enhancePrompt(finalPrompt, { style, aspectRatio, systemPrompt });
+      finalPrompt = enhanceResult.enhancedPrompt;
+      finalNegative = enhanceResult.negativePrompt;
+    }
+
+    const jobId = uuidv4();
+    const queue = getImageQueue();
+    await queue.add("generate", {
+      prompt: finalPrompt, negativePrompt: finalNegative || DEFAULT_NEGATIVE,
+      originalPrompt: prompt.trim(), width: w, height: h, jobId,
+      userId: request.userId, organizationId: request.organizationId,
+      mode: "controlnet", variations: 1,
+      referenceImageUrl, strength: Math.min(Math.max(Number(strength) || 0.8, 0.1), 1.0),
+      maskUrl: null, controlType: resolvedControlType,
+      style: style || null, aspectRatio: aspectRatio || null,
+    }, { jobId });
+
+    try { await redis.set(`image:active:${request.userId}`, activeCount + 1, "EX", 300); } catch { /* ignore */ }
+
+    return reply.code(202).send({
+      jobId, status: "queued", mode: "controlnet", controlType: resolvedControlType,
+      message: `ControlNet (${resolvedControlType}) запущен`,
+      enhanceApplied: enhanceResult ? { style: enhanceResult.appliedStyle, aspectRatio: enhanceResult.appliedAspectRatio, systemPrompt: enhanceResult.appliedSystemPrompt } : null,
     });
   });
 
