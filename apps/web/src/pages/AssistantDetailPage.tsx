@@ -357,6 +357,174 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
 
 // ─── Section: Agent ───────────────────────────────────────────────────────────
 
+// ─── AgentGuideModal ──────────────────────────────────────────────────────────
+
+const AGENT_GUIDE_EXAMPLE = `Ты — менеджер по продажам студии Neeklo.
+— Задавай один уточняющий вопрос за раз
+— При возражении «дорого» — объясни ценность, не снижай цену
+— Ведёт клиента к назначению созвона
+— Отвечай кратко, без воды, только по делу`;
+
+const AGENT_GUIDE_BLOCKS = [
+  {
+    title: "Роль",
+    hint: "Кто ты?",
+    example: "Ты — менеджер по продажам студии Neeklo.",
+  },
+  {
+    title: "Поведение",
+    hint: "Как действуешь?",
+    example: "Задавай один вопрос за раз. Веди к покупке.",
+  },
+  {
+    title: "Ограничения",
+    hint: "Чего НЕ делаешь?",
+    example: "Не снижай цену. Не придумывай факты.",
+  },
+];
+
+const AGENT_GUIDE_ERRORS = [
+  { bad: "\"ты AI-ассистент\"", why: "нет роли и цели" },
+  { bad: "Длинные абзацы", why: "AI теряет контекст" },
+  { bad: "Противоречивые правила", why: "непредсказуемое поведение" },
+  { bad: "\"отвечай по базе знаний\"", why: "это задача Knowledge, не Agent" },
+];
+
+function AgentGuideModal({
+  onInsert,
+  onClose,
+}: {
+  onInsert: (text: string) => void;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  function handleCopy() {
+    void navigator.clipboard.writeText(AGENT_GUIDE_EXAMPLE).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm">
+      <div className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-neutral-200 bg-white shadow-xl">
+        {/* Header */}
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-neutral-100 bg-white px-5 py-4">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-neutral-900 text-sm">🤖</span>
+            <h2 className="text-sm font-semibold text-neutral-900">Как настроить агента</h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        <div className="space-y-5 px-5 py-5">
+          {/* Block 1 — What is an agent */}
+          <section>
+            <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              <span>01</span><span className="h-px flex-1 bg-neutral-100" />Что такое агент
+            </h3>
+            <div className="rounded-xl bg-neutral-50 p-3.5 text-sm text-neutral-700 leading-relaxed space-y-1.5">
+              <p>Агент — это <strong>логика поведения</strong> ассистента в диалоге.</p>
+              <p>Он не хранит знания — он управляет <strong>тоном, тактикой и этапами</strong> разговора.</p>
+              <div className="mt-2.5 grid grid-cols-2 gap-2">
+                <div className="rounded-lg border border-green-100 bg-green-50 p-2.5">
+                  <p className="text-xs font-semibold text-green-700 mb-1">Агент отвечает за:</p>
+                  <ul className="space-y-0.5 text-xs text-green-800">
+                    <li>✔ задавать вопросы</li>
+                    <li>✔ обрабатывать возражения</li>
+                    <li>✔ вести к покупке</li>
+                  </ul>
+                </div>
+                <div className="rounded-lg border border-red-100 bg-red-50 p-2.5">
+                  <p className="text-xs font-semibold text-red-700 mb-1">Knowledge отвечает за:</p>
+                  <ul className="space-y-0.5 text-xs text-red-800">
+                    <li>✔ цены и факты</li>
+                    <li>✔ возражения с деталями</li>
+                    <li>✔ конкретные данные</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Block 2 — Structure */}
+          <section>
+            <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              <span>02</span><span className="h-px flex-1 bg-neutral-100" />Структура правил
+            </h3>
+            <div className="space-y-2">
+              {AGENT_GUIDE_BLOCKS.map((b) => (
+                <div key={b.title} className="flex items-start gap-3 rounded-lg border border-neutral-100 bg-neutral-50 px-3.5 py-3">
+                  <span className="mt-0.5 min-w-[64px] text-xs font-semibold text-neutral-700">{b.title}</span>
+                  <div>
+                    <p className="text-xs text-neutral-400 mb-0.5">{b.hint}</p>
+                    <p className="font-mono text-xs text-neutral-700">{b.example}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* Block 3 — Example */}
+          <section>
+            <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              <span>03</span><span className="h-px flex-1 bg-neutral-100" />Готовый пример
+            </h3>
+            <div className="rounded-xl border border-neutral-200 bg-neutral-50">
+              <pre className="overflow-x-auto whitespace-pre-wrap px-4 py-3.5 font-mono text-xs leading-relaxed text-neutral-800">
+                {AGENT_GUIDE_EXAMPLE}
+              </pre>
+              <div className="flex items-center gap-2 border-t border-neutral-100 px-4 py-2.5">
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-600 hover:border-neutral-400 transition-colors"
+                >
+                  {copied ? "✓ Скопировано" : "Скопировать"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { onInsert(AGENT_GUIDE_EXAMPLE); onClose(); }}
+                  className="flex items-center gap-1.5 rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 transition-colors"
+                >
+                  Вставить в правила →
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* Block 4 — Errors */}
+          <section>
+            <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              <span>04</span><span className="h-px flex-1 bg-neutral-100" />Частые ошибки
+            </h3>
+            <div className="space-y-1.5">
+              {AGENT_GUIDE_ERRORS.map((e) => (
+                <div key={e.bad} className="flex items-start gap-2.5 rounded-lg border border-red-50 bg-red-50 px-3 py-2">
+                  <span className="mt-0.5 text-xs font-semibold text-red-500">✗</span>
+                  <div>
+                    <span className="text-xs font-medium text-red-700">{e.bad}</span>
+                    <span className="ml-2 text-xs text-red-500">— {e.why}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const AGENT_TEMPLATES = [
   {
     label: "Продажи",
@@ -405,6 +573,7 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
   const [rules, setRules] = useState(linkedAgent?.rules ?? "");
   const [agentRules, setAgentRules] = useState("");
   const [saved, setSaved] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
 
   useEffect(() => {
     if (linkedAgent) setRules(linkedAgent.rules ?? "");
@@ -471,32 +640,67 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
           </div>
 
           {/* Rules editor */}
+          {showGuide && (
+            <AgentGuideModal
+              onInsert={(t) => setRules(t)}
+              onClose={() => setShowGuide(false)}
+            />
+          )}
           <form onSubmit={(e) => void handleSaveRules(e)} className="space-y-3">
             <div>
+              {/* Label row */}
+              <div className="mb-2 flex items-center justify-between">
+                <label htmlFor="agent-rules" className="text-xs font-medium text-neutral-600">
+                  Правила поведения
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowGuide(true)}
+                  className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-xs font-medium text-neutral-600 hover:border-neutral-400 hover:text-neutral-900 transition-colors"
+                >
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" className="text-neutral-400">
+                    <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.3"/>
+                    <path d="M7 6.5v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                    <circle cx="7" cy="4.5" r="0.75" fill="currentColor"/>
+                  </svg>
+                  Как настроить агента
+                </button>
+              </div>
+
+              {/* Template chips */}
               <div className="mb-2 flex flex-wrap items-center gap-2">
-                <span className="text-xs font-medium text-neutral-500">Шаблон:</span>
+                <span className="text-xs font-medium text-neutral-400">Шаблоны:</span>
                 {AGENT_TEMPLATES.map((t) => (
                   <button
                     key={t.label}
                     type="button"
                     onClick={() => setRules(t.rules)}
-                    className="flex items-center gap-1 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs text-neutral-600 hover:bg-white hover:border-neutral-300 transition-colors"
+                    className="flex items-center gap-1 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs text-neutral-600 hover:bg-white hover:border-neutral-400 transition-colors"
                   >
                     <span>{t.icon}</span> {t.label}
                   </button>
                 ))}
               </div>
-              <label htmlFor="agent-rules" className="block text-xs font-medium text-neutral-600 mb-1">
-                Правила поведения
-              </label>
+
+              {/* Textarea */}
               <textarea
                 id="agent-rules"
                 rows={8}
                 value={rules}
                 onChange={(e) => setRules(e.target.value)}
-                placeholder="Опишите инструкции для агента…"
-                className="w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-xs text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
+                placeholder={`Например:\n— задавай уточняющие вопросы\n— веди к покупке\n— отвечай кратко`}
+                className="w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2 font-mono text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
               />
+
+              {/* Tooltip */}
+              <p className="mt-1.5 flex items-center gap-1.5 text-xs text-neutral-400">
+                <svg width="11" height="11" viewBox="0 0 14 14" fill="none" className="shrink-0">
+                  <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.3"/>
+                  <path d="M7 6.5v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                  <circle cx="7" cy="4.5" r="0.75" fill="currentColor"/>
+                </svg>
+                Агент управляет поведением, а не знаниями — для фактов используйте базу знаний
+              </p>
             </div>
             <div className="flex items-center gap-3">
               <Button type="submit" loading={patchAgent.isPending}>
