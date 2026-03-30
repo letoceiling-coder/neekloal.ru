@@ -792,7 +792,7 @@ module.exports = async function chatRoutes(fastify) {
                 streamedTokens += Math.round(obj.response.length / 4);
                 if (streamedTokens >= STREAM_MAX_TOKENS) {
                   // Cap reached — stop, do not error
-                  send("done", { model, modelUsed: model, modelFallback, truncated: true, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage });
+                  send("done", { model, modelUsed: model, modelFallback, truncated: true, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage, intent: hybridMeta.intent });
                   streamEnded = true;
                   ollamaController.abort();
                   break outer;
@@ -844,7 +844,7 @@ module.exports = async function chatRoutes(fastify) {
         }).catch((e) => fastify.log.error(e, "persistChatTurn failed in stream"));
       }
 
-      if (!streamEnded) send("done", { model, modelUsed: model, modelFallback, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage });
+      if (!streamEnded) send("done", { model, modelUsed: model, modelFallback, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage, intent: hybridMeta.intent });
     } catch (err) {
       if (err && err.name === "AbortError") {
         // expected on client disconnect or timeout — already handled

@@ -129,17 +129,28 @@ function explainConfig(config, systemPrompt) {
   }));
 
   // ── Example dialog (first 3 funnel stages) ─────────────────────────────────
+  // Derive stage→intent mapping from stageIntents config or default heuristic
+  const stageIntentsMap =
+    config?.stageIntents && typeof config.stageIntents === "object"
+      ? config.stageIntents
+      : { objection: "objection", qualification: "qualification_site", offer: "pricing", close: "close" };
+
   const dialogStages = funnel.slice(0, Math.min(3, funnel.length));
   const exampleDialog = dialogStages.flatMap((stage) => [
     {
       role: "user",
       text: STAGE_EXAMPLE_USER[stage] ?? `Сообщение клиента на этапе "${stage}"`,
+      stage,
     },
     {
       role: "ai",
       text:       STAGE_EXAMPLE_AI[stage] ?? `AI отвечает на этапе "${stage}"`,
       stage,
       stageLabel: STAGE_LABELS[stage] ?? stage,
+      intent:     stageIntentsMap[stage] ?? null,
+      intentLabel: stageIntentsMap[stage]
+        ? (INTENT_LABELS[stageIntentsMap[stage]] ?? stageIntentsMap[stage])
+        : null,
     },
   ]);
 

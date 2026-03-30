@@ -488,23 +488,43 @@ function AutoAgentModal({
                 </div>
               </div>
 
-              {/* Block 4 — Пример диалога */}
+              {/* Block 4 — Симуляция диалога */}
               <div className="rounded-xl border border-neutral-100 bg-white p-5">
-                <SectionTitle>🔥 Пример диалога</SectionTitle>
-                <div className="space-y-3">
+                <SectionTitle>🧠 Как будет работать ассистент</SectionTitle>
+                <p className="mb-4 text-xs text-neutral-500 leading-relaxed">
+                  Симуляция показывает как AI проводит клиента через этапы воронки — какой интент определяет и из какого этапа отвечает.
+                </p>
+                <div className="space-y-4">
                   {ex.exampleDialog.map((msg, i) => (
-                    <div key={i} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
+                    <div key={i} className={cn("flex flex-col", msg.role === "user" ? "items-end" : "items-start")}>
+                      {/* Stage/intent meta — above AI messages */}
+                      {msg.role === "ai" && msg.stage && (
+                        <div className="mb-1.5 flex items-center gap-1.5">
+                          {/* Stage badge */}
+                          <span className="flex items-center gap-1 rounded-full bg-indigo-50 border border-indigo-100 px-2.5 py-0.5 text-xs font-medium text-indigo-700">
+                            {(STAGE_LABEL_MAP[msg.stage] ?? { icon: "📍" }).icon}{" "}
+                            {msg.stageLabel ?? msg.stage}
+                          </span>
+                          {/* Intent badge */}
+                          {msg.intent && (
+                            <span className="flex items-center gap-1 rounded-full bg-blue-50 border border-blue-100 px-2.5 py-0.5 text-xs text-blue-700">
+                              🎯 {msg.intentLabel ?? msg.intent}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {/* Stage label above user messages */}
+                      {msg.role === "user" && msg.stage && (
+                        <p className="mb-1 text-xs text-neutral-400">
+                          {(STAGE_LABEL_MAP[msg.stage] ?? { icon: "💬" }).icon} Клиент на этапе: {STAGE_LABEL_MAP[msg.stage]?.label ?? msg.stage}
+                        </p>
+                      )}
                       <div className={cn(
                         "max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
                         msg.role === "user"
                           ? "bg-neutral-900 text-white rounded-br-sm"
                           : "bg-neutral-100 text-neutral-800 rounded-bl-sm"
                       )}>
-                        {msg.role === "ai" && msg.stageLabel && (
-                          <p className="text-xs font-medium text-neutral-400 mb-1">
-                            Этап: {msg.stageLabel}
-                          </p>
-                        )}
                         {msg.text}
                       </div>
                     </div>
@@ -778,6 +798,7 @@ type AssistantConfig = {
   funnel?: string[];
   intents?: Record<string, string[]>;
   memory?: string[];
+  stageIntents?: Record<string, string>;
   validation?: { maxSentences?: number; questions?: number };
 };
 
@@ -809,6 +830,7 @@ function AssistantConfigView({ config }: { config: AssistantConfig }) {
   const funnel = Array.isArray(config.funnel) ? config.funnel : [];
   const intents = config.intents && typeof config.intents === "object" ? config.intents : {};
   const memory = Array.isArray(config.memory) ? config.memory : [];
+  const validation = config.validation ?? {};
 
   if (funnel.length === 0 && Object.keys(intents).length === 0 && memory.length === 0) return null;
 
@@ -859,7 +881,7 @@ function AssistantConfigView({ config }: { config: AssistantConfig }) {
 
       {/* Memory */}
       {memory.length > 0 && (
-        <div>
+        <div className="mb-4">
           <p className="mb-1.5 text-xs font-medium text-neutral-500">Что запоминает</p>
           <div className="flex flex-wrap gap-1.5">
             {memory.map((field) => {
@@ -873,6 +895,25 @@ function AssistantConfigView({ config }: { config: AssistantConfig }) {
                 </span>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* Validation */}
+      {(validation.maxSentences != null || validation.questions != null) && (
+        <div>
+          <p className="mb-1.5 text-xs font-medium text-neutral-500">Правила ответа</p>
+          <div className="flex flex-wrap gap-1.5">
+            {validation.maxSentences != null && (
+              <span className="rounded-full bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-700">
+                ✂️ макс. {validation.maxSentences} предл.
+              </span>
+            )}
+            {validation.questions != null && (
+              <span className="rounded-full bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-700">
+                ❓ {validation.questions} вопрос в ответе
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -2406,6 +2447,7 @@ type ChatMsg = {
   text: string;
   knowledgeSource?: string;
   fsmStage?: string;
+  intent?: string;
   modelUsed?: string;
   modelFallback?: boolean;
 };
@@ -2415,7 +2457,11 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Last AI message for debug panel
+  const lastAiMsg = [...messages].reverse().find((m) => m.role === "ai" && m.modelUsed);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -2464,6 +2510,7 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
               error?: string;
               knowledgeSource?: string;
               fsmStage?: string;
+              intent?: string;
               modelUsed?: string;
               modelFallback?: boolean;
             };
@@ -2481,7 +2528,7 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
                 )
               );
             }
-            // "done" event carries knowledgeSource + fsmStage + modelUsed
+            // "done" event carries knowledgeSource + fsmStage + modelUsed + intent
             if (payload.knowledgeSource != null || payload.modelUsed != null) {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -2490,6 +2537,7 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
                         ...m,
                         knowledgeSource: payload.knowledgeSource,
                         fsmStage: payload.fsmStage,
+                        intent: payload.intent,
                         modelUsed: payload.modelUsed,
                         modelFallback: payload.modelFallback,
                       }
@@ -2517,18 +2565,42 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
     }
   }
 
+  const SOURCE_ICON: Record<string, string> = { fsm: "⚡", intent: "🎯", rag: "🔍", db: "📚" };
+  const INTENT_BADGE: Record<string, { label: string; bg: string }> = {
+    pricing:            { label: "Цена",         bg: "bg-blue-50 text-blue-700" },
+    objection:          { label: "Возражение",   bg: "bg-orange-50 text-orange-700" },
+    qualification_site: { label: "Квалификация", bg: "bg-purple-50 text-purple-700" },
+    close:              { label: "Закрытие",      bg: "bg-green-50 text-green-700" },
+    greeting:           { label: "Привет",        bg: "bg-neutral-100 text-neutral-600" },
+    unknown:            { label: "—",             bg: "bg-neutral-100 text-neutral-500" },
+  };
+
   return (
     <Card>
       <CardHeader className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-neutral-800">Живой чат — тест</h3>
-        {messages.length > 0 && (
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => setMessages([])}
-            className="text-xs text-neutral-400 hover:text-neutral-600"
+            type="button"
+            onClick={() => setShowDebug((v) => !v)}
+            className={cn(
+              "flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
+              showDebug
+                ? "border-violet-200 bg-violet-50 text-violet-700"
+                : "border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50"
+            )}
           >
-            Очистить
+            🔍 Debug
           </button>
-        )}
+          {messages.length > 0 && (
+            <button
+              onClick={() => setMessages([])}
+              className="text-xs text-neutral-400 hover:text-neutral-600"
+            >
+              Очистить
+            </button>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="flex h-96 flex-col gap-2 overflow-y-auto rounded-lg border border-neutral-200 bg-neutral-50 p-3">
@@ -2561,10 +2633,11 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
                       ""
                     ))}
                 </div>
+                {/* Knowledge source badge */}
                 {srcConf && (
                   <span className={cn("mt-1 flex items-center gap-1 rounded-full px-2 py-0.5 text-xs", srcConf.bg)}>
                     <span>{srcConf.icon}</span>
-                    Ответ основан на: {srcConf.label}
+                    📚 источник: {srcConf.label}
                     {m.knowledgeSource === "fsm" && m.fsmStage && (
                       <span className="ml-1 opacity-70">
                         ({INTENT_LABEL[m.fsmStage]?.label ?? m.fsmStage})
@@ -2572,6 +2645,7 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
                     )}
                   </span>
                 )}
+                {/* Model badge */}
                 {m.role === "ai" && m.modelUsed && (
                   <span className={cn(
                     "mt-0.5 flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
@@ -2589,6 +2663,86 @@ function ChatSection({ assistant }: { assistant: Assistant }) {
           })}
           <div ref={bottomRef} />
         </div>
+
+        {/* ── Debug Panel ─────────────────────────────────────────────────────── */}
+        {showDebug && (
+          <div className="rounded-xl border border-violet-200 bg-violet-50/60 p-4">
+            <p className="mb-2.5 text-xs font-semibold uppercase tracking-widest text-violet-600">
+              🔍 Debug — последний ответ
+            </p>
+            {lastAiMsg ? (
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  {
+                    key: "intent",
+                    label: "Intent",
+                    value: lastAiMsg.intent ?? "—",
+                    badge: lastAiMsg.intent
+                      ? (INTENT_BADGE[lastAiMsg.intent] ?? { label: lastAiMsg.intent, bg: "bg-neutral-100 text-neutral-600" })
+                      : null,
+                  },
+                  {
+                    key: "stage",
+                    label: "Stage",
+                    value: lastAiMsg.fsmStage ?? "—",
+                    badge: lastAiMsg.fsmStage
+                      ? { label: lastAiMsg.fsmStage, bg: "bg-indigo-50 text-indigo-700" }
+                      : null,
+                  },
+                  {
+                    key: "modelUsed",
+                    label: "Model",
+                    value: lastAiMsg.modelUsed ?? "—",
+                    badge: lastAiMsg.modelFallback
+                      ? { label: `${lastAiMsg.modelUsed} (fallback)`, bg: "bg-amber-50 text-amber-700" }
+                      : { label: lastAiMsg.modelUsed ?? "—", bg: "bg-neutral-100 text-neutral-700" },
+                  },
+                  {
+                    key: "knowledgeSource",
+                    label: "Knowledge",
+                    value: lastAiMsg.knowledgeSource ?? "—",
+                    badge: lastAiMsg.knowledgeSource
+                      ? { label: `${SOURCE_ICON[lastAiMsg.knowledgeSource] ?? ""} ${lastAiMsg.knowledgeSource}`, bg: "bg-green-50 text-green-700" }
+                      : null,
+                  },
+                ].map(({ key, label, value, badge }) => (
+                  <div key={key} className="rounded-lg bg-white border border-violet-100 px-3 py-2.5">
+                    <p className="text-xs text-neutral-400 mb-1">{label}</p>
+                    {badge ? (
+                      <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-medium", badge.bg)}>
+                        {badge.label}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-neutral-500">{value}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-violet-400">
+                Отправьте сообщение — данные появятся здесь
+              </p>
+            )}
+            {/* Raw JSON */}
+            {lastAiMsg && (
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs text-violet-500 hover:text-violet-700">
+                  Raw JSON
+                </summary>
+                <pre className="mt-2 overflow-x-auto rounded-md bg-white border border-violet-100 p-3 text-xs text-neutral-700">
+                  {JSON.stringify({
+                    intent: lastAiMsg.intent,
+                    stage:  lastAiMsg.fsmStage,
+                    modelUsed: lastAiMsg.modelUsed,
+                    modelFallback: lastAiMsg.modelFallback,
+                    knowledgeSource: lastAiMsg.knowledgeSource,
+                  }, null, 2)}
+                </pre>
+              </details>
+            )}
+          </div>
+        )}
+
         <div className="flex gap-2">
           <Input
             id="chat-input"

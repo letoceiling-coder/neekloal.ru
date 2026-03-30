@@ -460,7 +460,10 @@ module.exports = async function knowledgeRoutes(fastify) {
       },
     });
     if (!row) return reply.code(404).send({ error: "Knowledge not found" });
-    return row;
+    return {
+      ...row,
+      embeddingReady: row.status === "ready" && row.chunkCount > 0,
+    };
   });
 
   // ─── PATCH /knowledge/:id ─────────────────────────────────────────────────

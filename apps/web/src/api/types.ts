@@ -91,6 +91,8 @@ export type AutoAgentExplanation = {
     text: string;
     stage?: string;
     stageLabel?: string;
+    intent?: string | null;
+    intentLabel?: string | null;
   }>;
   knowledgeSuggestions?: Array<{
     intent: string;
