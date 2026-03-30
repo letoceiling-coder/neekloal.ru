@@ -359,27 +359,21 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
 
 // ─── AgentGuideModal ──────────────────────────────────────────────────────────
 
-const AGENT_GUIDE_EXAMPLE = `Ты — менеджер по продажам студии Neeklo.
-— Задавай один уточняющий вопрос за раз
-— При возражении «дорого» — объясни ценность, не снижай цену
-— Ведёт клиента к назначению созвона
-— Отвечай кратко, без воды, только по делу`;
-
 const AGENT_GUIDE_BLOCKS = [
   {
     title: "Роль",
     hint: "Кто ты?",
-    example: "Ты — менеджер по продажам студии Neeklo.",
+    example: "Ты — [должность] в [сфере].",
   },
   {
     title: "Поведение",
     hint: "Как действуешь?",
-    example: "Задавай один вопрос за раз. Веди к покупке.",
+    example: "Задавай один вопрос за раз. Веди к цели.",
   },
   {
     title: "Ограничения",
     hint: "Чего НЕ делаешь?",
-    example: "Не снижай цену. Не придумывай факты.",
+    example: "Не придумывай факты. Не уходи от темы.",
   },
 ];
 
@@ -391,16 +385,27 @@ const AGENT_GUIDE_ERRORS = [
 ];
 
 function AgentGuideModal({
+  assistantId,
   onInsert,
   onClose,
 }: {
+  assistantId: string;
   onInsert: (text: string) => void;
   onClose: () => void;
 }) {
+  const autoGenerate = useAutoGenerateAgent();
+  const [guideInput, setGuideInput] = useState("");
+  const [generatedExample, setGeneratedExample] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  function handleCopy() {
-    void navigator.clipboard.writeText(AGENT_GUIDE_EXAMPLE).then(() => {
+  async function handleGenerate() {
+    const input = guideInput.trim() || "универсальный ассистент";
+    const result = await autoGenerate.mutateAsync({ input, assistantId });
+    setGeneratedExample(result.rules);
+  }
+
+  function handleCopy(text: string) {
+    void navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     });
@@ -439,17 +444,17 @@ function AgentGuideModal({
                 <div className="rounded-lg border border-green-100 bg-green-50 p-2.5">
                   <p className="text-xs font-semibold text-green-700 mb-1">Агент отвечает за:</p>
                   <ul className="space-y-0.5 text-xs text-green-800">
-                    <li>✔ задавать вопросы</li>
-                    <li>✔ обрабатывать возражения</li>
-                    <li>✔ вести к покупке</li>
+                    <li>✔ тон и стиль общения</li>
+                    <li>✔ логику диалога</li>
+                    <li>✔ цель разговора</li>
                   </ul>
                 </div>
                 <div className="rounded-lg border border-red-100 bg-red-50 p-2.5">
                   <p className="text-xs font-semibold text-red-700 mb-1">Knowledge отвечает за:</p>
                   <ul className="space-y-0.5 text-xs text-red-800">
-                    <li>✔ цены и факты</li>
-                    <li>✔ возражения с деталями</li>
-                    <li>✔ конкретные данные</li>
+                    <li>✔ факты и данные</li>
+                    <li>✔ конкретные ответы</li>
+                    <li>✔ базу знаний</li>
                   </ul>
                 </div>
               </div>
@@ -474,31 +479,68 @@ function AgentGuideModal({
             </div>
           </section>
 
-          {/* Block 3 — Example */}
+          {/* Block 3 — Dynamic example */}
           <section>
             <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
-              <span>03</span><span className="h-px flex-1 bg-neutral-100" />Готовый пример
+              <span>03</span><span className="h-px flex-1 bg-neutral-100" />Сгенерировать пример
             </h3>
-            <div className="rounded-xl border border-neutral-200 bg-neutral-50">
-              <pre className="overflow-x-auto whitespace-pre-wrap px-4 py-3.5 font-mono text-xs leading-relaxed text-neutral-800">
-                {AGENT_GUIDE_EXAMPLE}
-              </pre>
-              <div className="flex items-center gap-2 border-t border-neutral-100 px-4 py-2.5">
+            <div className="space-y-2.5">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={guideInput}
+                  onChange={(e) => setGuideInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") void handleGenerate(); }}
+                  placeholder="Опишите задачу агента (или оставьте пустым)"
+                  className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-900/15"
+                />
                 <button
                   type="button"
-                  onClick={handleCopy}
-                  className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-600 hover:border-neutral-400 transition-colors"
+                  disabled={autoGenerate.isPending}
+                  onClick={() => void handleGenerate()}
+                  className="flex shrink-0 items-center gap-1.5 rounded-lg bg-neutral-900 px-3 py-2 text-xs font-semibold text-white hover:bg-neutral-700 disabled:opacity-50 transition-colors"
                 >
-                  {copied ? "✓ Скопировано" : "Скопировать"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { onInsert(AGENT_GUIDE_EXAMPLE); onClose(); }}
-                  className="flex items-center gap-1.5 rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 transition-colors"
-                >
-                  Вставить в правила →
+                  {autoGenerate.isPending ? (
+                    <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeDashoffset="12"/>
+                    </svg>
+                  ) : "⚡"}
+                  {autoGenerate.isPending ? "Генерирую…" : "Создать"}
                 </button>
               </div>
+              {autoGenerate.isError && (
+                <p className="text-xs text-red-500">
+                  {autoGenerate.error instanceof Error ? autoGenerate.error.message : "Ошибка генерации"}
+                </p>
+              )}
+              {generatedExample && (
+                <div className="rounded-xl border border-neutral-200 bg-neutral-50">
+                  <pre className="overflow-x-auto whitespace-pre-wrap px-4 py-3.5 font-mono text-xs leading-relaxed text-neutral-800">
+                    {generatedExample}
+                  </pre>
+                  <div className="flex items-center gap-2 border-t border-neutral-100 px-4 py-2.5">
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(generatedExample)}
+                      className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-600 hover:border-neutral-400 transition-colors"
+                    >
+                      {copied ? "✓ Скопировано" : "Скопировать"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { onInsert(generatedExample); onClose(); }}
+                      className="flex items-center gap-1.5 rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 transition-colors"
+                    >
+                      Вставить в правила →
+                    </button>
+                  </div>
+                </div>
+              )}
+              {!generatedExample && !autoGenerate.isPending && (
+                <p className="text-xs text-neutral-400">
+                  Нажмите «Создать» — AI сгенерирует правила под вашу задачу
+                </p>
+              )}
             </div>
           </section>
 
@@ -530,31 +572,37 @@ const AGENT_TEMPLATES = [
     label: "Продажи",
     icon: "💼",
     desc: "Ведёт к покупке, отрабатывает возражения",
-    rules: `Ты — продающий менеджер. Помогай клиентам выбрать продукт.
-- Активно предлагай решения исходя из потребностей
-- Отвечай кратко и по делу, без воды
-- Завершай ответ призывом к действию
-- Используй дружелюбный, профессиональный тон`,
+    rules: `РОЛЬ: Продающий менеджер.
+ЦЕЛЬ: Помочь клиенту сделать выбор и дойти до покупки.
+ПРАВИЛА:
+— Задавай один уточняющий вопрос за раз
+— Предлагай конкретные решения под потребность клиента
+— Отвечай кратко, без воды
+— Завершай каждый ответ следующим шагом`,
   },
   {
     label: "Поддержка",
     icon: "🛟",
     desc: "Решает проблемы клиента шаг за шагом",
-    rules: `Ты — специалист техподдержки. Цель — решить проблему клиента.
-- Уточняй детали проблемы перед ответом
-- Давай пошаговые инструкции решения
-- Будь терпелив и доброжелателен
-- Если не можешь решить — сообщи, что передашь специалисту`,
+    rules: `РОЛЬ: Специалист технической поддержки.
+ЦЕЛЬ: Решить проблему клиента максимально быстро.
+ПРАВИЛА:
+— Уточни детали проблемы перед ответом
+— Давай пошаговые инструкции
+— Будь терпелив и конкретен
+— Если не можешь решить — сообщи об этом честно`,
   },
   {
     label: "FAQ",
     icon: "📖",
     desc: "Отвечает строго по базе знаний",
-    rules: `Ты — информационный помощник. Отвечай строго по базе знаний.
-- Отвечай точно и кратко только по известным данным
-- Если информации нет — честно сообщи об этом
-- Не придумывай факты и не додумывай
-- При вопросе вне базы: "Этот вопрос вне моей базы знаний"`,
+    rules: `РОЛЬ: Информационный ассистент.
+ЦЕЛЬ: Давать точные ответы строго по базе знаний.
+ПРАВИЛА:
+— Отвечай только по известным данным
+— Не придумывай факты
+— Если информации нет — скажи об этом
+— Не выходи за рамки своей области`,
   },
 ];
 
@@ -727,6 +775,7 @@ function AgentSection({ assistant, agents }: { assistant: Assistant; agents: Age
           {/* Rules editor */}
           {showGuide && (
             <AgentGuideModal
+              assistantId={assistant.id}
               onInsert={(t) => setRules(t)}
               onClose={() => setShowGuide(false)}
             />
