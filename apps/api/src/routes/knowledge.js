@@ -11,6 +11,52 @@ const FETCH_TIMEOUT_MS = 15_000;
 const MAX_URL_CHARS = 100_000;
 
 /**
+ * Maps stem keywords in a filename (without extension) to an intent label.
+ * Priority: exact match → substring match.
+ */
+const FILENAME_INTENT_MAP = [
+  { keywords: ["pricing", "price", "prices", "ценник", "стоимость", "цена"],    intent: "pricing" },
+  { keywords: ["objection", "objections", "возражени"],                         intent: "objection" },
+  { keywords: ["qualification", "qualify", "квалифика"],                        intent: "qualification_site" },
+  { keywords: ["close", "closing", "сделка"],                                   intent: "close" },
+];
+
+/**
+ * Resolve the intent for a knowledge item using a priority chain:
+ *   1. explicit  – value passed directly in body/form ("pricing", "objection", …)
+ *   2. filename  – stem of the uploaded filename  (pricing.txt → "pricing")
+ *   3. text      – detectIntent() on the content  (keyword scan)
+ *
+ * Returns null when intent cannot be determined (avoids storing "unknown").
+ *
+ * @param {string|null|undefined} explicit   Caller-supplied intent override.
+ * @param {string|null|undefined} filename   Original file / source name.
+ * @param {string}                text       Extracted content.
+ * @returns {string|null}
+ */
+function resolveIntent(explicit, filename, text) {
+  // 1. Explicit override wins unconditionally
+  const e = String(explicit ?? "").trim().toLowerCase();
+  if (e && e !== "unknown") return e;
+
+  // 2. Filename-based detection (stem without extension, lowercased)
+  const stem = String(filename ?? "")
+    .replace(/\.[^.]+$/, "")   // strip extension
+    .toLowerCase()
+    .replace(/[-_\s]+/g, " ")  // normalise separators
+    .trim();
+  if (stem) {
+    for (const { keywords, intent } of FILENAME_INTENT_MAP) {
+      if (keywords.some((k) => stem === k || stem.includes(k))) return intent;
+    }
+  }
+
+  // 3. Content-level detection
+  const detected = detectIntent(text).intent;
+  return detected === "unknown" ? null : detected;
+}
+
+/**
  * Strip HTML tags and decode common entities.
  * @param {string} html
  * @returns {string}
@@ -167,8 +213,8 @@ module.exports = async function knowledgeRoutes(fastify) {
     if (!assistant) return reply.code(404).send({ error: "Assistant not found" });
 
     const text = String(content).trim();
-    const detectedIntent = detectIntent(text).intent;
-    const intent = detectedIntent === "unknown" ? null : detectedIntent;
+    // Priority: body.intent → detectIntent(text)
+    const intent = resolveIntent(body.intent, null, text);
     const row = await prisma.knowledge.create({
       data: {
         organizationId: request.organizationId,
@@ -206,6 +252,7 @@ module.exports = async function knowledgeRoutes(fastify) {
   // ─── POST /knowledge/upload (one or many files: txt / pdf) ─────────────────
   fastify.post("/knowledge/upload", { preHandler: authMiddleware }, async (request, reply) => {
     let assistantId = null;
+    let explicitIntent = null; // optional "intent" form field
     /** @type {{ buffer: Buffer; filename: string; mimetype: string }[]} */
     const fileInfos = [];
 
@@ -213,6 +260,7 @@ module.exports = async function knowledgeRoutes(fastify) {
     for await (const part of parts) {
       if (part.type === "field") {
         if (part.fieldname === "assistantId") assistantId = String(part.value ?? "").trim();
+        if (part.fieldname === "intent") explicitIntent = String(part.value ?? "").trim() || null;
       } else if (isKnowledgeUploadFileField(part.fieldname)) {
         // Use toBuffer() — more reliable than manual chunk iteration in @fastify/multipart v9
         const buffer = await part.toBuffer();
@@ -268,8 +316,8 @@ module.exports = async function knowledgeRoutes(fastify) {
         continue;
       }
 
-      const detectedIntent = detectIntent(text).intent;
-      const intent = detectedIntent === "unknown" ? null : detectedIntent;
+      // Priority: explicit form field → filename stem → detectIntent(text)
+      const intent = resolveIntent(explicitIntent, sourceName, text);
       const row = await prisma.knowledge.create({
         data: {
           organizationId: request.organizationId,
@@ -349,8 +397,11 @@ module.exports = async function knowledgeRoutes(fastify) {
       return reply.code(422).send({ error: "Extracted text is too short (< 50 chars)" });
     }
 
-    const detectedIntent = detectIntent(text).intent;
-    const intent = detectedIntent === "unknown" ? null : detectedIntent;
+    // Use URL pathname as the "filename" hint (e.g. /pricing.html → pricing)
+    let urlPath = "";
+    try { urlPath = new URL(url).pathname; } catch (_) {}
+    // Priority: body.intent → URL path → detectIntent(text)
+    const intent = resolveIntent(body.intent, urlPath, text);
     const row = await prisma.knowledge.create({
       data: {
         organizationId: request.organizationId,
