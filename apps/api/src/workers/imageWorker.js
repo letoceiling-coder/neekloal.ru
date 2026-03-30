@@ -13,8 +13,11 @@ const COMFYUI_URL = process.env.COMFYUI_URL || "http://188.124.55.89:8188";
 const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
 const PUBLIC_BASE = process.env.IMAGE_PUBLIC_BASE || "https://site-al.ru/uploads/images";
 
-// Default SDXL workflow template
-function buildWorkflow(prompt, width = 1024, height = 1024) {
+const DEFAULT_NEGATIVE =
+  "blurry, low quality, bad anatomy, extra limbs, extra objects, distorted, watermark, text, ugly, deformed, out of focus, overexposed";
+
+// SDXL workflow template
+function buildWorkflow(prompt, width = 1024, height = 1024, negativePrompt) {
   return {
     "3": {
       class_type: "KSampler",
@@ -50,7 +53,7 @@ function buildWorkflow(prompt, width = 1024, height = 1024) {
       class_type: "CLIPTextEncode",
       inputs: {
         clip: ["4", 1],
-        text: "blurry, low quality, watermark, text, ugly, distorted",
+        text: negativePrompt || DEFAULT_NEGATIVE,
       },
     },
     "8": {
@@ -148,7 +151,7 @@ async function saveImage(filename, jobId) {
 const worker = new Worker(
   "image-generation",
   async (job) => {
-    const { prompt, width = 1024, height = 1024, jobId } = job.data;
+    const { prompt, negativePrompt, width = 1024, height = 1024, jobId } = job.data;
     job.log(`[imageWorker] starting job=${job.id} prompt="${prompt.slice(0, 60)}"`);
 
     // 1. Check ComfyUI health
@@ -157,7 +160,7 @@ const worker = new Worker(
     });
 
     // 2. Submit workflow
-    const workflow = buildWorkflow(prompt, width, height);
+    const workflow = buildWorkflow(prompt, width, height, negativePrompt);
     process.stdout.write(`[imageWorker] sending workflow to ComfyUI ${COMFYUI_URL}/prompt\n`);
     let queueData;
     try {

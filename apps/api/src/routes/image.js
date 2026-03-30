@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require("uuid");
 const authMiddleware = require("../middleware/auth");
 const { getImageQueue } = require("../queues/imageQueue");
 const { getCacheConnection } = require("../lib/redis");
+const { enhancePrompt, DEFAULT_NEGATIVE } = require("../services/promptEnhancer");
 
 const MAX_WIDTH = 2048;
 const MAX_HEIGHT = 2048;
@@ -21,9 +22,27 @@ function userJobKey(userId) {
 }
 
 module.exports = async function imageRoutes(fastify) {
+  // ── POST /image/enhance ───────────────────────────────────────────────────
+  fastify.post("/image/enhance", { preHandler: [authMiddleware] }, async (request, reply) => {
+    const { prompt, style } = request.body || {};
+
+    if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
+      return reply.code(400).send({ error: "prompt is required" });
+    }
+
+    const result = await enhancePrompt(prompt.trim(), { style: style || undefined });
+    return reply.send({
+      enhancedPrompt: result.enhancedPrompt,
+      negativePrompt: result.negativePrompt,
+      enhanced: result.enhanced,
+      originalPrompt: prompt.trim(),
+    });
+  });
+
   // ── POST /image/generate ──────────────────────────────────────────────────
   fastify.post("/image/generate", { preHandler: [authMiddleware] }, async (request, reply) => {
-    const { prompt, width = 1024, height = 1024 } = request.body || {};
+    // negativePrompt supplied = prompt already enhanced by client (skip auto-enhance)
+    const { prompt, width = 1024, height = 1024, negativePrompt, style } = request.body || {};
 
     if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
       return reply.code(400).send({ error: "prompt is required" });
@@ -44,13 +63,25 @@ module.exports = async function imageRoutes(fastify) {
       });
     }
 
+    // Auto-enhance only if client hasn't already provided an enhanced prompt+negative
+    let finalPrompt = prompt.trim();
+    let finalNegative = negativePrompt || null;
+
+    if (!finalNegative) {
+      const enhanced = await enhancePrompt(finalPrompt, { style: style || undefined });
+      finalPrompt = enhanced.enhancedPrompt;
+      finalNegative = enhanced.negativePrompt;
+    }
+
     const jobId = uuidv4();
     const queue = getImageQueue();
 
     await queue.add(
       "generate",
       {
-        prompt: prompt.trim(),
+        prompt: finalPrompt,
+        negativePrompt: finalNegative || DEFAULT_NEGATIVE,
+        originalPrompt: prompt.trim(),
         width: w,
         height: h,
         jobId,
@@ -95,6 +126,8 @@ module.exports = async function imageRoutes(fastify) {
       jobId: id,
       status: state,
       prompt: job.data.prompt,
+      originalPrompt: job.data.originalPrompt ?? job.data.prompt,
+      negativePrompt: job.data.negativePrompt ?? null,
       width: job.data.width,
       height: job.data.height,
       createdAt: new Date(job.timestamp).toISOString(),

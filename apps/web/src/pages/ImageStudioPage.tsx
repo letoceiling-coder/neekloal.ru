@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ImageIcon, Loader2, RefreshCw, Sparkles, X } from "lucide-react";
+import { ImageIcon, Loader2, RefreshCw, Sparkles, Wand2, X, ChevronDown } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
 
 const API = import.meta.env.VITE_API_URL ?? "/api";
@@ -8,6 +8,8 @@ interface ImageJob {
   jobId: string;
   status: "queued" | "waiting" | "active" | "completed" | "failed";
   prompt: string;
+  originalPrompt?: string;
+  negativePrompt?: string;
   width: number;
   height: number;
   url?: string;
@@ -26,11 +28,18 @@ const PRESET_SIZES = [
   { label: "4:3", w: 1024, h: 768 },
 ];
 
+const STYLE_PRESETS = [
+  { label: "Cinematic", value: "cinematic", suffix: "cinematic lighting, film grain, dramatic shadows" },
+  { label: "Pixar 3D", value: "pixar", suffix: "Pixar 3D animation style, vibrant colors, smooth shading" },
+  { label: "Realistic", value: "realistic", suffix: "photorealistic, hyperdetailed, DSLR photo" },
+  { label: "Anime", value: "anime", suffix: "anime art style, vibrant colors, cel shading" },
+];
+
 const PROMPT_EXAMPLES = [
-  "modern SaaS landing page, clean minimal UI, dark theme",
-  "product card for an iPhone 15, white background, studio light",
-  "abstract geometric wallpaper, neon colors, 4K",
-  "cozy coffee shop interior, warm light, photorealistic",
+  "кот в сапогах",
+  "modern SaaS dashboard, dark UI",
+  "cozy coffee shop, warm light",
+  "abstract neon geometric art",
 ];
 
 function StatusBadge({ status }: { status: ImageJob["status"] }) {
@@ -54,6 +63,11 @@ export function ImageStudioPage() {
   const headers = { Authorization: `Bearer ${accessToken ?? ""}`, "Content-Type": "application/json" };
 
   const [prompt, setPrompt] = useState("");
+  const [enhancedPrompt, setEnhancedPrompt] = useState("");
+  const [negativePrompt, setNegativePrompt] = useState("");
+  const [style, setStyle] = useState<string>("");
+  const [showNegative, setShowNegative] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
   const [size, setSize] = useState(PRESET_SIZES[0]);
   const [generating, setGenerating] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -64,12 +78,8 @@ export function ImageStudioPage() {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Load history on mount
-  useEffect(() => {
-    loadHistory();
-  }, []);
+  useEffect(() => { loadHistory(); }, []);
 
-  // Poll active job
   useEffect(() => {
     if (!activeJobId) return;
     if (pollRef.current) clearInterval(pollRef.current);
@@ -105,17 +115,57 @@ export function ImageStudioPage() {
     } catch { /* ignore */ }
   }
 
+  async function handleEnhance() {
+    if (!prompt.trim() || enhancing) return;
+    setEnhancing(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/image/enhance`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ prompt: prompt.trim(), style: style || undefined }),
+      });
+      const data = await res.json() as { enhancedPrompt?: string; negativePrompt?: string; error?: string };
+      if (!res.ok) {
+        setError(data.error ?? "Ошибка улучшения промпта");
+        return;
+      }
+      if (data.enhancedPrompt) setEnhancedPrompt(data.enhancedPrompt);
+      if (data.negativePrompt) {
+        setNegativePrompt(data.negativePrompt);
+        setShowNegative(true);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка сети");
+    } finally {
+      setEnhancing(false);
+    }
+  }
+
   async function handleGenerate() {
-    if (!prompt.trim() || generating) return;
+    const finalPrompt = enhancedPrompt.trim() || prompt.trim();
+    if (!finalPrompt || generating) return;
     setError(null);
     setGenerating(true);
     setActiveJob(null);
 
     try {
+      const body: Record<string, unknown> = {
+        prompt: finalPrompt,
+        width: size.w,
+        height: size.h,
+      };
+      // If we already have enhanced prompt + negative, skip auto-enhance on backend
+      if (enhancedPrompt.trim() && negativePrompt.trim()) {
+        body.negativePrompt = negativePrompt.trim();
+      } else if (style) {
+        body.style = style;
+      }
+
       const res = await fetch(`${API}/image/generate`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ prompt: prompt.trim(), width: size.w, height: size.h }),
+        body: JSON.stringify(body),
       });
       const data = await res.json() as { jobId?: string; error?: string };
       if (!res.ok) {
@@ -124,48 +174,136 @@ export function ImageStudioPage() {
         return;
       }
       setActiveJobId(data.jobId!);
-      setActiveJob({ jobId: data.jobId!, status: "queued", prompt: prompt.trim(), width: size.w, height: size.h, createdAt: new Date().toISOString() });
+      setActiveJob({
+        jobId: data.jobId!,
+        status: "queued",
+        prompt: finalPrompt,
+        width: size.w,
+        height: size.h,
+        createdAt: new Date().toISOString(),
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка сети");
       setGenerating(false);
     }
   }
 
+  const canGenerate = !!(enhancedPrompt.trim() || prompt.trim()) && !generating;
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-0 md:flex-row">
       {/* ── Left panel — controls ── */}
-      <div className="flex w-full shrink-0 flex-col gap-5 overflow-y-auto border-b border-neutral-200 bg-white p-5 md:w-72 md:border-b-0 md:border-r">
+      <div className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-neutral-200 bg-white p-5 md:w-80 md:border-b-0 md:border-r">
         <div>
           <h1 className="flex items-center gap-2 text-lg font-semibold text-neutral-900">
             <ImageIcon className="h-5 w-5 text-violet-500" />
             Image Studio
           </h1>
-          <p className="mt-0.5 text-xs text-neutral-500">Генерация изображений через SDXL</p>
+          <p className="mt-0.5 text-xs text-neutral-500">AI генерация через SDXL + умный промпт</p>
         </div>
 
-        {/* Prompt */}
+        {/* Raw prompt */}
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-medium text-neutral-700">Описание</label>
           <textarea
-            className="min-h-[120px] w-full resize-none rounded-xl border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-900 placeholder-neutral-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-100"
-            placeholder="Опишите изображение…"
+            className="min-h-[80px] w-full resize-none rounded-xl border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-900 placeholder-neutral-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-100"
+            placeholder="Например: кот в сапогах"
             value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            onChange={(e) => { setPrompt(e.target.value); setEnhancedPrompt(""); setNegativePrompt(""); }}
           />
-          {/* Quick examples */}
           <div className="flex flex-wrap gap-1 pt-0.5">
             {PROMPT_EXAMPLES.map((ex) => (
               <button
                 key={ex}
                 type="button"
-                onClick={() => setPrompt(ex)}
+                onClick={() => { setPrompt(ex); setEnhancedPrompt(""); setNegativePrompt(""); }}
                 className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 text-[11px] text-neutral-500 transition hover:border-violet-300 hover:text-violet-600"
               >
-                {ex.slice(0, 28)}…
+                {ex}
               </button>
             ))}
           </div>
         </div>
+
+        {/* Style preset */}
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-medium text-neutral-700">Стиль</label>
+          <div className="grid grid-cols-2 gap-1.5">
+            {STYLE_PRESETS.map((s) => (
+              <button
+                key={s.value}
+                type="button"
+                onClick={() => setStyle(style === s.value ? "" : s.value)}
+                className={cn(
+                  "rounded-lg border px-2 py-1.5 text-xs font-medium transition text-left",
+                  style === s.value
+                    ? "border-violet-400 bg-violet-50 text-violet-700"
+                    : "border-neutral-200 bg-neutral-50 text-neutral-600 hover:border-neutral-300"
+                )}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Enhance button */}
+        <button
+          type="button"
+          disabled={!prompt.trim() || enhancing}
+          onClick={handleEnhance}
+          className={cn(
+            "flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition",
+            !prompt.trim() || enhancing
+              ? "cursor-not-allowed border-neutral-200 bg-neutral-100 text-neutral-400"
+              : "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100 active:scale-[0.98]"
+          )}
+        >
+          {enhancing ? (
+            <><Loader2 className="h-4 w-4 animate-spin" /> Улучшаем…</>
+          ) : (
+            <><Wand2 className="h-4 w-4" /> ✨ Улучшить промпт</>
+          )}
+        </button>
+
+        {/* Enhanced prompt (editable) */}
+        {enhancedPrompt && (
+          <div className="flex flex-col gap-1.5 rounded-xl border border-amber-200 bg-amber-50/60 p-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-amber-700">Улучшенный промпт</label>
+              <button
+                type="button"
+                onClick={() => { setEnhancedPrompt(""); setNegativePrompt(""); setShowNegative(false); }}
+                className="text-neutral-400 hover:text-neutral-600"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <textarea
+              className="min-h-[80px] w-full resize-none rounded-lg border border-amber-200 bg-white p-2 text-xs text-neutral-800 outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-200"
+              value={enhancedPrompt}
+              onChange={(e) => setEnhancedPrompt(e.target.value)}
+            />
+
+            {/* Negative prompt toggle */}
+            <button
+              type="button"
+              onClick={() => setShowNegative((v) => !v)}
+              className="flex items-center gap-1 text-[11px] text-neutral-500 hover:text-neutral-700 mt-0.5"
+            >
+              <ChevronDown className={cn("h-3 w-3 transition-transform", showNegative && "rotate-180")} />
+              Negative prompt
+            </button>
+            {showNegative && (
+              <textarea
+                className="min-h-[50px] w-full resize-none rounded-lg border border-red-200 bg-white p-2 text-[11px] text-neutral-700 outline-none focus:border-red-300 focus:ring-1 focus:ring-red-100"
+                placeholder="Что исключить из изображения…"
+                value={negativePrompt}
+                onChange={(e) => setNegativePrompt(e.target.value)}
+              />
+            )}
+          </div>
+        )}
 
         {/* Size presets */}
         <div className="flex flex-col gap-1.5">
@@ -200,11 +338,11 @@ export function ImageStudioPage() {
         {/* Generate button */}
         <button
           type="button"
-          disabled={!prompt.trim() || generating}
+          disabled={!canGenerate}
           onClick={handleGenerate}
           className={cn(
             "flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition",
-            !prompt.trim() || generating
+            !canGenerate
               ? "cursor-not-allowed bg-neutral-100 text-neutral-400"
               : "bg-violet-600 text-white shadow-sm hover:bg-violet-700 active:scale-[0.98]"
           )}
@@ -229,8 +367,8 @@ export function ImageStudioPage() {
               <p className="text-sm font-medium text-neutral-700">
                 {activeJob?.status === "active" ? "Рисуем…" : "В очереди…"}
               </p>
-              <p className="mt-0.5 text-xs text-neutral-400 max-w-xs">
-                {activeJob?.prompt?.slice(0, 80)}
+              <p className="mt-0.5 text-xs text-neutral-400 max-w-sm">
+                {activeJob?.prompt?.slice(0, 100)}
               </p>
             </div>
           </div>
@@ -243,7 +381,7 @@ export function ImageStudioPage() {
               onClick={() => setSelectedImage(activeJob.url!)}
             />
             <p className="max-w-md text-center text-xs text-neutral-500 italic">
-              "{activeJob.prompt}"
+              "{activeJob.originalPrompt ?? activeJob.prompt}"
             </p>
             <a
               href={activeJob.url}
@@ -264,8 +402,12 @@ export function ImageStudioPage() {
           <div className="flex flex-col items-center gap-3 text-center">
             <div className="rounded-2xl border-2 border-dashed border-neutral-200 bg-white p-12">
               <ImageIcon className="mx-auto h-12 w-12 text-neutral-300" />
+              <p className="mt-3 text-sm font-medium text-neutral-400">Image Studio</p>
             </div>
-            <p className="text-sm text-neutral-400">Введите описание и нажмите «Сгенерировать»</p>
+            <div className="flex flex-col gap-1 text-center">
+              <p className="text-sm text-neutral-400">Введите описание → нажмите <span className="font-medium text-amber-600">✨ Улучшить</span></p>
+              <p className="text-xs text-neutral-300">или сразу нажмите <span className="font-medium text-violet-500">Сгенерировать</span></p>
+            </div>
           </div>
         )}
       </div>
@@ -318,7 +460,9 @@ export function ImageStudioPage() {
                   </div>
                 )}
                 <StatusBadge status={job.status} />
-                <p className="line-clamp-2 text-[11px] text-neutral-500 leading-snug">{job.prompt}</p>
+                <p className="line-clamp-2 text-[11px] text-neutral-500 leading-snug">
+                  {job.originalPrompt ?? job.prompt}
+                </p>
               </div>
             ))}
           </div>
