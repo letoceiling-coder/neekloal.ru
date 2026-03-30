@@ -50,8 +50,8 @@ function StatusBadge({ status }: { status: ImageJob["status"] }) {
 }
 
 export function ImageStudioPage() {
-  const token = useAuthStore((s) => s.token);
-  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const headers = { Authorization: `Bearer ${accessToken ?? ""}`, "Content-Type": "application/json" };
 
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState(PRESET_SIZES[0]);
