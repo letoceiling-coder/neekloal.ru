@@ -764,7 +764,7 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
         </form>
 
         {/* Config view — shown when assistant has a saved config */}
-        {assistant.config && (
+        {Boolean(assistant.config) && (
           <AssistantConfigView config={assistant.config as AssistantConfig} />
         )}
       </CardContent>

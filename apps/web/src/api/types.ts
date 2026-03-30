@@ -11,6 +11,7 @@ export type Assistant = {
   name: string;
   model: string;
   systemPrompt: string;
+  config?: unknown;
   userId?: string;
   createdAt?: string;
 };
