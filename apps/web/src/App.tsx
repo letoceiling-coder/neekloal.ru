@@ -17,6 +17,7 @@ import { ForgotPasswordPage } from "./pages/auth/ForgotPasswordPage";
 import { LoginPage } from "./pages/auth/LoginPage";
 import { RegisterPage } from "./pages/auth/RegisterPage";
 import { ResetPasswordPage } from "./pages/auth/ResetPasswordPage";
+import { ImageStudioPage } from "./pages/ImageStudioPage";
 import { AdminLeadsPage } from "./pages/admin/AdminLeadsPage";
 import { AdminOrganizationsPage } from "./pages/admin/AdminOrganizationsPage";
 import { AdminPlansPage } from "./pages/admin/AdminPlansPage";
@@ -54,6 +55,7 @@ export default function App() {
           <Route path="api-keys" element={<ApiKeysPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          <Route path="image-studio" element={<ImageStudioPage />} />
         </Route>
       </Route>
 

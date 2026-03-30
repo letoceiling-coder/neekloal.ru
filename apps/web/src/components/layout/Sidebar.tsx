@@ -4,6 +4,7 @@ import {
   BookOpen,
   Bot,
   Cpu,
+  Image,
   Key,
   LayoutDashboard,
   MessageSquare,
@@ -24,6 +25,7 @@ export const sidebarNav: {
   { to: "/conversations", label: "Диалоги", Icon: MessageSquare },
   { to: "/knowledge", label: "База знаний", Icon: BookOpen },
   { to: "/api-keys", label: "API ключи", Icon: Key },
+  { to: "/image-studio", label: "Image Studio", Icon: Image },
   { to: "/analytics", label: "Аналитика", Icon: BarChart3 },
   { to: "/settings", label: "Настройки", Icon: Settings },
 ];
