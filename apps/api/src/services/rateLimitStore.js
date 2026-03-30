@@ -37,12 +37,9 @@ async function incrementAndCheck(rateKey, limit, windowMs) {
     const resetAt = Date.now() + remaining * 1000;
     const exceeded = count > limit;
 
-    console.log("[rateLimit:redis]", {
-      key: redisKey.slice(0, 20) + "…",
-      count,
-      limit,
-      exceeded,
-    });
+    if (exceeded) {
+      console.warn("[rateLimit:redis] exceeded", { key: redisKey.slice(0, 20) + "…", count, limit });
+    }
 
     return { count, resetAt, exceeded };
   } catch (err) {

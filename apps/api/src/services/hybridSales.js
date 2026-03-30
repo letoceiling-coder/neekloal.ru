@@ -99,8 +99,6 @@ async function applyHybridSalesPipeline(p) {
 
   const defaultStage = (assistantConfig.funnel?.[0]) ?? "greeting";
 
-  console.log("[hybridSales] FUNNEL:", (assistantConfig.funnel ?? [...VALID_STAGES]).join(" → "));
-
   if (cid) {
     const conv = await prisma.conversation.findFirst({
       where: {
@@ -122,30 +120,23 @@ async function applyHybridSalesPipeline(p) {
   }
 
   const nextStage = getNextStage(stage, intent, assistantConfig);
-  console.log("[hybridSales] STAGE:", stage, "→", nextStage);
-
-  if (convId && nextStage !== persistedStage) {
-    await prisma.conversation.update({
-      where: { id: convId },
-      data: { salesStage: nextStage },
-    });
-  }
 
   stage = nextStage;
 
   // ─── Memory updates (conversation.context) ───────────────────────────────
   const newMemory = extractMemory(p.message, intent, assistantConfig);
-  if (Object.keys(newMemory).length > 0) {
-    console.log("[hybridSales] MEMORY:", JSON.stringify(newMemory));
-  }
-
   const memoryContext = { ...(persistedContext || {}), ...newMemory };
 
-  if (convId && Object.keys(newMemory).length > 0) {
-    await prisma.conversation.update({
-      where: { id: convId },
-      data: { context: memoryContext },
-    });
+  // Single Prisma update merging both stage and context changes
+  if (convId) {
+    const stageChanged = nextStage !== persistedStage;
+    const memoryChanged = Object.keys(newMemory).length > 0;
+    if (stageChanged || memoryChanged) {
+      const data = {};
+      if (stageChanged) data.salesStage = nextStage;
+      if (memoryChanged) data.context = memoryContext;
+      await prisma.conversation.update({ where: { id: convId }, data });
+    }
   }
 
   let knowledgeSource = "rag";

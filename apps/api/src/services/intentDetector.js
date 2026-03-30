@@ -49,7 +49,7 @@ function detectIntent(message, config) {
         return { intent };
       }
     }
-    return { intent: "unknown" };
+    // No match in custom intents — fall through to built-in defaults as secondary check
   }
 
   // ── Built-in path (backward-compatible, runs when no config.intents) ──────

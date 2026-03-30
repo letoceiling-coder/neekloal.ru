@@ -403,6 +403,7 @@ async function prepareChatContext(request, reply, fastify) {
     chatAssistant,
     isWidget,
     model,
+    modelFallback,
     estimatedInputTokens,
     knowledgeBlock,
     agentForChat,
@@ -428,6 +429,7 @@ module.exports = async function chatRoutes(fastify) {
       chatAssistant,
       isWidget,
       model,
+      modelFallback,
       estimatedInputTokens,
       knowledgeBlock,
       agentForChat,
@@ -521,7 +523,7 @@ module.exports = async function chatRoutes(fastify) {
           assistantText: replyText,
         });
         return withWidgetSync(
-          { reply: replyText, model: modelOut, modelUsed: modelOut, modelFallback, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage },
+          { reply: replyText, model: modelOut, modelUsed: modelOut ?? null, modelFallback: Boolean(modelFallback), knowledgeSource: hybridMeta?.knowledgeSource ?? "none", fsmStage: hybridMeta?.stage ?? "unknown", intent: hybridMeta?.intent ?? "unknown" },
           isWidget,
           persistedAgent
         );
@@ -611,7 +613,7 @@ module.exports = async function chatRoutes(fastify) {
         assistantText: replyText,
       });
       return withWidgetSync(
-        { reply: replyText, model, modelUsed: model, modelFallback, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage },
+        { reply: replyText, model, modelUsed: model ?? null, modelFallback: Boolean(modelFallback), knowledgeSource: hybridMeta?.knowledgeSource ?? "none", fsmStage: hybridMeta?.stage ?? "unknown", intent: hybridMeta?.intent ?? "unknown" },
           isWidget,
           persistedOllama
         );
@@ -638,6 +640,7 @@ module.exports = async function chatRoutes(fastify) {
       chatAssistant,
       isWidget,
       model,
+      modelFallback,
       estimatedInputTokens,
       knowledgeBlock,
       agentForChat,
@@ -792,7 +795,7 @@ module.exports = async function chatRoutes(fastify) {
                 streamedTokens += Math.round(obj.response.length / 4);
                 if (streamedTokens >= STREAM_MAX_TOKENS) {
                   // Cap reached — stop, do not error
-                  send("done", { model, modelUsed: model, modelFallback, truncated: true, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage, intent: hybridMeta.intent });
+                  send("done", { model, modelUsed: model ?? null, modelFallback: Boolean(modelFallback), truncated: true, knowledgeSource: hybridMeta?.knowledgeSource ?? "none", fsmStage: hybridMeta?.stage ?? "unknown", intent: hybridMeta?.intent ?? "unknown" });
                   streamEnded = true;
                   ollamaController.abort();
                   break outer;
@@ -844,7 +847,7 @@ module.exports = async function chatRoutes(fastify) {
         }).catch((e) => fastify.log.error(e, "persistChatTurn failed in stream"));
       }
 
-      if (!streamEnded) send("done", { model, modelUsed: model, modelFallback, knowledgeSource: hybridMeta.knowledgeSource, fsmStage: hybridMeta.stage, intent: hybridMeta.intent });
+      if (!streamEnded) send("done", { model, modelUsed: model ?? null, modelFallback: Boolean(modelFallback), knowledgeSource: hybridMeta?.knowledgeSource ?? "none", fsmStage: hybridMeta?.stage ?? "unknown", intent: hybridMeta?.intent ?? "unknown" });
     } catch (err) {
       if (err && err.name === "AbortError") {
         // expected on client disconnect or timeout — already handled
