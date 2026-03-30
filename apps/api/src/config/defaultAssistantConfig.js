@@ -14,7 +14,7 @@ module.exports = {
   },
 
   /** Fields to extract and persist in conversation.context */
-  memory: ["budget", "projectType"],
+  memory: ["budget", "projectType", "timeline"],
 
   /** Ordered FSM stages */
   funnel: ["greeting", "qualification", "offer", "objection", "close"],

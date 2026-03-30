@@ -4,6 +4,7 @@ const prisma = require("../lib/prisma");
 const { detectIntent } = require("./intentDetector");
 const { routeKnowledgeByIntent } = require("./knowledgeRouter");
 const { getAssistantConfig } = require("./configLoader");
+const { extractMemory } = require("./memoryExtractor");
 
 const VALID_STAGES = new Set(["greeting", "qualification", "offer", "objection", "close"]);
 
@@ -94,29 +95,14 @@ async function applyHybridSalesPipeline(p) {
   stage = nextStage;
 
   // ─── Memory updates (conversation.context) ───────────────────────────────
-  const t = String(p.message ?? "").toLowerCase();
-
-  let budget = null;
-  if (t.includes("бюджет")) {
-    const m = t.match(/бюджет[^0-9]{0,30}([0-9][0-9\s]{2,})(?:\s*(?:руб|р\.|₽))?/i);
-    if (m && m[1]) {
-      const n = parseInt(String(m[1]).replace(/\s+/g, ""), 10);
-      if (!Number.isNaN(n)) budget = n;
-    }
+  const newMemory = extractMemory(p.message, intent, assistantConfig);
+  if (Object.keys(newMemory).length > 0) {
+    console.log("[hybridSales] MEMORY:", JSON.stringify(newMemory));
   }
 
-  let projectType = null;
-  if (intent === "qualification_site" || t.includes("сайт") || t.includes("лендинг") || t.includes("интернет-магазин")) {
-    if (t.includes("интернет-магазин") || t.includes("интернет магазин")) projectType = "ecommerce";
-    else if (t.includes("лендинг")) projectType = "landing";
-    else if (t.includes("сайт") || t.includes("проект") || t.includes("разработк")) projectType = "website";
-  }
+  const memoryContext = { ...(persistedContext || {}), ...newMemory };
 
-  const memoryContext = { ...(persistedContext || {}) };
-  if (budget != null) memoryContext.budget = budget;
-  if (projectType) memoryContext.projectType = projectType;
-
-  if (convId && (budget != null || projectType)) {
+  if (convId && Object.keys(newMemory).length > 0) {
     await prisma.conversation.update({
       where: { id: convId },
       data: { context: memoryContext },
