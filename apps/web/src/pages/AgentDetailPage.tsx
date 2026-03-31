@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { mapChatToSteps } from "../api/mapChatToSteps";
-import { useAgents, useRunAgentChat } from "../api/agents";
+import { useAgents, useRunAgentChat, usePatchAgent } from "../api/agents";
 import type { AgentExecutionStep } from "../api/types";
 import { useAssistants } from "../api/assistants";
 import { AgentExecutionView } from "../components/agents/AgentExecutionView";
@@ -34,9 +34,15 @@ export function AgentDetailPage() {
     return assistants.find((x) => x.id === agent.assistantId)?.model ?? null;
   }, [agent, assistants]);
 
-  const [input, setInput] = useState("");
-  const [steps, setSteps] = useState<AgentExecutionStep[]>([]);
+  const patchAgent = usePatchAgent();
+  const [input,    setInput]    = useState("");
+  const [steps,    setSteps]    = useState<AgentExecutionStep[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
+
+  async function toggleAutoReply() {
+    if (!agent) return;
+    await patchAgent.mutateAsync({ id: agent.id, autoReply: !(agent.autoReply ?? true) });
+  }
 
   const agentHasTools = Boolean(agent?.tools && agent.tools.length > 0);
 
@@ -135,8 +141,8 @@ export function AgentDetailPage() {
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-neutral-700">
           <p>
-            <span className="text-neutral-500">Модель (ассистент):</span>{" "}
-            {assistantModel ?? "—"}
+            <span className="text-neutral-500">Модель:</span>{" "}
+            <code className="font-mono text-xs">{agent.model ?? assistantModel ?? "—"}</code>
           </p>
           <p>
             <span className="text-neutral-500">Assistant ID:</span>{" "}
@@ -146,6 +152,49 @@ export function AgentDetailPage() {
               "не привязан"
             )}
           </p>
+
+          {/* Avito autoReply toggle */}
+          <div className="flex items-center justify-between rounded-lg border border-neutral-100 bg-neutral-50 px-3 py-2.5">
+            <div>
+              <p className="text-xs font-medium text-neutral-700">
+                🤖 Avito AutoReply
+              </p>
+              <p className="text-[11px] text-neutral-400">
+                Отправлять ответ ИИ обратно в Avito Messenger
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void toggleAutoReply()}
+              disabled={patchAgent.isPending}
+              className={[
+                "relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:opacity-50",
+                (agent.autoReply ?? true)
+                  ? "bg-violet-600"
+                  : "bg-neutral-200",
+              ].join(" ")}
+              aria-checked={agent.autoReply ?? true}
+              role="switch"
+            >
+              <span
+                className={[
+                  "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200",
+                  (agent.autoReply ?? true) ? "translate-x-4" : "translate-x-0",
+                ].join(" ")}
+              />
+            </button>
+          </div>
+
+          {/* Webhook URL hint */}
+          <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2.5">
+            <p className="text-[11px] font-medium text-blue-700 mb-0.5">🔗 Avito Webhook URL</p>
+            <code className="block break-all text-[10px] text-blue-600">
+              https://site-al.ru/api/avito/webhook/{agent.id}
+            </code>
+            <p className="mt-1 text-[10px] text-blue-400">
+              Укажите этот URL в кабинете разработчика Avito
+            </p>
+          </div>
         </CardContent>
       </Card>
 

@@ -283,6 +283,44 @@ async function* streamAgentChat({ conversationId, message, organizationId, syste
   };
 }
 
+// ── Avito / external channel helpers ─────────────────────────────────────────
+
+/**
+ * Find-or-create an AgentConversation for an external channel (e.g. Avito).
+ * Uses (source + externalId + agentId) as the unique key.
+ *
+ * @param {string} agentId
+ * @param {string} organizationId
+ * @param {string} chatId          External chat identifier (Avito chat_id)
+ * @param {string} externalUserId  External sender ID  (Avito author_id)
+ * @param {string} [source="avito"]
+ * @returns {Promise<object>}      AgentConversation row
+ */
+async function findOrCreateExternalConversation(agentId, organizationId, chatId, externalUserId, source = "avito") {
+  const existing = await prisma.agentConversation.findFirst({
+    where: { agentId, source, externalId: chatId },
+  });
+  if (existing) return existing;
+
+  const conv = await prisma.agentConversation.create({
+    data: {
+      agentId,
+      // Use agentId as placeholder userId — external chats have no platform user
+      userId:         agentId,
+      organizationId,
+      source,
+      externalId:     chatId,
+      externalUserId,
+      title:          `${source.toUpperCase()}: ${chatId}`,
+      messages:       [],
+    },
+  });
+  process.stdout.write(
+    `[${source}:conv] created id=${conv.id} chatId=${chatId} agentId=${agentId}\n`
+  );
+  return conv;
+}
+
 module.exports = {
   createConversation,
   getConversation,
@@ -291,4 +329,5 @@ module.exports = {
   clearConversation,
   agentChatV2,
   streamAgentChat,
+  findOrCreateExternalConversation,
 };

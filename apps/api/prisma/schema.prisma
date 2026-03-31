@@ -212,6 +212,8 @@ model Agent {
   mode           String    @default("v1") @map("mode")
   /// Default LLM model for this agent's playground (overrides CHAT_MODEL env)
   model          String?
+  /// If true, the agent sends AI reply automatically (Avito and other channels)
+  autoReply      Boolean   @default(true) @map("auto_reply")
   trigger        String?
   flow           Json?
   memory         Json?
@@ -537,6 +539,12 @@ model AgentConversation {
   userId         String   @map("user_id") @db.Uuid
   organizationId String   @map("organization_id") @db.Uuid
   title          String?
+  /// Channel origin: "web" (playground/API) | "avito" | future channels
+  source         String   @default("web") @map("source")
+  /// External channel conversation ID (e.g. Avito chat_id); null for web sessions
+  externalId     String?  @map("external_id")
+  /// External channel user identifier (e.g. Avito author_id)
+  externalUserId String?  @map("external_user_id")
   /// JSON array of {role, content} messages (user + assistant turns, no system)
   messages       Json     @default("[]")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -545,6 +553,7 @@ model AgentConversation {
   @@index([agentId])
   @@index([userId])
   @@index([organizationId])
+  @@index([source, externalId, agentId])
   @@map("agent_conversations")
 }
 

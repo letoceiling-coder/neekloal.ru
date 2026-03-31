@@ -244,9 +244,10 @@ module.exports = async function agentsRoutes(fastify) {
     /** @type {import('@prisma/client').Prisma.AgentUpdateInput} */
     const data = {};
 
-    if (body.name  != null) data.name  = String(body.name).trim();
-    if (body.model !== undefined) data.model = body.model != null && String(body.model).trim() ? String(body.model).trim() : null;
-    if (body.rules !== undefined) data.rules = body.rules != null ? String(body.rules) : null;
+    if (body.name        != null)  data.name      = String(body.name).trim();
+    if (body.model       !== undefined) data.model = body.model != null && String(body.model).trim() ? String(body.model).trim() : null;
+    if (body.autoReply   !== undefined) data.autoReply = Boolean(body.autoReply);
+    if (body.rules       !== undefined) data.rules = body.rules != null ? String(body.rules) : null;
     if (body.assistantId !== undefined) {
       data.assistantId =
         body.assistantId != null && String(body.assistantId).trim() !== ""

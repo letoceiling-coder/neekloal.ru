@@ -51,6 +51,8 @@ export type Agent = {
   mode: string;
   /** Default LLM model for this agent's playground (independent of assistant) */
   model?: string | null;
+  /** If false, AI replies are saved to DB but NOT forwarded to Avito/channels */
+  autoReply?: boolean;
   assistantId: string | null;
   rules?: string | null;
   userId?: string;
@@ -128,6 +130,7 @@ export type UpdateAgentInput = {
   assistantId?: string | null;
   model?: string | null;
   mode?: string;
+  autoReply?: boolean;
 };
 
 /** Ожидаемый контракт GET /conversations (когда появится на бэкенде) */
