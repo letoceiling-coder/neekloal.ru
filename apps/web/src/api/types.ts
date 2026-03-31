@@ -53,6 +53,8 @@ export type Agent = {
   model?: string | null;
   /** If false, AI replies are saved to DB but NOT forwarded to Avito/channels */
   autoReply?: boolean;
+  /** Avito channel mode: "autoreply" | "copilot" | "human" | "off" */
+  avitoMode?: string;
   assistantId: string | null;
   rules?: string | null;
   userId?: string;
@@ -131,6 +133,7 @@ export type UpdateAgentInput = {
   model?: string | null;
   mode?: string;
   autoReply?: boolean;
+  avitoMode?: string;
 };
 
 /** Ожидаемый контракт GET /conversations (когда появится на бэкенде) */

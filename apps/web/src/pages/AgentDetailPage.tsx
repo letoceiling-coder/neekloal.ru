@@ -39,9 +39,9 @@ export function AgentDetailPage() {
   const [steps,    setSteps]    = useState<AgentExecutionStep[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
 
-  async function toggleAutoReply() {
+  async function setAvitoMode(mode: string) {
     if (!agent) return;
-    await patchAgent.mutateAsync({ id: agent.id, autoReply: !(agent.autoReply ?? true) });
+    await patchAgent.mutateAsync({ id: agent.id, avitoMode: mode });
   }
 
   const agentHasTools = Boolean(agent?.tools && agent.tools.length > 0);
@@ -153,36 +153,31 @@ export function AgentDetailPage() {
             )}
           </p>
 
-          {/* Avito autoReply toggle */}
-          <div className="flex items-center justify-between rounded-lg border border-neutral-100 bg-neutral-50 px-3 py-2.5">
+          {/* Avito mode selector */}
+          <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 space-y-2">
+            <p className="text-xs font-semibold text-blue-700">🤖 Avito Messenger</p>
             <div>
-              <p className="text-xs font-medium text-neutral-700">
-                🤖 Avito AutoReply
-              </p>
-              <p className="text-[11px] text-neutral-400">
-                Отправлять ответ ИИ обратно в Avito Messenger
-              </p>
+              <label className="block text-[11px] font-medium text-neutral-600 mb-1">
+                Режим обработки
+              </label>
+              <select
+                value={agent.avitoMode ?? "autoreply"}
+                onChange={(e) => void setAvitoMode(e.target.value)}
+                disabled={patchAgent.isPending}
+                className="w-full rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-700 focus:outline-none focus:border-violet-400 disabled:opacity-50"
+              >
+                <option value="autoreply">autoreply — ИИ отвечает сам</option>
+                <option value="copilot">copilot — ИИ готовит, человек отправляет</option>
+                <option value="human">human — только запись, без ИИ</option>
+                <option value="off">off — игнорировать сообщения</option>
+              </select>
             </div>
-            <button
-              type="button"
-              onClick={() => void toggleAutoReply()}
-              disabled={patchAgent.isPending}
-              className={[
-                "relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:opacity-50",
-                (agent.autoReply ?? true)
-                  ? "bg-violet-600"
-                  : "bg-neutral-200",
-              ].join(" ")}
-              aria-checked={agent.autoReply ?? true}
-              role="switch"
-            >
-              <span
-                className={[
-                  "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200",
-                  (agent.autoReply ?? true) ? "translate-x-4" : "translate-x-0",
-                ].join(" ")}
-              />
-            </button>
+            <div className="rounded-md border border-blue-200 bg-white px-2.5 py-1.5">
+              <p className="text-[10px] font-medium text-blue-700 mb-0.5">🔗 Webhook URL</p>
+              <code className="block break-all text-[10px] text-blue-600">
+                https://site-al.ru/api/avito/webhook/{agent.id}
+              </code>
+            </div>
           </div>
 
           {/* Webhook URL hint */}

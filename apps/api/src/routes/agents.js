@@ -245,8 +245,13 @@ module.exports = async function agentsRoutes(fastify) {
     const data = {};
 
     if (body.name        != null)  data.name      = String(body.name).trim();
-    if (body.model       !== undefined) data.model = body.model != null && String(body.model).trim() ? String(body.model).trim() : null;
+    if (body.model       !== undefined) data.model     = body.model     != null && String(body.model).trim() ? String(body.model).trim() : null;
     if (body.autoReply   !== undefined) data.autoReply = Boolean(body.autoReply);
+    if (body.avitoMode   !== undefined) {
+      const VALID = ["autoreply", "copilot", "human", "off"];
+      const m = body.avitoMode != null ? String(body.avitoMode).trim().toLowerCase() : null;
+      data.avitoMode = m && VALID.includes(m) ? m : "autoreply";
+    }
     if (body.rules       !== undefined) data.rules = body.rules != null ? String(body.rules) : null;
     if (body.assistantId !== undefined) {
       data.assistantId =

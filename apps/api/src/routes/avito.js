@@ -1,6 +1,10 @@
 "use strict";
 
 /**
+ * routes/avito.js — DEPRECATED (V1).
+ * Replaced by: src/modules/avito/avito.webhook.js (V2 with BullMQ + audit + CRM)
+ * This file is NO LONGER REGISTERED in app.js.
+ *
  * routes/avito.js — Avito Messenger webhook + management endpoints.
  *
  * Webhook URL pattern (set in Avito developer console):
