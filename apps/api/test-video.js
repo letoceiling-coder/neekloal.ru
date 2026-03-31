@@ -5,7 +5,8 @@
  * Run on server: node /tmp/test-video.js
  */
 
-require("dotenv").config();
+// dotenv loaded only if available (running from apps/api dir)
+try { require("dotenv").config(); } catch { /* standalone */ }
 
 const http   = require("http");
 const https  = require("https");

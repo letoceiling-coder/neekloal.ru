@@ -3,7 +3,6 @@
 require("dotenv").config();
 
 const { Worker } = require("bullmq");
-const axios      = require("axios");
 const fs         = require("fs");
 const path       = require("path");
 const { v4: uuidv4 } = require("uuid");
@@ -195,19 +194,28 @@ async function uploadToComfyUI(imageBuffer, filename) {
 }
 
 async function downloadBuffer(url) {
-  const res = await axios.get(url, { responseType: "arraybuffer", timeout: 20_000 });
-  return Buffer.from(res.data);
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`Download failed (${res.status}): ${url}`);
+  return Buffer.from(await res.arrayBuffer());
 }
 
 async function submitWorkflow(workflow) {
-  let queueData;
+  let res;
   try {
-    const res = await axios.post(`${COMFYUI_VIDEO_URL}/prompt`, { prompt: workflow }, { timeout: 15_000 });
-    queueData = res.data;
+    res = await fetch(`${COMFYUI_VIDEO_URL}/prompt`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ prompt: workflow }),
+      signal:  AbortSignal.timeout(15_000),
+    });
   } catch (e) {
-    const detail = e.response?.data ? JSON.stringify(e.response.data).slice(0, 300) : e.message;
-    throw new Error(`ComfyUI /prompt rejected: ${detail}`);
+    throw new Error(`ComfyUI /prompt unreachable: ${e.message}`);
   }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`ComfyUI /prompt rejected (${res.status}): ${text.slice(0, 300)}`);
+  }
+  const queueData = await res.json();
   const promptId = queueData.prompt_id;
   if (!promptId) throw new Error(`ComfyUI did not return prompt_id: ${JSON.stringify(queueData).slice(0, 200)}`);
   process.stdout.write(`[videoWorker] ComfyUI accepted job, promptId=${promptId}\n`);
@@ -227,8 +235,9 @@ async function waitForVideoOutput(promptId, timeoutMs = 600_000) {
 
     let history;
     try {
-      const res = await axios.get(`${COMFYUI_VIDEO_URL}/history/${promptId}`, { timeout: 10_000 });
-      history = res.data;
+      const res = await fetch(`${COMFYUI_VIDEO_URL}/history/${promptId}`, { signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) { continue; }
+      history = await res.json();
     } catch (e) {
       process.stderr.write(`[videoWorker] poll error: ${e.message}\n`);
       continue;
@@ -275,9 +284,10 @@ async function waitForVideoOutput(promptId, timeoutMs = 600_000) {
 
 async function downloadAndSaveFile(comfyFilename, subfolder, destPath, type = "output") {
   const url = `${COMFYUI_VIDEO_URL}/view?filename=${encodeURIComponent(comfyFilename)}&subfolder=${encodeURIComponent(subfolder)}&type=${type}`;
-  const res = await axios.get(url, { responseType: "arraybuffer", timeout: 120_000 });
+  const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+  if (!res.ok) throw new Error(`Failed to download ${comfyFilename} (${res.status})`);
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
-  fs.writeFileSync(destPath, Buffer.from(res.data));
+  fs.writeFileSync(destPath, Buffer.from(await res.arrayBuffer()));
   return destPath;
 }
 
@@ -312,9 +322,12 @@ async function processVideoJob(job) {
   }).catch(() => {});
 
   // Verify ComfyUI video engine is up
-  await axios.get(`${COMFYUI_VIDEO_URL}/system_stats`, { timeout: 10_000 }).catch(() => {
-    throw new Error(`ComfyUI video engine unreachable at ${COMFYUI_VIDEO_URL}`);
-  });
+  try {
+    const health = await fetch(`${COMFYUI_VIDEO_URL}/system_stats`, { signal: AbortSignal.timeout(10_000) });
+    if (!health.ok) throw new Error(`HTTP ${health.status}`);
+  } catch (e) {
+    throw new Error(`ComfyUI video engine unreachable at ${COMFYUI_VIDEO_URL}: ${e.message}`);
+  }
 
   process.stdout.write(`[video:render] started — mode=${mode}\n`);
   job.log(`[video:render] started`);
