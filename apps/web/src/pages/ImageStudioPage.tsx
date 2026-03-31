@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import {
   ImageIcon, Loader2, RefreshCw, Sparkles, X,
   Download, Trash2, RotateCcw, Eye, Info,
-  Layers, SlidersHorizontal, Paintbrush, Upload, Settings2,
+  Layers, SlidersHorizontal, Paintbrush, Upload, Settings2, Scissors,
 } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
 
@@ -227,6 +227,8 @@ export function ImageStudioPage() {
   const [lightbox, setLightbox]             = useState<string | null>(null);
   const [deleteModal, setDeleteModal]       = useState<{ id: string; jobId: string; url?: string } | null>(null);
   const [deleting, setDeleting]             = useState(false);
+  const [removingBg, setRemovingBg]         = useState(false);
+  const [removeBgResult, setRemoveBgResult] = useState<{ url: string } | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const generating = genStage !== "idle" && genStage !== "done";
@@ -451,6 +453,28 @@ export function ImageStudioPage() {
   }
 
   // ── Delete ───────────────────────────────────────────────────────────────────
+
+  async function handleRemoveBg(imageUrl: string) {
+    setRemovingBg(true);
+    setRemoveBgResult(null);
+    try {
+      const res = await fetch(`${API}/image/remove-bg`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ imageUrl }),
+      });
+      const data = await res.json() as { url?: string; error?: string };
+      if (!res.ok || !data.url) {
+        setError(data.error ?? "Не удалось убрать фон");
+        return;
+      }
+      setRemoveBgResult({ url: data.url });
+    } catch {
+      setError("Ошибка удаления фона");
+    } finally {
+      setRemovingBg(false);
+    }
+  }
 
   async function handleDelete(imageId: string, jobId?: string) {
     setDeleting(true);
@@ -956,6 +980,14 @@ export function ImageStudioPage() {
                   </button>
                   <button
                     type="button"
+                    onClick={(e) => { e.stopPropagation(); handleRemoveBg(activeJob.url!); }}
+                    className="flex items-center gap-1.5 rounded-full bg-emerald-500/90 px-3 py-1.5 text-xs font-medium text-white shadow transition hover:bg-emerald-500"
+                  >
+                    <Scissors className="h-3.5 w-3.5" />
+                    Убрать фон
+                  </button>
+                  <button
+                    type="button"
                     onClick={(e) => { e.stopPropagation(); setDeleteModal({ id: activeJob.id ?? activeJob.jobId, jobId: activeJob.jobId, url: activeJob.url }); }}
                     className="flex items-center gap-1.5 rounded-full bg-red-500/90 px-3 py-1.5 text-xs font-medium text-white shadow transition hover:bg-red-500"
                   >
@@ -1071,6 +1103,67 @@ export function ImageStudioPage() {
             className="max-h-full max-w-full rounded-xl shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           />
+        </div>
+      )}
+
+      {/* ══ REMOVE BG LOADING ════════════════════════════════════════════════════ */}
+      {removingBg && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/60">
+          <Loader2 className="h-10 w-10 animate-spin text-white" />
+          <p className="text-sm font-medium text-white">Убираем фон…</p>
+          <p className="text-xs text-white/60">Обычно 10–30 секунд</p>
+        </div>
+      )}
+
+      {/* ══ REMOVE BG RESULT ═════════════════════════════════════════════════════ */}
+      {removeBgResult && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setRemoveBgResult(null)}
+        >
+          <div
+            className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl bg-white p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between w-full">
+              <p className="font-semibold text-neutral-900">✅ Фон удалён</p>
+              <button
+                type="button"
+                onClick={() => setRemoveBgResult(null)}
+                className="rounded-lg p-1 text-neutral-400 hover:bg-neutral-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            {/* Checkerboard background to show transparency */}
+            <div
+              className="w-full rounded-xl overflow-hidden border border-neutral-200"
+              style={{ background: "repeating-conic-gradient(#e5e7eb 0% 25%, white 0% 50%) 0 0 / 16px 16px" }}
+            >
+              <img
+                src={removeBgResult.url}
+                alt="Без фона"
+                className="w-full max-h-80 object-contain"
+              />
+            </div>
+            <div className="flex w-full gap-3">
+              <a
+                href={removeBgResult.url}
+                download
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-neutral-900 py-2.5 text-sm font-medium text-white transition hover:bg-neutral-800"
+              >
+                <Download className="h-4 w-4" />
+                Скачать PNG
+              </a>
+              <button
+                type="button"
+                onClick={() => setRemoveBgResult(null)}
+                className="flex-1 rounded-xl border border-neutral-200 py-2.5 text-sm font-medium text-neutral-600 transition hover:bg-neutral-50"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
