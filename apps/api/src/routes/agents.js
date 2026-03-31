@@ -140,7 +140,7 @@ module.exports = async function agentsRoutes(fastify) {
 
   fastify.post("/agents", { preHandler: authMiddleware }, async (request, reply) => {
     const body = request.body && typeof request.body === "object" ? request.body : {};
-    const { name, type, mode, assistantId, rules, trigger, flow, memory } = body;
+    const { name, type, mode, assistantId, rules, trigger, flow, memory, model } = body;
 
     if (name == null || String(name).trim() === "") {
       return reply.code(400).send({ error: "name is required" });
@@ -167,22 +167,26 @@ module.exports = async function agentsRoutes(fastify) {
         ? String(mode).trim().toLowerCase()
         : "v1";
 
+    const agentModel = model != null && String(model).trim() !== "" ? String(model).trim() : null;
+
     const row = await prisma.agent.create({
       data: {
         organizationId: request.organizationId,
-        name: String(name),
-        type: String(type),
-        mode: modeStr === "v2" ? "v2" : "v1",
+        name:  String(name),
+        type:  String(type),
+        mode:  modeStr === "v2" ? "v2" : "v1",
+        model: agentModel,
         assistantId:
           assistantId != null && String(assistantId).trim() !== "" ? String(assistantId) : null,
-        rules: rules != null ? String(rules) : null,
+        rules:   rules   != null ? String(rules)   : null,
         trigger: trigger != null ? String(trigger) : null,
-        flow: flow !== undefined ? flow : undefined,
-        memory: memory !== undefined ? memory : undefined,
+        flow:    flow    !== undefined ? flow    : undefined,
+        memory:  memory  !== undefined ? memory  : undefined,
       },
       include: { tools: true },
     });
 
+    process.stdout.write(`[agent:create] id=${row.id} name="${row.name}" model=${agentModel ?? "default"}\n`);
     return reply.code(201).send(row);
   });
 
@@ -242,7 +246,8 @@ module.exports = async function agentsRoutes(fastify) {
     /** @type {import('@prisma/client').Prisma.AgentUpdateInput} */
     const data = {};
 
-    if (body.name != null) data.name = String(body.name).trim();
+    if (body.name  != null) data.name  = String(body.name).trim();
+    if (body.model !== undefined) data.model = body.model != null && String(body.model).trim() ? String(body.model).trim() : null;
     if (body.rules !== undefined) data.rules = body.rules != null ? String(body.rules) : null;
     if (body.assistantId !== undefined) {
       data.assistantId =
@@ -315,13 +320,19 @@ module.exports = async function agentsRoutes(fastify) {
     // Use agent.rules as system prompt (trim to avoid whitespace-only prompts)
     const systemPrompt = agent.rules && agent.rules.trim() ? agent.rules : null;
 
+    // Model priority: user-selected → agent.model → fallback
+    const { selectModel: _sm } = require("../services/modelRouter");
+    const modelSource  = (model && model.trim()) ? "user" : (agent.model ? "agent" : "fallback");
+    const resolvedModel = (model && model.trim()) || agent.model || null;
+    process.stdout.write(`[agent:model] selected=${resolvedModel ?? _sm("chat")} source=${modelSource}\n`);
+
     try {
       const result = await agentChat({
         agentId,
         userId:       request.userId,
         systemPrompt,
         messages,
-        model:        model || null,
+        model:        resolvedModel,
         reset,
       });
 
@@ -395,13 +406,27 @@ module.exports = async function agentsRoutes(fastify) {
     if (!conversationId) return reply.code(400).send({ error: "conversationId is required" });
     if (!message)        return reply.code(400).send({ error: "message is required" });
 
+    // Resolve model with priority: user → agent.model → fallback
+    const { selectModel: _selectModel } = require("../services/modelRouter");
+    let agentModelV2 = null;
+    try {
+      const conv = await prisma.agentConversation.findFirst({ where: { id: conversationId } });
+      if (conv?.agentId) {
+        const ag = await prisma.agent.findFirst({ where: { id: conv.agentId }, select: { model: true } });
+        agentModelV2 = ag?.model || null;
+      }
+    } catch { /* non-fatal */ }
+    const modelSrcV2 = model ? "user" : (agentModelV2 ? "agent" : "fallback");
+    const resolvedModelV2 = model || agentModelV2 || null;
+    process.stdout.write(`[agent:model] selected=${resolvedModelV2 ?? _selectModel("chat")} source=${modelSrcV2}\n`);
+
     try {
       const result = await agentChatV2({
         conversationId,
         message,
         organizationId: request.organizationId,
         systemPrompt: systemPrompt || null,
-        model:        model        || null,
+        model:        resolvedModelV2,
         temperature:  temperature  != null && !isNaN(temperature) ? temperature : undefined,
         maxTokens:    maxTokens    != null && !isNaN(maxTokens)   ? maxTokens   : undefined,
       });
@@ -428,6 +453,20 @@ module.exports = async function agentsRoutes(fastify) {
 
     if (!conversationId) return reply.code(400).send({ error: "conversationId is required" });
     if (!message)        return reply.code(400).send({ error: "message is required" });
+
+    // Resolve model priority: user → agent.model → fallback
+    const { selectModel: _smStream } = require("../services/modelRouter");
+    let agentModelStream = null;
+    try {
+      const convS = await prisma.agentConversation.findFirst({ where: { id: conversationId } });
+      if (convS?.agentId) {
+        const agS = await prisma.agent.findFirst({ where: { id: convS.agentId }, select: { model: true } });
+        agentModelStream = agS?.model || null;
+      }
+    } catch { /* non-fatal */ }
+    const modelSrcStream = model ? "user" : (agentModelStream ? "agent" : "fallback");
+    const resolvedModelStream = model || agentModelStream || null;
+    process.stdout.write(`[agent:model] selected=${resolvedModelStream ?? _smStream("chat")} source=${modelSrcStream}\n`);
 
     // Hijack response for SSE
     reply.hijack();
@@ -473,7 +512,7 @@ module.exports = async function agentsRoutes(fastify) {
         message,
         organizationId: request.organizationId,
         systemPrompt:  systemPrompt || null,
-        model:         model        || null,
+        model:         resolvedModelStream,
         temperature:   temperature  != null && !isNaN(temperature) ? temperature : undefined,
         maxTokens:     maxTokens    != null && !isNaN(maxTokens)   ? maxTokens   : undefined,
         signal:        ollamaAbort.signal,

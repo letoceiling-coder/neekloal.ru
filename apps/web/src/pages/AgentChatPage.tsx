@@ -22,6 +22,7 @@ import {
   useConversations,
   useConversationDetail,
   useDeleteConversation,
+  type ModelInfo,
 } from "../api/agents";
 import type { AgentConversationMeta, ConversationMessage } from "../api/agents";
 import { useAgentConversationStore }  from "../stores/agentConversationStore";
@@ -127,8 +128,11 @@ export function AgentChatPage() {
   const { data: modelsData }                        = useModels();
   const agent = agents?.find((a) => a.id === agentId) ?? null;
 
-  const availableModels =
-    modelsData?.models?.length ? modelsData.models : FALLBACK_MODELS;
+  // Extract model names from {name} objects, fallback to strings
+  const availableModels: string[] =
+    modelsData?.models?.length
+      ? modelsData.models.map((m: ModelInfo) => m.name)
+      : FALLBACK_MODELS;
 
   // ── Conversation list ─────────────────────────────────────────────────────
   const { data: convsData, refetch: refetchConvs } = useConversations(agentId);
@@ -146,7 +150,8 @@ export function AgentChatPage() {
 
   // ── Local UI state ────────────────────────────────────────────────────────
   const [input,          setInput]         = useState("");
-  const [model,          setModel]         = useState(FALLBACK_MODELS[0]);
+  // model priority: agent.model → first available → fallback
+  const [model,          setModel]         = useState<string>("");
   const [systemPrompt,   setSystemPrompt]  = useState("");
   const [temperature,    setTemperature]   = useState(0.7);
   const [maxTokens,      setMaxTokens]     = useState(800);
@@ -170,12 +175,18 @@ export function AgentChatPage() {
     }
   }, [convDetail?.id, convDetail?.messages?.length]);
 
-  // Seed model from availableModels once loaded
+  // Seed model: agent.model → first available → fallback (runs when agent or models data loads)
   useEffect(() => {
-    if (availableModels.length > 0 && !availableModels.includes(model)) {
+    if (model) return; // already set by user
+    const preferred = agent?.model;
+    if (preferred && (availableModels.includes(preferred) || availableModels.length === 0)) {
+      setModel(preferred);
+    } else if (availableModels.length > 0) {
       setModel(availableModels[0]);
+    } else {
+      setModel(FALLBACK_MODELS[0]);
     }
-  }, [availableModels]);
+  }, [agent?.id, availableModels.join(",")]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Seed systemPrompt from agent.rules
   useEffect(() => {
@@ -228,6 +239,13 @@ export function AgentChatPage() {
   const sendMessage = useCallback(async (text: string) => {
     const content = text.trim();
     if (!content || !activeConversationId || isLoading || isStreaming) return;
+
+    // Model selection priority log
+    const modelSource =
+      model && agent?.model && model !== agent.model ? "user"
+      : model === agent?.model                        ? "agent"
+      : "fallback";
+    console.log(`[agent:model] selected=${model || FALLBACK_MODELS[0]} source=${modelSource}`);
 
     setError(null);
     setInput("");
@@ -665,8 +683,13 @@ export function AgentChatPage() {
 
             {/* Model */}
             <div>
-              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                Модель
+              <label className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                <span>🤖 Модель</span>
+                {agent?.model && (
+                  <span className="normal-case text-[9px] text-violet-400">
+                    агент: {agent.model}
+                  </span>
+                )}
               </label>
               <select
                 value={model}
@@ -678,6 +701,13 @@ export function AgentChatPage() {
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
+              <p className="mt-1 text-[9px] text-gray-400">
+                {agent?.model && model === agent.model
+                  ? "✓ Модель агента"
+                  : agent?.model && model !== agent.model
+                    ? "↑ Переопределено вами"
+                    : "Выбрано вручную"}
+              </p>
             </div>
 
             {/* System prompt */}

@@ -49,6 +49,8 @@ export type Agent = {
   name: string;
   type: string;
   mode: string;
+  /** Default LLM model for this agent's playground (independent of assistant) */
+  model?: string | null;
   assistantId: string | null;
   rules?: string | null;
   userId?: string;
@@ -124,6 +126,7 @@ export type UpdateAgentInput = {
   name?: string;
   rules?: string | null;
   assistantId?: string | null;
+  model?: string | null;
   mode?: string;
 };
 

@@ -3,12 +3,16 @@
 const { listAvailableModels } = require("../services/modelRouter");
 
 /**
- * GET /models — единый каталог моделей для UI (планы, usage, ассистенты).
+ * GET /models — catalog of available Ollama models.
+ * Returns { models: [{ name, size?, modified_at? }] }
  * @param {import('fastify').FastifyInstance} fastify
  */
 module.exports = async function modelsRoutes(fastify) {
   fastify.get("/models", async () => {
-    const models = await listAvailableModels();
+    const raw = await listAvailableModels(); // string[] or {name,...}[]
+    const models = raw.map((m) =>
+      typeof m === "string" ? { name: m } : { name: m.name, size: m.size, modified_at: m.modified_at }
+    );
     return { models };
   });
 };

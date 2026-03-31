@@ -210,6 +210,8 @@ model Agent {
   name           String
   type           String
   mode           String    @default("v1") @map("mode")
+  /// Default LLM model for this agent's playground (overrides CHAT_MODEL env)
+  model          String?
   trigger        String?
   flow           Json?
   memory         Json?

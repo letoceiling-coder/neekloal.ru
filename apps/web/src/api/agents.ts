@@ -77,14 +77,15 @@ export function useAgents() {
 }
 
 type CreateAgentInput = {
-  name: string;
-  type: string;
-  mode?: string;
+  name:        string;
+  type:        string;
+  mode?:       string;
+  model?:      string | null;
   assistantId?: string | null;
-  rules?: string | null;
-  trigger?: string | null;
-  flow?: unknown;
-  memory?: unknown;
+  rules?:      string | null;
+  trigger?:    string | null;
+  flow?:       unknown;
+  memory?:     unknown;
 };
 
 export function useCreateAgent() {
@@ -199,11 +200,17 @@ export function useAgentChatV2() {
 
 // ── Available models ──────────────────────────────────────────────────────────
 
+export interface ModelInfo {
+  name:        string;
+  size?:       number;
+  modified_at?: string;
+}
+
 export function useModels() {
   const accessToken = useAuthStore((s) => s.accessToken);
   return useQuery({
     queryKey: queryKeys.models.all,
-    queryFn:  () => apiClient.get<{ models: string[] }>("/models"),
+    queryFn:  () => apiClient.get<{ models: ModelInfo[] }>("/models"),
     enabled:  Boolean(accessToken),
     staleTime: 60_000,
   });
