@@ -222,7 +222,7 @@ model Agent {
   /// off        — ignores all incoming Avito messages
   avitoMode      String    @default("autoreply") @map("avito_mode")
   /// FK to AvitoAccount — which Avito account handles this agent's chats
-  avitoAccountId String?   @map("avito_account_id")
+  avitoAccountId String?   @map("avito_account_id") @db.Uuid
   avitoAccount   AvitoAccount? @relation(fields: [avitoAccountId], references: [id], onDelete: SetNull)
   trigger        String?
   flow           Json?
