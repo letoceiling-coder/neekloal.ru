@@ -2,7 +2,7 @@
 # deploy-fsm.sh — Deploy Avito Sales FSM to production + run 4 verification tests
 set -euo pipefail
 
-SERVER="root@89.111.174.53"
+SERVER="root@89.169.39.244"
 REMOTE_API="/var/www/site-al.ru/apps/api"
 REMOTE_ROOT="/var/www/site-al.ru"
 
