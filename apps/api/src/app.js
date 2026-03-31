@@ -50,6 +50,14 @@ build()
         app.log.warn({ err: e }, "printRoutes failed");
       }
       startWidgetFollowUpSweep(app.log);
+      // Start Avito follow-up BullMQ worker
+      try {
+        const { startFollowUpWorker } = require("./modules/avito/avito.followup.queue");
+        const { processFollowUpJob }  = require("./modules/avito/avito.followup.processor");
+        startFollowUpWorker(processFollowUpJob);
+      } catch (e) {
+        app.log.warn({ err: e }, "avito followup worker failed to start");
+      }
       // Start RAG background worker (stuck-job recovery + periodic reindex)
       const { startWorker } = require("./workers/ragWorker");
       startWorker(app);

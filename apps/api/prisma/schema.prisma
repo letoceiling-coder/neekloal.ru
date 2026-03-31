@@ -563,6 +563,24 @@ model AvitoAuditLog {
   @@map("avito_audit_logs")
 }
 
+/// Avito follow-up sequence — scheduled re-engagement messages per chat
+model AvitoFollowUp {
+  id           String   @id @default(uuid())
+  leadId       String   @map("lead_id")        /// AvitoLead.id (plain string — no FK to allow flexibility)
+  agentId      String   @map("agent_id")
+  chatId       String   @map("chat_id")
+  step         Int                              /// 1, 2 or 3
+  status       String   @default("pending")    /// pending | sent | cancelled
+  scheduledAt  DateTime @map("scheduled_at")
+  sentAt       DateTime? @map("sent_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([leadId])
+  @@index([agentId, chatId, status])
+  @@index([scheduledAt, status])
+  @@map("avito_follow_ups")
+}
+
 /// Avito sales FSM lead — tracks each unique Avito user through the sales funnel
 model AvitoLead {
   id              String   @id @default(uuid())

@@ -33,6 +33,7 @@ const { routeMessage }                    = require("./avito.router");
 const { saveAudit }                       = require("./avito.audit");
 const { maybeCreateLead, syncLeadStatus } = require("./avito.crm");
 const { resolveNextState, extractPhone, buildSalesPrompt } = require("./avito.fsm");
+const { scheduleFollowUps, cancelFollowUps } = require("./avito.followup.queue");
 
 // ── Retry helper ──────────────────────────────────────────────────────────────
 
@@ -213,7 +214,20 @@ async function processAvitoJob(job) {
       });
     }
 
-    // ── 11. Route ─────────────────────────────────────────────────────────────
+    // ── 11. Follow-up scheduling ──────────────────────────────────────────────
+    // Every inbound message: cancel old pending follow-ups and schedule new sequence.
+    // Non-fatal — never blocks the main pipeline.
+    try {
+      if (lead.status !== "HANDOFF" && lead.status !== "CLOSED" && lead.status !== "LOST") {
+        await scheduleFollowUps({ agentId, chatId, leadId: lead.id });
+      } else {
+        await cancelFollowUps({ agentId, chatId, reason: `lead.status=${lead.status}` });
+      }
+    } catch (fuErr) {
+      process.stderr.write(`[followup:schedule] error (non-fatal): ${fuErr.message}\n`);
+    }
+
+    // ── 12. Route ─────────────────────────────────────────────────────────────
     const routing = routeMessage(agent, classification, lead);
     audit.decision = routing.decision;
 
@@ -221,7 +235,7 @@ async function processAvitoJob(job) {
       `[avito:router] decision=${routing.decision} reason="${routing.reason}"\n`
     );
 
-    // ── 12. HANDOFF guard — stop AI completely ────────────────────────────────
+    // ── 13. HANDOFF guard — stop AI completely ────────────────────────────────
     if (lead.status === "HANDOFF") {
       process.stdout.write(
         `[avito:handoff] stopped AI lead=${lead.id} chatId=${chatId}\n`
@@ -235,14 +249,14 @@ async function processAvitoJob(job) {
       return;
     }
 
-    // ── 13. Build system prompt — sales FSM + agent rules ─────────────────────
+    // ── 14. Build system prompt — sales FSM + agent rules ─────────────────────
     const salesPrompt  = buildSalesPrompt(lead);
     const agentRules   = agent.rules?.trim() || "";
     const systemPrompt = agentRules
       ? `${salesPrompt}\n\n---\nДополнительные правила:\n${agentRules}`
       : salesPrompt;
 
-    // ── 14. AI response (autoreply OR copilot) ────────────────────────────────
+    // ── 15. AI response (autoreply OR copilot) ────────────────────────────────
     let aiResult;
     try {
       aiResult = await agentChatV2({
@@ -266,7 +280,7 @@ async function processAvitoJob(job) {
       `[avito:processor] AI reply model=${aiResult.modelUsed} chars=${aiResult.reply.length}\n`
     );
 
-    // ── 15. Send to Avito (autoreply only) ────────────────────────────────────
+    // ── 16. Send to Avito (autoreply only) ────────────────────────────────────
     if (routing.decision === "autoreply") {
       if (!avitoClient) {
         process.stderr.write(
