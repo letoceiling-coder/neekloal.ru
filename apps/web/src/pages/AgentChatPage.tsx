@@ -429,7 +429,7 @@ export function AgentChatPage() {
         </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-gray-900">{agent.name}</p>
-          <p className="text-[10px] text-gray-400">Playground V2 · DB-persisted · streaming</p>
+          <p className="text-[10px] text-gray-400">🧠 AI Runtime v2 · DB-persisted · streaming</p>
         </div>
 
         {/* Mobile settings toggle */}
@@ -774,7 +774,10 @@ export function AgentChatPage() {
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-1.5">Агент</p>
               <p className="text-xs font-medium text-gray-700">{agent.name}</p>
-              <p className="mt-0.5 text-[10px] text-gray-400">{agent.type} · {agent.mode}</p>
+              <p className="mt-0.5 text-[10px] text-gray-400">{agent.type}</p>
+              <span className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-medium text-violet-600">
+                🧠 AI Runtime v2
+              </span>
             </div>
           </div>
         </aside>

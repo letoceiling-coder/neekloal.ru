@@ -29,7 +29,6 @@ export function AgentsPage() {
 
   const [name,        setName]        = useState("");
   const [type,        setType]        = useState("default");
-  const [mode,        setMode]        = useState<"v1" | "v2">("v1");
   const [model,       setModel]       = useState(FALLBACK_MODELS[0]);
   const [assistantId, setAssistantId] = useState("");
   const [formError,   setFormError]   = useState<string | null>(null);
@@ -53,13 +52,6 @@ export function AgentsPage() {
         header: "Тип",
         cell: (a) => (
           <span className="font-mono text-xs text-neutral-600">{a.type}</span>
-        ),
-      },
-      {
-        id: "mode",
-        header: "Режим",
-        cell: (a) => (
-          <span className="font-mono text-xs text-neutral-600">{a.mode}</span>
         ),
       },
       {
@@ -95,13 +87,12 @@ export function AgentsPage() {
       await createAgent.mutateAsync({
         name: n,
         type: t,
-        mode,
+        mode: "v2",
         model: model || null,
         assistantId: assistantId.trim() || null,
       });
       setName("");
       setType("default");
-      setMode("v1");
       setModel(FALLBACK_MODELS[0]);
       setAssistantId("");
     } catch (err) {
@@ -139,23 +130,6 @@ export function AgentsPage() {
                 onChange={(e) => setType(e.target.value)}
                 placeholder="default"
               />
-              <div className="min-w-0 flex-1">
-                <label
-                  htmlFor="agent-mode"
-                  className="block text-xs font-medium text-neutral-600"
-                >
-                  Режим
-                </label>
-                <select
-                  id="agent-mode"
-                  className="mt-1 w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm"
-                  value={mode}
-                  onChange={(e) => setMode(e.target.value as "v1" | "v2")}
-                >
-                  <option value="v1">v1</option>
-                  <option value="v2">v2</option>
-                </select>
-              </div>
             </div>
             <div>
               <label

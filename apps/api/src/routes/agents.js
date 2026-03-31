@@ -162,10 +162,8 @@ module.exports = async function agentsRoutes(fastify) {
       }
     }
 
-    const modeStr =
-      mode != null && String(mode).trim() !== ""
-        ? String(mode).trim().toLowerCase()
-        : "v1";
+    // v2 is the only supported mode; "v1" is a legacy fallback kept for backward compat only
+    const modeStr = "v2";
 
     const agentModel = model != null && String(model).trim() !== "" ? String(model).trim() : null;
 
@@ -174,7 +172,7 @@ module.exports = async function agentsRoutes(fastify) {
         organizationId: request.organizationId,
         name:  String(name),
         type:  String(type),
-        mode:  modeStr === "v2" ? "v2" : "v1",
+        mode:  modeStr,
         model: agentModel,
         assistantId:
           assistantId != null && String(assistantId).trim() !== "" ? String(assistantId) : null,
@@ -256,8 +254,9 @@ module.exports = async function agentsRoutes(fastify) {
           : null;
     }
     if (body.mode != null) {
+      // v2 is the default; accept explicit "v1" only for legacy backward compat
       const m = String(body.mode).trim().toLowerCase();
-      data.mode = m === "v2" ? "v2" : "v1";
+      data.mode = m === "v1" ? "v1" : "v2";
     }
     if (body.trigger !== undefined) data.trigger = body.trigger != null ? String(body.trigger) : null;
 
