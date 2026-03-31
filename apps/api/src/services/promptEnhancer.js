@@ -1,8 +1,7 @@
 "use strict";
 
 const { generateText } = require("./aiService");
-
-const OLLAMA_MODEL = process.env.IMAGE_ENHANCER_MODEL || "llama3:8b";
+const { selectModel }  = require("./modelRouter");
 
 const DEFAULT_NEGATIVE =
   "blurry, low quality, bad anatomy, extra limbs, extra objects, distorted, watermark, text, ugly, deformed, out of focus, overexposed, underexposed, duplicate";
@@ -100,8 +99,10 @@ async function enhancePrompt(userPrompt, options = {}) {
   process.stdout.write(`[enhancer] input: "${userPrompt.slice(0, 80)}"\n`);
 
   try {
+    const model = selectModel("enhance");
+    process.stdout.write(`[MODEL USED] ${model}\n`);
     const llmPrompt = buildEnhancerPrompt(userPrompt, { style, aspectRatio, systemPrompt });
-    const raw = await generateText(OLLAMA_MODEL, llmPrompt);
+    const raw = await generateText(model, llmPrompt);
     const parsed = safeParseJSON(raw);
 
     if (parsed) {
