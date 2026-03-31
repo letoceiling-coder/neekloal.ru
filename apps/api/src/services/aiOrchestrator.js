@@ -39,8 +39,9 @@ function extractVariationCount(prompt) {
 
 function isVariationPrompt(p) {
   return (
-    p.includes("варианты")  || p.includes("вариантов") || p.includes("несколько") ||
-    p.includes("variations") || p.includes("multiple")  || p.includes("different versions")
+    p.includes("вариант")   ||                       // catches варианта/варианты/вариантов/вариантам
+    p.includes("несколько") ||
+    p.includes("variations") || p.includes("multiple") || p.includes("different versions")
   );
 }
 
