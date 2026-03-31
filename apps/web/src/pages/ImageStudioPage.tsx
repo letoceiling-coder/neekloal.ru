@@ -41,7 +41,7 @@ interface EnhanceInfo {
   negativePrompt?: string;
   style?: string | null;
   aspectRatio?: string | null;
-  brain?: { type: string; style: string; composition: string } | null;
+  brain?: { type: string; typeLabel: string; style: string; composition: string; suggestedMode: string } | null;
 }
 
 interface RefImage {
@@ -81,6 +81,37 @@ const PRESET_SIZES = [
   { label: "4:3",  w: 1024, h: 768  },
 ];
 
+// ── Client-side Brain (mirrors aiBrainV2.js — zero latency) ──────────────────
+
+const CLIENT_TYPE_RULES: { type: string; label: string; style: string; keywords: string[] }[] = [
+  { type: "character", label: "Персонаж",   style: "cinematic portrait",
+    keywords: ["человек","woman","man","girl","boy","женщина","мужчина","девушка","парень","ребёнок","child","warrior","soldier","knight","wizard","hero","герой","персонаж","character","portrait","портрет","лицо","face","person","люди","people","princess","queen","king","witch","elf","ninja","samurai","astronaut"] },
+  { type: "animal",    label: "Животное",   style: "wildlife photography",
+    keywords: ["cat","dog","кот","собака","кошка","animal","wolf","волк","fox","лиса","bear","медведь","lion","тигр","tiger","bird","птица","horse","лошадь","dragon","дракон","rabbit","кролик","deer","fish","panda","панда"] },
+  { type: "landscape", label: "Пейзаж",     style: "epic landscape, golden hour",
+    keywords: ["landscape","пейзаж","mountain","гора","горы","forest","лес","ocean","море","sea","lake","озеро","river","река","desert","пустыня","sky","небо","sunset","закат","sunrise","рассвет","nature","природа","field","поле","valley","waterfall","beach","пляж","island","остров","snow","снег","jungle","cave","cliff","скала"] },
+  { type: "architecture", label: "Архитектура", style: "architectural photography",
+    keywords: ["building","здание","house","дом","castle","замок","tower","башня","bridge","мост","cathedral","church","храм","city","город","street","улица","interior","интерьер","architecture","архитектура","palace","дворец","ruins","ruins","skyscraper","небоскрёб","temple"] },
+  { type: "product",   label: "Продукт",    style: "studio product photography",
+    keywords: ["product","товар","bottle","бутылка","box","коробка","package","упаковка","perfume","духи","phone","телефон","айфон","iphone","laptop","ноутбук","watch","часы","shoes","обувь","bag","сумка","car","машина","gadget","device","устройство","jewelry","ring","кольцо","cup","кружка"] },
+  { type: "food",      label: "Еда",        style: "food photography",
+    keywords: ["food","еда","dish","блюдо","meal","pizza","пицца","burger","бургер","sushi","суши","cake","торт","coffee","кофе","tea","чай","fruit","фрукт","bread","хлеб","soup","суп","salad","салат","dessert","десерт","cocktail","wine","вино"] },
+  { type: "abstract",  label: "Абстракция", style: "digital art, vivid colors",
+    keywords: ["abstract","абстракция","pattern","узор","texture","текстура","fractal","фрактал","digital art","geometry","геометрия","mandala","мандала","neon","неон","space","cosmos","космос","nebula","galaxy","галактика"] },
+];
+
+function clientDetectBrain(text: string): { type: string; label: string; style: string } | null {
+  if (!text || text.trim().length < 3) return null;
+  const lower = text.toLowerCase();
+  let best = { type: "unknown", label: "", style: "", score: 0 };
+  for (const rule of CLIENT_TYPE_RULES) {
+    let score = 0;
+    for (const kw of rule.keywords) { if (lower.includes(kw)) score++; }
+    if (score > best.score) best = { ...rule, score };
+  }
+  return best.score > 0 ? best : null;
+}
+
 const STAGE_STEPS: { stage: GenStage; label: string }[] = [
   { stage: "enhancing", label: "Улучшение промпта" },
   { stage: "queuing",   label: "Отправка в очередь" },
@@ -92,6 +123,28 @@ const MODE_ICON: Record<string, string> = {
 };
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+/** Live AI Brain chip shown under textarea while user types */
+function BrainChip({ prompt, smartMode }: { prompt: string; smartMode: boolean }) {
+  if (!smartMode) return null;
+  const brain = clientDetectBrain(prompt);
+  if (!brain) return null;
+
+  const TYPE_EMOJI: Record<string, string> = {
+    character: "🧑", animal: "🐾", landscape: "🌄", architecture: "🏛",
+    product: "📦", food: "🍕", abstract: "✨",
+  };
+
+  return (
+    <div className="flex items-center gap-1.5 rounded-lg border border-violet-500/20 bg-violet-500/10 px-2.5 py-1.5 text-[11px] text-violet-400">
+      <span className="text-sm">{TYPE_EMOJI[brain.type] ?? "🧠"}</span>
+      <span>
+        <span className="font-medium">AI Brain:</span> {brain.label} ·{" "}
+        <span className="opacity-70">{brain.style}</span>
+      </span>
+    </div>
+  );
+}
 
 function ProgressBar({ stage }: { stage: GenStage }) {
   const stepIndex = STAGE_STEPS.findIndex((s) => s.stage === stage);
@@ -570,6 +623,9 @@ export function ImageStudioPage() {
                 rows={4}
                 className="w-full resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-neutral-500 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/40 [overflow-wrap:anywhere]"
               />
+              {/* Live Brain chip */}
+              <BrainChip prompt={prompt} smartMode={smartMode} />
+
               {/* Smart feedback */}
               {enhanceInfo && showEnhanced && (
                 <div className="rounded-lg border border-violet-500/30 bg-violet-500/10 p-2.5 text-xs text-violet-300">
@@ -577,7 +633,7 @@ export function ImageStudioPage() {
                   <p className="text-neutral-300 leading-relaxed">{enhanceInfo.enhancedPrompt}</p>
                   {enhanceInfo.brain && (
                     <p className="mt-1.5 text-violet-400 opacity-70">
-                      🧠 {enhanceInfo.brain.type} · {enhanceInfo.brain.style}
+                      🧠 Определено: {enhanceInfo.brain.typeLabel ?? enhanceInfo.brain.type} · {enhanceInfo.brain.style}
                     </p>
                   )}
                 </div>

@@ -7,7 +7,7 @@ const authMiddleware = require("../middleware/auth");
 const { getImageQueue } = require("../queues/imageQueue");
 const { getCacheConnection } = require("../lib/redis");
 const { enhancePrompt, DEFAULT_NEGATIVE } = require("../services/promptEnhancer");
-const { analyzePrompt } = require("../services/aiBrain");
+const { analyzePrompt } = require("../services/aiBrainV2");
 const prisma = require("../lib/prisma");
 
 const MAX_WIDTH = 2048;
@@ -60,9 +60,8 @@ module.exports = async function imageRoutes(fastify) {
       return reply.code(400).send({ error: "prompt is required" });
     }
 
-    // Brain analysis first
+    // Brain v2 analysis first
     const brain = analyzePrompt(prompt.trim());
-    process.stdout.write(`[brain] enhance: type=${brain.type} style="${brain.style}"\n`);
 
     const finalStyle = style || brain.style;
     const finalAspectRatio = aspectRatio || brain.aspectRatioLabel;
@@ -71,7 +70,7 @@ module.exports = async function imageRoutes(fastify) {
       where: { userId: request.userId },
     }).catch(() => null);
     const systemPrompt = userSettings?.useSystemPrompt ? (userSettings.imageSystemPrompt || null) : null;
-    const enhancerSystem = [systemPrompt, brain.composition].filter(Boolean).join("\n") || null;
+    const enhancerSystem = [systemPrompt, brain.composition, brain.enhancedPromptHints].filter(Boolean).join("\n") || null;
 
     const result = await enhancePrompt(prompt.trim(), { style: finalStyle, aspectRatio: finalAspectRatio, systemPrompt: enhancerSystem });
     return reply.send({
@@ -82,7 +81,14 @@ module.exports = async function imageRoutes(fastify) {
       appliedStyle: result.appliedStyle,
       appliedAspectRatio: result.appliedAspectRatio,
       appliedSystemPrompt: result.appliedSystemPrompt,
-      brain: { type: brain.type, style: brain.style, composition: brain.composition, suggestedSize: brain.suggestedSize },
+      brain: {
+        type: brain.type,
+        typeLabel: brain.typeLabel,
+        style: brain.style,
+        composition: brain.composition,
+        suggestedMode: brain.suggestedMode,
+        suggestedSize: brain.suggestedSize,
+      },
     });
   });
 
@@ -130,12 +136,9 @@ module.exports = async function imageRoutes(fastify) {
     let enhanceResult = null;
     let brainResult = null;
 
-    // ── AI Brain: analyze prompt and fill in missing parameters ──────────────
+    // ── AI Brain v2: analyze prompt and fill in missing parameters ───────────
     if (useSmartEnhance) {
-      brainResult = analyzePrompt(finalPrompt);
-      process.stdout.write(
-        `[brain] type=${brainResult.type} style="${brainResult.style}" composition="${brainResult.composition}"\n`
-      );
+      brainResult = analyzePrompt(finalPrompt, { enableVariations: resolvedMode === "variation" });
     }
 
     // Apply brain suggestions only if user didn't supply explicit values
@@ -160,9 +163,10 @@ module.exports = async function imageRoutes(fastify) {
       }).catch(() => null);
       const systemPrompt = userSettings?.useSystemPrompt ? (userSettings.imageSystemPrompt || null) : null;
 
-      // Pass brain composition as system-level hint to the LLM enhancer
+      // Pass brain composition + quality hints to the LLM enhancer
       const compositionHint = brainResult?.composition ?? null;
-      const enhancerSystemPrompt = [systemPrompt, compositionHint].filter(Boolean).join("\n") || null;
+      const promptHints     = brainResult?.enhancedPromptHints ?? null;
+      const enhancerSystemPrompt = [systemPrompt, compositionHint, promptHints].filter(Boolean).join("\n") || null;
 
       enhanceResult = await enhancePrompt(finalPrompt, {
         style: finalStyle,
@@ -201,7 +205,14 @@ module.exports = async function imageRoutes(fastify) {
       mode: resolvedMode,
       message: "Генерация начата",
       brain: brainResult
-        ? { type: brainResult.type, style: brainResult.style, composition: brainResult.composition, suggestedSize: brainResult.suggestedSize }
+        ? {
+            type: brainResult.type,
+            typeLabel: brainResult.typeLabel,
+            style: brainResult.style,
+            composition: brainResult.composition,
+            suggestedMode: brainResult.suggestedMode,
+            suggestedSize: brainResult.suggestedSize,
+          }
         : null,
       enhanceApplied: enhanceResult
         ? {
