@@ -30,6 +30,22 @@ interface BrainMeta {
   directives?: { must?: string[]; should?: string[]; quality?: string[] };
 }
 
+interface PipelineStep {
+  type: "brain" | "enhance" | "generate" | "postprocess";
+  action?: string;
+  mode?: string;
+  model?: string;
+  count?: number;
+  label: string;
+}
+
+interface PipelineMeta {
+  stepsCount: number;
+  steps: PipelineStep[];
+  autoMode: boolean;
+  autoRemoveBg: boolean;
+}
+
 interface ImageJob {
   id?: string;
   jobId: string;
@@ -47,6 +63,7 @@ interface ImageJob {
   error?: string;
   createdAt: string;
   brain?: BrainMeta | null;
+  pipeline?: PipelineMeta | null;
 }
 
 interface EnhanceInfo {
@@ -586,7 +603,7 @@ export function ImageStudioPage() {
       if (mode === "inpaint") body.maskUrl = maskImage?.refUrl;
 
       const res  = await fetch(`${API}/image/generate`, { method: "POST", headers, body: JSON.stringify(body) });
-      const data = await res.json() as { jobId?: string; error?: string; brain?: BrainMeta | null };
+      const data = await res.json() as { jobId?: string; error?: string; brain?: BrainMeta | null; pipeline?: PipelineMeta | null };
 
       if (!res.ok) {
         setError("Ошибка генерации. Попробуйте изменить описание.");
@@ -605,7 +622,8 @@ export function ImageStudioPage() {
         width:         size.w,
         height:        size.h,
         createdAt:     new Date().toISOString(),
-        brain:         data.brain ?? null,
+        brain:         data.brain    ?? null,
+        pipeline:      data.pipeline ?? null,
       });
     } catch {
       setError("Ошибка сети. Проверьте соединение.");
@@ -1073,6 +1091,33 @@ export function ImageStudioPage() {
                   </span>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* Pipeline panel */}
+          {genStage === "done" && activeJob?.status === "completed" && activeJob.pipeline && (
+            <div className="mt-2 w-full max-w-2xl rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3">
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+                🔗 Pipeline
+              </p>
+              <ol className="flex flex-col gap-1">
+                {activeJob.pipeline.steps.map((step, i) => {
+                  const icon =
+                    step.type === "brain"       ? "🧠" :
+                    step.type === "enhance"     ? "✨" :
+                    step.type === "generate"    ? "🖼" :
+                    step.type === "postprocess" ? "✂️" : "•";
+                  return (
+                    <li key={i} className="flex items-center gap-2 text-[12px] text-neutral-400">
+                      <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-white/5 text-[10px] font-bold text-neutral-500">
+                        {i + 1}
+                      </span>
+                      <span>{icon}</span>
+                      <span>{step.label}</span>
+                    </li>
+                  );
+                })}
+              </ol>
             </div>
           )}
 

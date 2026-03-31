@@ -7,7 +7,8 @@ const authMiddleware = require("../middleware/auth");
 const { getImageQueue } = require("../queues/imageQueue");
 const { getCacheConnection } = require("../lib/redis");
 const { enhancePrompt, DEFAULT_NEGATIVE } = require("../services/promptEnhancer");
-const { analyzePrompt } = require("../services/aiBrainV2");
+const { analyzePrompt }   = require("../services/aiBrainV2");
+const { buildPipeline }   = require("../services/aiOrchestrator");
 const prisma = require("../lib/prisma");
 
 const MAX_WIDTH = 2048;
@@ -123,6 +124,17 @@ module.exports = async function imageRoutes(fastify) {
     const h = Math.min(Math.max(Number(height) || 1024, MIN_DIM), MAX_HEIGHT);
     const useSmartEnhance = smartMode !== false;
 
+    // ── ORCHESTRATOR: build pipeline ──────────────────────────────────────────
+    const pipeline = buildPipeline({
+      prompt:       (prompt || "").trim(),
+      hasReference: !!referenceImageUrl,
+      hasMask:      !!maskUrl,
+      smartMode:    useSmartEnhance,
+    });
+    const pipelineGenStep    = pipeline.steps.find((s) => s.type === "generate");
+    const pipelinePostStep   = pipeline.steps.find((s) => s.type === "postprocess" && s.action === "remove_bg");
+    const autoRemoveBg       = !!pipelinePostStep;
+
     // Per-user rate limit
     const redis = getCacheConnection();
     let activeCount = 0;
@@ -141,18 +153,28 @@ module.exports = async function imageRoutes(fastify) {
       brainResult = analyzePrompt(finalPrompt, { enableVariations: resolvedMode === "variation" });
     }
 
-    // ── STEP 4: Auto mode-switch (brain suggestion, user didn't force a mode) ─
-    // User-forced modes: if frontend sent mode != "text" they explicitly chose it.
-    let appliedMode = resolvedMode;
+    // ── STEP 4: Mode decision (pipeline-driven, user override respected) ───────
+    let appliedMode      = resolvedMode;
     const userForcedMode = resolvedMode !== "text";
-    if (!userForcedMode && brainResult?.suggestedMode === "variation") {
+
+    if (!userForcedMode && pipelineGenStep && pipelineGenStep.mode !== "text") {
+      // Pipeline detected variation/reference/inpaint from prompt/flags
+      appliedMode = pipelineGenStep.mode;
+      process.stdout.write(`[pipeline:mode] text → ${appliedMode} (pipeline)\n`);
+    } else if (!userForcedMode && brainResult?.suggestedMode === "variation") {
+      // Brain fallback (same keyword set, belt-and-suspenders)
       appliedMode = "variation";
       process.stdout.write(`[mode:auto] suggested=variation applied=variation\n`);
     } else {
-      process.stdout.write(`[mode:auto] suggested=${brainResult?.suggestedMode ?? "text"} applied=${appliedMode}\n`);
+      process.stdout.write(`[mode:auto] applied=${appliedMode}\n`);
     }
+
+    // Use pipeline count for variations when detected
+    const pipelineCount = (pipelineGenStep?.mode === "variation" && pipelineGenStep?.count)
+      ? pipelineGenStep.count
+      : null;
     const finalVariations = appliedMode === "variation"
-      ? Math.min(Math.max(Number(variations) || 4, 2), 8)
+      ? Math.min(Math.max(pipelineCount || Number(variations) || 4, 2), 8)
       : Math.min(Math.max(Number(variations) || 1, 1), 8);
 
     // ── STEP 5: Smart controlnet for referenceImage + brain type ─────────────
@@ -250,6 +272,7 @@ module.exports = async function imageRoutes(fastify) {
       style: finalStyle,
       aspectRatio: finalAspectRatio,
       seed: finalSeed,
+      autoRemoveBg,
     }, { jobId });
 
     try { await redis.set(userJobKey(request.userId), activeCount + 1, "EX", 300); } catch { /* ignore */ }
@@ -287,6 +310,12 @@ module.exports = async function imageRoutes(fastify) {
             systemPrompt: enhanceResult.appliedSystemPrompt,
           }
         : null,
+      pipeline: {
+        stepsCount:   pipeline.steps.length,
+        steps:        pipeline.steps,
+        autoMode:     pipeline.meta.autoMode,
+        autoRemoveBg: pipeline.meta.autoRemoveBg,
+      },
     });
   });
 
