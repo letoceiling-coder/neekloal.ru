@@ -41,7 +41,7 @@ interface EnhanceInfo {
   negativePrompt?: string;
   style?: string | null;
   aspectRatio?: string | null;
-  brain?: { type: string; typeLabel: string; style: string; composition: string; suggestedMode: string } | null;
+  brain?: { type: string; typeLabel?: string; style: string; composition: string; suggestedMode?: string } | null;
 }
 
 interface RefImage {
