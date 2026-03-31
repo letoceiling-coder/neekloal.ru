@@ -1,3 +1,15 @@
+## 🚨 DEPLOYMENT LOCK (CRITICAL)
+
+This file is IMMUTABLE.
+
+❌ Any modification is FORBIDDEN
+❌ AI/Cursor must NOT change this file
+❌ Changes allowed ONLY with explicit human approval
+
+Violation = critical error
+
+---
+
 # AI PLATFORM — DEPLOYMENT RULES (STRICT / SSOT)
 
 ⚠️ **ЭТО ЕДИНСТВЕННЫЙ ИСТОЧНИК ПРАВДЫ ДЛЯ ДЕПЛОЯ**  
