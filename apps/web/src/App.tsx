@@ -19,6 +19,7 @@ import { RegisterPage } from "./pages/auth/RegisterPage";
 import { ResetPasswordPage } from "./pages/auth/ResetPasswordPage";
 import { ImageStudioPage } from "./pages/ImageStudioPage";
 import { ImageSettingsPage } from "./pages/ImageSettingsPage";
+import { AgentChatPage } from "./pages/AgentChatPage";
 import { AdminLeadsPage } from "./pages/admin/AdminLeadsPage";
 import { AdminOrganizationsPage } from "./pages/admin/AdminOrganizationsPage";
 import { AdminPlansPage } from "./pages/admin/AdminPlansPage";
@@ -49,6 +50,7 @@ export default function App() {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="assistants" element={<AssistantsPage />} />
           <Route path="assistants/:assistantId" element={<AssistantDetailPage />} />
+          <Route path="agents/:agentId/chat" element={<AgentChatPage />} />
           <Route path="agents/:agentId" element={<AgentDetailPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="conversations" element={<ConversationsPage />} />

@@ -4,6 +4,27 @@ import { queryKeys } from "../queryKeys";
 import { useAuthStore } from "../stores/authStore";
 import type { Agent, ChatReply, UpdateAgentInput } from "./types";
 
+// ── Agent Chat Playground types ───────────────────────────────────────────────
+
+export interface AgentChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AgentChatRequest {
+  agentId:   string;
+  messages:  AgentChatMessage[];
+  model?:    string;
+  reset?:    boolean;
+}
+
+export interface AgentChatResponse {
+  reply:         string;
+  modelUsed:     string;
+  tokens:        { prompt: number; completion: number; total: number };
+  contextLength: number;
+}
+
 export function useAgents() {
   const accessToken = useAuthStore((s) => s.accessToken);
   return useQuery({
@@ -73,5 +94,26 @@ export function useRunAgentChat() {
       assistantId: string;
       message: string;
     }) => postAgentChat(assistantId, message),
+  });
+}
+
+// ── Agent Playground chat ─────────────────────────────────────────────────────
+
+export function useAgentChatMutation() {
+  return useMutation({
+    mutationFn: (body: AgentChatRequest) =>
+      apiClient.post<AgentChatResponse>("/agents/chat", body),
+  });
+}
+
+// ── Available models ──────────────────────────────────────────────────────────
+
+export function useModels() {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery({
+    queryKey: queryKeys.models.all,
+    queryFn:  () => apiClient.get<{ models: string[] }>("/models"),
+    enabled:  Boolean(accessToken),
+    staleTime: 60_000,
   });
 }

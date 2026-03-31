@@ -39,4 +39,24 @@ function getAllModels() {
   return { ...MODEL_MAP };
 }
 
-module.exports = { selectModel, getAllModels };
+/**
+ * Returns list of available models.
+ * Fetches from Ollama /api/tags; falls back to configured models on error.
+ * @returns {Promise<string[]>}
+ */
+async function listAvailableModels() {
+  const base = process.env.OLLAMA_URL;
+  if (base) {
+    try {
+      const res = await fetch(`${base.replace(/\/$/, "")}/api/tags`, { signal: AbortSignal.timeout(4000) });
+      if (res.ok) {
+        const data = await res.json();
+        const names = (data.models ?? []).map((m) => m.name).filter(Boolean);
+        if (names.length > 0) return names;
+      }
+    } catch { /* fall through to configured list */ }
+  }
+  return [...new Set(Object.values(MODEL_MAP))];
+}
+
+module.exports = { selectModel, getAllModels, listAvailableModels };

@@ -112,7 +112,7 @@ export function AgentDetailPage() {
         </>
       }
     >
-      <div className="mb-4">
+      <div className="mb-4 flex items-center justify-between">
         <Button
           type="button"
           variant="ghost"
@@ -121,6 +121,12 @@ export function AgentDetailPage() {
         >
           ← Все агенты
         </Button>
+        <Link
+          to={`/agents/${agentId}/chat`}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 transition"
+        >
+          🧪 Playground
+        </Link>
       </div>
 
       <Card>

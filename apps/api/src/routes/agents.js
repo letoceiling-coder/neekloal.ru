@@ -4,6 +4,7 @@ const prisma = require("../lib/prisma");
 const authMiddleware = require("../middleware/auth");
 const agentRunRateLimit = require("../middleware/agentRunRateLimit");
 const { runAgentEngine } = require("../services/agentEngineRun");
+const { agentChat } = require("../services/agentRuntime");
 
 // ─── LLM helper (same approach as chat.js) ────────────────────────────────────
 function getGenerateUrl() {
@@ -262,5 +263,64 @@ module.exports = async function agentsRoutes(fastify) {
       include: { tools: true },
     });
     return updated;
+  });
+
+  // ── POST /agents/chat ─────────────────────────────────────────────────────
+  // Playground: chat with an agent using its rules as system prompt.
+  fastify.post("/agents/chat", { preHandler: [authMiddleware] }, async (request, reply) => {
+    if (!request.userId) {
+      return reply.code(403).send({ error: "Authentication required" });
+    }
+
+    const body = request.body && typeof request.body === "object" ? request.body : {};
+    const agentId  = body.agentId  != null ? String(body.agentId).trim()  : "";
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const model    = body.model    != null ? String(body.model).trim()    : null;
+    const reset    = body.reset === true;
+
+    if (!agentId) {
+      return reply.code(400).send({ error: "agentId is required" });
+    }
+
+    // Validate messages array
+    for (const m of messages) {
+      if (!m || typeof m !== "object" || typeof m.content !== "string" || !m.content.trim()) {
+        return reply.code(400).send({ error: "Each message must have a non-empty content string" });
+      }
+      if (!["user", "assistant", "system"].includes(m.role)) {
+        return reply.code(400).send({ error: `Invalid message role: ${m.role}` });
+      }
+    }
+
+    // Load agent from DB — must belong to the user's organization
+    const agent = await prisma.agent.findFirst({
+      where: {
+        id:             agentId,
+        organizationId: request.organizationId,
+        deletedAt:      null,
+      },
+    });
+    if (!agent) {
+      return reply.code(404).send({ error: "Agent not found" });
+    }
+
+    // Use agent.rules as system prompt (trim to avoid whitespace-only prompts)
+    const systemPrompt = agent.rules && agent.rules.trim() ? agent.rules : null;
+
+    try {
+      const result = await agentChat({
+        agentId,
+        userId:       request.userId,
+        systemPrompt,
+        messages,
+        model:        model || null,
+        reset,
+      });
+
+      return reply.code(200).send(result);
+    } catch (err) {
+      request.log.error({ err }, "agentChat failed");
+      return reply.code(502).send({ error: `LLM error: ${err.message}` });
+    }
   });
 };
