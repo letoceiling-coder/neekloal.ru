@@ -8,9 +8,21 @@ if [[ -n $(git status --porcelain) ]]; then
   exit 1
 fi
 
-echo "STEP 2 — PUSH"
-git pull origin main
-git push origin main
+echo "STEP 2 — CHECK REMOTE SYNC"
+git fetch origin main
+
+LOCAL=$(git rev-parse HEAD)
+REMOTE=$(git rev-parse origin/main)
+
+echo "LOCAL:  $LOCAL"
+echo "REMOTE: $REMOTE"
+
+if [[ "$LOCAL" != "$REMOTE" ]]; then
+  echo "❌ ERROR: LOCAL != ORIGIN/main — push your commits first"
+  exit 1
+fi
+
+echo "✅ LOCAL == REMOTE"
 
 echo "STEP 3 — SERVER DEPLOY"
 ssh root@89.169.39.244 << 'EOF'
