@@ -62,6 +62,22 @@ export async function generateVideo(data: GenerateVideoInput) {
   return apiClient.post<GenerateVideoResponse>("/video/generate", data);
 }
 
+export async function uploadVideoImage(file: File): Promise<{ refUrl: string }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const base =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/api`
+      : (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+  const { useAuthStore } = await import("../stores/authStore");
+  const token = useAuthStore.getState().accessToken;
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${base}/image/upload-ref`, { method: "POST", headers, body: fd });
+  if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+  return res.json() as Promise<{ refUrl: string }>;
+}
+
 export async function getVideoStatus(id: string) {
   return apiClient.get<VideoStatusResponse>(`/video/status/${id}`);
 }

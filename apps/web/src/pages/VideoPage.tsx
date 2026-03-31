@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
-import { Film, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Film, ImagePlus, Sparkles, X } from "lucide-react";
 import { Button, Card, CardContent, CardHeader, Input } from "../components/ui";
-import { getVideoStatus, useGenerateVideo, useVideoQueue } from "../api/video";
+import { getVideoStatus, uploadVideoImage, useGenerateVideo, useVideoQueue } from "../api/video";
 import { ApiError } from "../lib/apiClient";
 
 type UiMode = "text" | "photo" | "ad" | "cinema";
@@ -18,6 +18,7 @@ type VideoJobItem = {
   url: string | null;
   error: string | null;
   createdAt: number;
+  refPreview: string | null;
 };
 
 const MODE_OPTIONS: { id: UiMode; label: string }[] = [
@@ -58,7 +59,11 @@ export default function VideoPage() {
   const [duration, setDuration] = useState("2");
   const [fps, setFps] = useState("12");
   const [mode, setMode] = useState<UiMode>("text");
-  const [imageUrl, setImageUrl] = useState("");
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [jobs, setJobs] = useState<VideoJobItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [improving, setImproving] = useState(false);
@@ -66,6 +71,23 @@ export default function VideoPage() {
   const generateMutation = useGenerateVideo();
   const queueQuery = useVideoQueue();
   const hasActiveJobs = jobs.some((j) => j.status === "queued" || j.status === "processing");
+
+  const applyFile = useCallback((file: File) => {
+    if (!file.type.startsWith("image/")) {
+      setError("Только изображения (PNG, JPG, WEBP)");
+      return;
+    }
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
+    setError(null);
+  }, []);
+
+  const clearImage = useCallback(() => {
+    if (imagePreview) URL.revokeObjectURL(imagePreview);
+    setImageFile(null);
+    setImagePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, [imagePreview]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -145,9 +167,27 @@ export default function VideoPage() {
       setError("Введите описание видео");
       return;
     }
+    if (mode === "photo" && !imageFile) {
+      setError("Загрузите изображение для оживления");
+      return;
+    }
 
     const durationNum = Math.max(1, Math.min(8, Number(duration) || 2));
     const fpsNum = [8, 12, 16, 24].includes(Number(fps)) ? Number(fps) : 12;
+
+    let uploadedRefUrl: string | undefined;
+    if (mode === "photo" && imageFile) {
+      setUploading(true);
+      try {
+        const res = await uploadVideoImage(imageFile);
+        uploadedRefUrl = res.refUrl;
+      } catch {
+        setError("Не удалось загрузить изображение. Попробуйте ещё раз.");
+        setUploading(false);
+        return;
+      }
+      setUploading(false);
+    }
 
     try {
       const data = await generateMutation.mutateAsync({
@@ -155,7 +195,7 @@ export default function VideoPage() {
         duration: durationNum,
         fps: fpsNum,
         mode: mode === "photo" ? "image2video" : "text",
-        imageUrl: mode === "photo" ? imageUrl.trim() || undefined : undefined,
+        imageUrl: uploadedRefUrl,
       });
 
       setJobs((prev) => [
@@ -170,6 +210,7 @@ export default function VideoPage() {
           url: null,
           error: null,
           createdAt: Date.now(),
+          refPreview: imagePreview,
         },
         ...prev,
       ]);
@@ -239,13 +280,64 @@ export default function VideoPage() {
             </div>
 
             {mode === "photo" ? (
-              <Input
-                id="video-image-url"
-                label="Ссылка на фото (для оживления)"
-                value={imageUrl}
-                onChange={(e) => setImageUrl(e.target.value)}
-                placeholder="https://example.com/photo.jpg"
-              />
+              <div className="space-y-2">
+                <label className="mb-1 block text-xs font-medium text-neutral-600">
+                  Фото для оживления
+                </label>
+                {imagePreview ? (
+                  <div className="relative inline-block">
+                    <img
+                      src={imagePreview}
+                      alt="Предпросмотр"
+                      className="h-40 w-auto rounded-lg border border-neutral-200 object-cover shadow-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={clearImage}
+                      className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full bg-neutral-900 text-white shadow hover:bg-neutral-700"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => fileInputRef.current?.click()}
+                    onKeyDown={(e) => e.key === "Enter" && fileInputRef.current?.click()}
+                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                    onDragLeave={() => setDragOver(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDragOver(false);
+                      const f = e.dataTransfer.files[0];
+                      if (f) applyFile(f);
+                    }}
+                    className={[
+                      "flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed p-8 text-center transition-colors",
+                      dragOver
+                        ? "border-neutral-700 bg-neutral-100"
+                        : "border-neutral-200 bg-neutral-50 hover:border-neutral-400 hover:bg-neutral-100",
+                    ].join(" ")}
+                  >
+                    <ImagePlus className="h-8 w-8 text-neutral-400" />
+                    <p className="text-sm font-medium text-neutral-600">
+                      📤 Перетащите изображение или нажмите для загрузки
+                    </p>
+                    <p className="text-xs text-neutral-400">PNG, JPG, WEBP — до 20 МБ</p>
+                  </div>
+                )}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) applyFile(f);
+                  }}
+                />
+              </div>
             ) : null}
 
             {mode === "ad" ? (
@@ -292,11 +384,16 @@ export default function VideoPage() {
               </Button>
               <Button
                 type="submit"
-                loading={generateMutation.isPending}
-                disabled={!prompt.trim() || (mode === "photo" && !imageUrl.trim()) || generateMutation.isPending}
+                loading={uploading || generateMutation.isPending}
+                disabled={
+                  !prompt.trim() ||
+                  (mode === "photo" && !imageFile) ||
+                  uploading ||
+                  generateMutation.isPending
+                }
                 className="w-full py-2.5 text-base"
               >
-                🚀 Создать видео
+                {uploading ? "Загрузка фото..." : "🚀 Создать видео"}
               </Button>
             </div>
           </form>
@@ -313,7 +410,16 @@ export default function VideoPage() {
             <Card key={job.id} className="transition-all duration-300 hover:shadow-md">
               <CardContent className="space-y-3">
                 <div className="flex flex-wrap items-start justify-between gap-2">
-                  <p className="line-clamp-2 text-sm font-medium text-neutral-800">{job.prompt}</p>
+                  <div className="flex items-start gap-3">
+                    {job.refPreview ? (
+                      <img
+                        src={job.refPreview}
+                        alt="ref"
+                        className="h-12 w-12 flex-shrink-0 rounded-lg border border-neutral-200 object-cover"
+                      />
+                    ) : null}
+                    <p className="line-clamp-2 text-sm font-medium text-neutral-800">{job.prompt}</p>
+                  </div>
                   <span className={`rounded-full border px-2 py-1 text-xs font-medium ${statusBadgeClass(job.status)}`}>
                     {statusLabel(job.status)}
                   </span>
