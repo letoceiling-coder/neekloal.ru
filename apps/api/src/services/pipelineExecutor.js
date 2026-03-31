@@ -16,8 +16,8 @@
 
 const MAX_RETRY = 1; // 1 extra attempt (2 total) for transient errors
 
-const { analyzePrompt } = require("./aiBrainV2");
-const { enhancePrompt } = require("./promptEnhancer");
+const aiBrainV2      = require("./aiBrainV2");
+const promptEnhancer = require("./promptEnhancer");
 
 // ── Step executor (single step) ───────────────────────────────────────────────
 
@@ -26,7 +26,7 @@ async function executeStep(step, stepResult, context) {
 
     // ── Brain: synchronous prompt analysis ─────────────────────────────────
     case "brain": {
-      const brain = analyzePrompt(context.prompt, {
+      const brain = aiBrainV2.analyzePrompt(context.prompt, {
         enableVariations: context.enableVariations,
         referenceImage:   context.hasReference,
         mask:             context.hasMask,
@@ -64,7 +64,7 @@ async function executeStep(step, stepResult, context) {
       const finalStyle       = context.style       || context.brain?.style          || null;
       const finalAspectRatio = context.aspectRatio || context.brain?.aspectRatioLabel || null;
 
-      const res = await enhancePrompt(context.prompt, {
+      const res = await promptEnhancer.enhancePrompt(context.prompt, {
         style:        finalStyle,
         aspectRatio:  finalAspectRatio,
         systemPrompt: resolvedSystemPrompt,
