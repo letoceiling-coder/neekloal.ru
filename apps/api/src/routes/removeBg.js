@@ -7,11 +7,11 @@ const { execFile } = require("child_process");
 const { v4: uuidv4 } = require("uuid");
 const authMiddleware = require("../middleware/auth");
 
-const OUTPUT_DIR   = process.env.IMAGE_OUTPUT_DIR  || "/var/www/site-al.ru/uploads/images";
-const PUBLIC_BASE  = process.env.IMAGE_PUBLIC_BASE || "https://site-al.ru/uploads/images";
-const PYTHON_BIN   = process.env.PYTHON_BIN        || "python3";
-const SCRIPT_PATH  = path.join(__dirname, "../scripts/rembg_worker.py");
-const REMBG_TIMEOUT = Number(process.env.REMBG_TIMEOUT_MS) || 90_000; // 90s
+const OUTPUT_DIR    = process.env.IMAGE_OUTPUT_DIR  || "/var/www/site-al.ru/uploads/images";
+const PUBLIC_BASE   = process.env.IMAGE_PUBLIC_BASE || "https://site-al.ru/uploads/images";
+const PYTHON_BIN    = process.env.PYTHON_BIN        || "python3";
+const SCRIPT_PATH   = path.join(__dirname, "../scripts/rembg_worker.py");
+const REMBG_TIMEOUT = Number(process.env.REMBG_TIMEOUT_MS) || 90_000;
 
 /** Call the Python rembg worker as a subprocess. */
 function runRembg(inputPath, outputPath) {
@@ -28,14 +28,13 @@ function runRembg(inputPath, outputPath) {
 
         if (error) {
           const detail = err || error.message;
-          // Log stderr for debugging; don't expose internals to client
           process.stderr.write(`[removeBg] python error: ${detail}\n`);
           return reject(new Error(`Background removal failed: ${detail.slice(0, 200)}`));
         }
 
         if (out.startsWith("OK:")) {
           process.stdout.write(`[removeBg] done → ${out.slice(3)}\n`);
-          return resolve(out.slice(3)); // the output path
+          return resolve(out.slice(3));
         }
 
         process.stderr.write(`[removeBg] unexpected output: stdout="${out}" stderr="${err}"\n`);
@@ -45,33 +44,72 @@ function runRembg(inputPath, outputPath) {
   });
 }
 
+/** Core handler shared between JSON and multipart routes. */
+async function processImage(inputBuffer, originalName, reply) {
+  const id         = uuidv4();
+  const tempInput  = path.join(os.tmpdir(), `rembg_in_${id}.png`);
+  const tempOutput = path.join(os.tmpdir(), `rembg_out_${id}.png`);
+
+  try {
+    fs.writeFileSync(tempInput, inputBuffer);
+    process.stdout.write(`[removeBg] processing ${originalName} (id=${id})\n`);
+
+    await runRembg(tempInput, tempOutput);
+
+    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    const savedName = `rembg_${id}.png`;
+    const finalPath = path.join(OUTPUT_DIR, savedName);
+    fs.copyFileSync(tempOutput, finalPath);
+    const publicUrl = `${PUBLIC_BASE}/${savedName}`;
+    process.stdout.write(`[removeBg] saved → ${finalPath}\n`);
+
+    return { url: publicUrl, transparent: true, originalName, id };
+  } finally {
+    for (const f of [tempInput, tempOutput]) {
+      try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch { /* ignore */ }
+    }
+  }
+}
+
 module.exports = async function removeBgRoutes(fastify) {
-  // Register multipart for this plugin scope
-  await fastify.register(require("@fastify/multipart"), {
-    limits: { fileSize: 30 * 1024 * 1024, files: 1 },
+  // ── JSON route (imageUrl) ────────────────────────────────────────────────
+  fastify.post("/image/remove-bg", {
+    preHandler: [authMiddleware],
+    schema: {
+      body: {
+        type: "object",
+        required: ["imageUrl"],
+        properties: { imageUrl: { type: "string" } },
+      },
+    },
+  }, async (request, reply) => {
+    const { imageUrl } = request.body;
+    try {
+      process.stdout.write(`[removeBg] downloading ${imageUrl}\n`);
+      const axios = require("axios");
+      const res   = await axios.get(imageUrl, { responseType: "arraybuffer", timeout: 20_000 });
+      const originalName = path.basename(new URL(imageUrl).pathname) || "image.jpg";
+
+      const result = await processImage(Buffer.from(res.data), originalName, reply);
+      return reply.send(result);
+    } catch (err) {
+      process.stderr.write(`[removeBg] json route error: ${err.message}\n`);
+      if (err.message.includes("timed out")) {
+        return reply.code(504).send({ error: "Обработка заняла слишком долго." });
+      }
+      return reply.code(500).send({ error: "Не удалось удалить фон." });
+    }
   });
 
-  /**
-   * POST /image/remove-bg
-   *
-   * Accepts either:
-   *   a) multipart/form-data  — field "image" (file)
-   *   b) application/json     — { "imageUrl": "https://..." }
-   *
-   * Returns:
-   *   { url, transparent: true, originalName }
-   */
-  fastify.post("/image/remove-bg", { preHandler: [authMiddleware] }, async (request, reply) => {
-    const id = uuidv4();
-    const tempInput  = path.join(os.tmpdir(), `rembg_in_${id}.png`);
-    const tempOutput = path.join(os.tmpdir(), `rembg_out_${id}.png`);
-    let   originalName = "image.png";
+  // ── Multipart route (file upload) ────────────────────────────────────────
+  // Uses a scoped sub-plugin so multipart registration doesn't affect JSON routes above
+  await fastify.register(async function (scope) {
+    await scope.register(require("@fastify/multipart"), {
+      limits: { fileSize: 30 * 1024 * 1024, files: 1 },
+    });
 
-    try {
-      // ── 1. Get image bytes ───────────────────────────────────────────────
-      const ct = request.headers["content-type"] || "";
-
-      if (ct.includes("multipart/form-data")) {
+    scope.post("/image/remove-bg/upload", { preHandler: [authMiddleware] }, async (request, reply) => {
+      try {
         const file = await request.file();
         if (!file) return reply.code(400).send({ error: "No file provided" });
 
@@ -80,60 +118,16 @@ module.exports = async function removeBgRoutes(fastify) {
           return reply.code(400).send({ error: "Unsupported format. Use PNG, JPG, WEBP." });
         }
 
-        originalName = file.filename;
         const buffer = await file.toBuffer();
-        fs.writeFileSync(tempInput, buffer);
-
-      } else {
-        // JSON path — imageUrl
-        const { imageUrl } = request.body || {};
-        if (!imageUrl || typeof imageUrl !== "string") {
-          return reply.code(400).send({ error: "imageUrl is required (or upload a file via multipart)" });
+        const result = await processImage(buffer, file.filename, reply);
+        return reply.send(result);
+      } catch (err) {
+        process.stderr.write(`[removeBg] upload route error: ${err.message}\n`);
+        if (err.message.includes("timed out")) {
+          return reply.code(504).send({ error: "Обработка заняла слишком долго." });
         }
-
-        process.stdout.write(`[removeBg] downloading ${imageUrl}\n`);
-        const axios = require("axios");
-        const res = await axios.get(imageUrl, { responseType: "arraybuffer", timeout: 20_000 });
-        fs.writeFileSync(tempInput, Buffer.from(res.data));
-        originalName = path.basename(new URL(imageUrl).pathname) || "image.png";
+        return reply.code(500).send({ error: "Не удалось удалить фон." });
       }
-
-      // ── 2. Run rembg ─────────────────────────────────────────────────────
-      process.stdout.write(`[removeBg] processing ${originalName} (id=${id})\n`);
-      await runRembg(tempInput, tempOutput);
-
-      // ── 3. Move output to public dir ──────────────────────────────────────
-      fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-      const savedName = `rembg_${id}.png`;
-      const finalPath = path.join(OUTPUT_DIR, savedName);
-      fs.copyFileSync(tempOutput, finalPath);
-      const publicUrl = `${PUBLIC_BASE}/${savedName}`;
-
-      process.stdout.write(`[removeBg] saved → ${finalPath}\n`);
-
-      // ── 4. Cleanup temp files ─────────────────────────────────────────────
-      for (const f of [tempInput, tempOutput]) {
-        try { fs.unlinkSync(f); } catch { /* ignore */ }
-      }
-
-      return reply.send({
-        url: publicUrl,
-        transparent: true,
-        originalName,
-        id,
-      });
-
-    } catch (err) {
-      // Cleanup on error
-      for (const f of [tempInput, tempOutput]) {
-        try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch { /* ignore */ }
-      }
-      process.stderr.write(`[removeBg] error: ${err.message}\n`);
-
-      if (err.message.includes("timed out")) {
-        return reply.code(504).send({ error: "Обработка заняла слишком долго. Попробуйте меньшее изображение." });
-      }
-      return reply.code(500).send({ error: "Не удалось удалить фон. Попробуйте другое изображение." });
-    }
+    });
   });
 };
