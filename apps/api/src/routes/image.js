@@ -7,6 +7,7 @@ const authMiddleware = require("../middleware/auth");
 const { getImageQueue } = require("../queues/imageQueue");
 const { getCacheConnection } = require("../lib/redis");
 const { enhancePrompt, DEFAULT_NEGATIVE } = require("../services/promptEnhancer");
+const { analyzePrompt } = require("../services/aiBrain");
 const prisma = require("../lib/prisma");
 
 const MAX_WIDTH = 2048;
@@ -59,13 +60,20 @@ module.exports = async function imageRoutes(fastify) {
       return reply.code(400).send({ error: "prompt is required" });
     }
 
-    // Load user system prompt
+    // Brain analysis first
+    const brain = analyzePrompt(prompt.trim());
+    process.stdout.write(`[brain] enhance: type=${brain.type} style="${brain.style}"\n`);
+
+    const finalStyle = style || brain.style;
+    const finalAspectRatio = aspectRatio || brain.aspectRatioLabel;
+
     const userSettings = await prisma.userImageSettings.findUnique({
       where: { userId: request.userId },
     }).catch(() => null);
     const systemPrompt = userSettings?.useSystemPrompt ? (userSettings.imageSystemPrompt || null) : null;
+    const enhancerSystem = [systemPrompt, brain.composition].filter(Boolean).join("\n") || null;
 
-    const result = await enhancePrompt(prompt.trim(), { style, aspectRatio, systemPrompt });
+    const result = await enhancePrompt(prompt.trim(), { style: finalStyle, aspectRatio: finalAspectRatio, systemPrompt: enhancerSystem });
     return reply.send({
       enhancedPrompt: result.enhancedPrompt,
       negativePrompt: result.negativePrompt,
@@ -74,6 +82,7 @@ module.exports = async function imageRoutes(fastify) {
       appliedStyle: result.appliedStyle,
       appliedAspectRatio: result.appliedAspectRatio,
       appliedSystemPrompt: result.appliedSystemPrompt,
+      brain: { type: brain.type, style: brain.style, composition: brain.composition, suggestedSize: brain.suggestedSize },
     });
   });
 
@@ -119,18 +128,46 @@ module.exports = async function imageRoutes(fastify) {
     let finalPrompt = prompt.trim();
     let finalNegative = negativePrompt || null;
     let enhanceResult = null;
+    let brainResult = null;
+
+    // ── AI Brain: analyze prompt and fill in missing parameters ──────────────
+    if (useSmartEnhance) {
+      brainResult = analyzePrompt(finalPrompt);
+      process.stdout.write(
+        `[brain] type=${brainResult.type} style="${brainResult.style}" composition="${brainResult.composition}"\n`
+      );
+    }
+
+    // Apply brain suggestions only if user didn't supply explicit values
+    const finalStyle = style || (brainResult?.style ?? null);
+    const finalAspectRatio = aspectRatio || (brainResult?.aspectRatioLabel ?? null);
+
+    // Use brain-suggested dimensions if user left them at default 1024×1024 and brain suggests different
+    let finalW = w;
+    let finalH = h;
+    if (!style && !aspectRatio && brainResult?.suggestedSize) {
+      const { w: bw, h: bh } = brainResult.suggestedSize;
+      // Only override if within valid bounds and user didn't customize
+      if (bw >= MIN_DIM && bw <= MAX_WIDTH && bh >= MIN_DIM && bh <= MAX_HEIGHT) {
+        finalW = bw;
+        finalH = bh;
+      }
+    }
 
     if (!finalNegative && useSmartEnhance) {
-      // Load user system prompt
       const userSettings = await prisma.userImageSettings.findUnique({
         where: { userId: request.userId },
       }).catch(() => null);
       const systemPrompt = userSettings?.useSystemPrompt ? (userSettings.imageSystemPrompt || null) : null;
 
+      // Pass brain composition as system-level hint to the LLM enhancer
+      const compositionHint = brainResult?.composition ?? null;
+      const enhancerSystemPrompt = [systemPrompt, compositionHint].filter(Boolean).join("\n") || null;
+
       enhanceResult = await enhancePrompt(finalPrompt, {
-        style,
-        aspectRatio,
-        systemPrompt,
+        style: finalStyle,
+        aspectRatio: finalAspectRatio,
+        systemPrompt: enhancerSystemPrompt,
       });
       finalPrompt = enhanceResult.enhancedPrompt;
       finalNegative = enhanceResult.negativePrompt;
@@ -143,7 +180,7 @@ module.exports = async function imageRoutes(fastify) {
       prompt: finalPrompt,
       negativePrompt: finalNegative || DEFAULT_NEGATIVE,
       originalPrompt: prompt.trim(),
-      width: w, height: h, jobId,
+      width: finalW, height: finalH, jobId,
       userId: request.userId,
       organizationId: request.organizationId,
       mode: resolvedMode,
@@ -152,8 +189,8 @@ module.exports = async function imageRoutes(fastify) {
       strength: Math.min(Math.max(Number(strength) || 0.5, 0.1), 1.0),
       maskUrl: maskUrl || null,
       controlType: resolvedControlType,
-      style: style || null,
-      aspectRatio: aspectRatio || null,
+      style: finalStyle,
+      aspectRatio: finalAspectRatio,
     }, { jobId });
 
     try { await redis.set(userJobKey(request.userId), activeCount + 1, "EX", 300); } catch { /* ignore */ }
@@ -163,6 +200,9 @@ module.exports = async function imageRoutes(fastify) {
       status: "queued",
       mode: resolvedMode,
       message: "Генерация начата",
+      brain: brainResult
+        ? { type: brainResult.type, style: brainResult.style, composition: brainResult.composition, suggestedSize: brainResult.suggestedSize }
+        : null,
       enhanceApplied: enhanceResult
         ? {
             style: enhanceResult.appliedStyle,

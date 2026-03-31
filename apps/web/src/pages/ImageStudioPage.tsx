@@ -41,6 +41,13 @@ interface EnhanceApplied {
   systemPrompt: boolean;
 }
 
+interface BrainResult {
+  type: string;
+  style: string;
+  composition: string;
+  suggestedSize?: { w: number; h: number };
+}
+
 interface RefImage {
   previewUrl: string;
   refUrl: string;
@@ -211,6 +218,7 @@ export function ImageStudioPage() {
   const [lastEnhanced, setLastEnhanced]       = useState<{ prompt: string; negative: string } | null>(null);
   const [showEnhancedPrompt, setShowEnhancedPrompt] = useState(false);
   const [enhanceApplied, setEnhanceApplied]   = useState<EnhanceApplied | null>(null);
+  const [brainResult, setBrainResult]         = useState<BrainResult | null>(null);
 
   // UI state
   const [history, setHistory]               = useState<ImageJob[]>([]);
@@ -332,6 +340,7 @@ export function ImageStudioPage() {
     setLastEnhanced(null);
     setShowEnhancedPrompt(false);
     setEnhanceApplied(null);
+    setBrainResult(null);
     setActiveJob(null);
 
     const modeForJob = computeResolvedMode(enableVariations, enableControlNet, referenceImage, maskImage);
@@ -359,6 +368,7 @@ export function ImageStudioPage() {
             appliedStyle?: string | null;
             appliedAspectRatio?: string | null;
             appliedSystemPrompt?: boolean;
+            brain?: BrainResult | null;
           };
           if (data.enhancedPrompt) {
             finalPrompt = data.enhancedPrompt;
@@ -369,6 +379,7 @@ export function ImageStudioPage() {
               aspectRatio: data.appliedAspectRatio ?? null,
               systemPrompt: data.appliedSystemPrompt ?? false,
             });
+            if (data.brain) setBrainResult(data.brain);
           }
         }
       }
@@ -406,6 +417,7 @@ export function ImageStudioPage() {
         jobId?: string;
         error?: string;
         enhanceApplied?: EnhanceApplied | null;
+        brain?: BrainResult | null;
       };
 
       if (!res.ok) {
@@ -418,6 +430,7 @@ export function ImageStudioPage() {
       if (data.enhanceApplied && !enhanceApplied) {
         setEnhanceApplied(data.enhanceApplied);
       }
+      if (data.brain) setBrainResult(data.brain);
 
       setGenStage("rendering");
       setActiveJobId(data.jobId!);
@@ -618,6 +631,10 @@ export function ImageStudioPage() {
               </button>
             ))}
           </div>
+          {/* Live brain detection chip */}
+          {smartMode && prompt.trim().length > 4 && (
+            <PromptBrainChip prompt={prompt} />
+          )}
         </div>
 
         {enableVariations && (
@@ -843,7 +860,7 @@ export function ImageStudioPage() {
                 onToggle={() => setShowEnhancedPrompt((v) => !v)}
               />
             )}
-            <SmartFeedback applied={enhanceApplied} />
+            <SmartFeedback applied={enhanceApplied} brain={brainResult} />
             <div className="flex items-center justify-between">
               <p className="text-sm font-semibold text-neutral-700">
                 🎯 {resultUrls.length} вариантов
@@ -901,7 +918,7 @@ export function ImageStudioPage() {
                 onToggle={() => setShowEnhancedPrompt((v) => !v)}
               />
             )}
-            <SmartFeedback applied={enhanceApplied} />
+            <SmartFeedback applied={enhanceApplied} brain={brainResult} />
             {activeJob.mode && activeJob.mode !== "text" && (
               <div className="flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-3 py-1">
                 <span className="text-xs font-medium text-violet-700">
@@ -1102,24 +1119,83 @@ export function ImageStudioPage() {
   );
 }
 
+// ── Client-side brain (mirrors server aiBrain.js) ────────────────────────────
+
+const CLIENT_TYPE_RULES: Array<{ type: string; keywords: string[] }> = [
+  { type: "character",    keywords: ["человек","woman","man","girl","boy","женщина","мужчина","девушка","парень","warrior","hero","персонаж","character","portrait","портрет","лицо","face","person","люди","people","princess","queen","king","ninja","samurai","astronaut"] },
+  { type: "animal",       keywords: ["cat","dog","кот","собака","кошка","животное","animal","wolf","волк","fox","лиса","bear","медведь","lion","тигр","tiger","bird","птица","horse","лошадь","dragon","дракон","creature","rabbit","кролик","deer","олень","fish","рыба"] },
+  { type: "landscape",    keywords: ["landscape","пейзаж","mountain","гора","forest","лес","ocean","море","sea","lake","озеро","river","река","desert","пустыня","sky","небо","sunset","закат","sunrise","рассвет","nature","природа","field","поле","valley","canyon","waterfall","beach","пляж","island","остров","snow","снег","jungle","cave"] },
+  { type: "architecture", keywords: ["building","здание","house","дом","castle","замок","tower","башня","bridge","мост","cathedral","church","храм","city","город","street","улица","interior","интерьер","room","комната","architecture","архитектура","palace","дворец","ruins","ruинs","skyscraper","temple","alley"] },
+  { type: "product",      keywords: ["product","товар","bottle","бутылка","box","коробка","package","упаковка","label","этикетка","perfume","духи","phone","телефон","laptop","ноутбук","watch","часы","shoes","обувь","bag","сумка","car","машина","jewelry","ring","кольцо","cup","кружка"] },
+  { type: "food",         keywords: ["food","еда","dish","блюдо","meal","ужин","завтрак","обед","breakfast","lunch","dinner","pizza","burger","sushi","cake","торт","coffee","кофе","tea","чай","fruit","фрукт","vegetable","овощ","bread","хлеб","pasta","soup","суп","salad","салат","dessert","cocktail","wine","вино"] },
+  { type: "abstract",     keywords: ["abstract","абстракция","pattern","узор","texture","текстура","fractal","digital art","geometry","геометрия","mandala","neon","неон","glitch","space","cosmos","космос","nebula","galaxy","energy","энергия","flow","light","свет"] },
+];
+
+function clientDetectType(prompt: string): string {
+  const lower = prompt.toLowerCase();
+  let best = { type: "unknown", score: 0 };
+  for (const r of CLIENT_TYPE_RULES) {
+    const score = r.keywords.filter((kw) => lower.includes(kw)).length;
+    if (score > best.score) best = { type: r.type, score };
+  }
+  return best.type;
+}
+
+function PromptBrainChip({ prompt }: { prompt: string }) {
+  const type = clientDetectType(prompt);
+  if (type === "unknown") return null;
+  return (
+    <div className="flex items-center gap-1.5 text-[10px] text-violet-500">
+      <span className="font-medium">🧠</span>
+      <span>AI Brain: определён как <span className="font-semibold">{TYPE_LABEL[type]}</span></span>
+    </div>
+  );
+}
+
 // ── Smart mode feedback ───────────────────────────────────────────────────────
 
-function SmartFeedback({ applied }: { applied: EnhanceApplied | null }) {
-  if (!applied) return null;
-  const items: string[] = [];
-  if (applied.style) items.push(`стиль: ${applied.style}`);
-  if (applied.aspectRatio) items.push(`формат: ${applied.aspectRatio}`);
-  if (applied.systemPrompt) items.push("системный промпт");
+const TYPE_LABEL: Record<string, string> = {
+  character:    "🧑 персонаж",
+  animal:       "🐾 животное",
+  landscape:    "🌄 пейзаж",
+  architecture: "🏛 архитектура",
+  product:      "📦 продукт",
+  food:         "🍽 еда",
+  abstract:     "🌀 абстракция",
+  unknown:      "🧠 общий",
+};
+
+function SmartFeedback({
+  applied,
+  brain,
+}: {
+  applied: EnhanceApplied | null;
+  brain: BrainResult | null;
+}) {
+  if (!applied && !brain) return null;
+
+  const items: { label: string; sub?: string }[] = [];
+  if (brain?.type) items.push({ label: TYPE_LABEL[brain.type] ?? brain.type });
+  if (applied?.style || brain?.style) items.push({ label: `стиль: ${applied?.style ?? brain?.style}` });
+  if (applied?.aspectRatio) items.push({ label: `формат: ${applied.aspectRatio}` });
+  if (applied?.systemPrompt) items.push({ label: "системный промпт" });
   if (!items.length) return null;
 
   return (
-    <div className="flex w-full max-w-lg flex-wrap items-center gap-2 rounded-xl border border-violet-100 bg-violet-50 px-3 py-2">
-      <span className="shrink-0 text-xs font-medium text-violet-700">✨ Умный режим применил:</span>
-      {items.map((item) => (
-        <span key={item} className="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-[11px] text-violet-600 break-words">
-          {item}
-        </span>
-      ))}
+    <div className="flex w-full max-w-lg flex-col gap-1.5 rounded-xl border border-violet-100 bg-violet-50 px-3 py-2.5">
+      <span className="text-xs font-semibold text-violet-700">✨ Умный режим применил:</span>
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((item, i) => (
+          <span key={i} className="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-[11px] text-violet-600 break-words">
+            {item.label}
+          </span>
+        ))}
+      </div>
+      {brain?.composition && (
+        <p className="text-[10px] text-violet-400 break-words leading-relaxed">
+          📐 {brain.composition}
+        </p>
+      )}
     </div>
   );
 }
