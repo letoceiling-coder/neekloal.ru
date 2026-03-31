@@ -1,13 +1,36 @@
 "use strict";
 
 /**
- * Simple ETA model: each waiting slot ahead of the job costs AVG_JOB_TIME_SEC.
- * GPU worker concurrency is capped (default 1) so queue is serial per slot.
+ * Fallback ETA model in seconds (used when there is no runtime history yet).
  */
 const AVG_JOB_TIME_SEC = Math.max(5, Math.min(600, Number(process.env.VIDEO_QUEUE_AVG_JOB_SEC) || 30));
 
 /** Max parallel GPU jobs from this worker process (hard cap 2 — do not overload GPU). */
 const MAX_VIDEO_CONCURRENCY = Math.min(2, Math.max(1, Number(process.env.VIDEO_WORKER_CONCURRENCY) || 1));
+
+/** In-memory rolling durations (ms), process-local and intentionally lightweight. */
+const recentDurations = [];
+
+/**
+ * @param {number} ms
+ */
+function addDuration(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return;
+  recentDurations.push(n);
+  if (recentDurations.length > 20) {
+    recentDurations.shift();
+  }
+}
+
+/**
+ * @returns {number} average duration in milliseconds
+ */
+function getAvgDuration() {
+  if (!recentDurations.length) return AVG_JOB_TIME_SEC * 1000;
+  const sum = recentDurations.reduce((a, b) => a + b, 0);
+  return sum / recentDurations.length;
+}
 
 /**
  * Map DB/Bull statuses to API-facing statuses for the frontend.
@@ -48,9 +71,10 @@ async function getQueuePositionAndEta(queue, jobId) {
 
   const idxW = waiting.findIndex((j) => j.id === jobId);
   if (idxW >= 0) {
+    const avgMs = getAvgDuration();
     return {
       position: idxW,
-      eta: idxW * AVG_JOB_TIME_SEC,
+      eta: Math.round(((idxW + 1) * avgMs) / 1000),
       progress,
       bullState: "waiting",
     };
@@ -59,9 +83,10 @@ async function getQueuePositionAndEta(queue, jobId) {
   const idxD = delayed.findIndex((j) => j.id === jobId);
   if (idxD >= 0) {
     const position = waiting.length + idxD;
+    const avgMs = getAvgDuration();
     return {
       position,
-      eta: position * AVG_JOB_TIME_SEC,
+      eta: Math.round(((position + 1) * avgMs) / 1000),
       progress,
       bullState: "delayed",
     };
@@ -73,6 +98,8 @@ async function getQueuePositionAndEta(queue, jobId) {
 module.exports = {
   AVG_JOB_TIME_SEC,
   MAX_VIDEO_CONCURRENCY,
+  addDuration,
+  getAvgDuration,
   mapDbStatusToApi,
   getQueuePositionAndEta,
 };

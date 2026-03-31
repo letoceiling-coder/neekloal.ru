@@ -10,6 +10,7 @@ const {
   mapDbStatusToApi,
   getQueuePositionAndEta,
   AVG_JOB_TIME_SEC,
+  getAvgDuration,
 } = require("../lib/videoQueueMetrics");
 
 const OUTPUT_DIR  = process.env.VIDEO_OUTPUT_DIR  || "/var/www/site-al.ru/uploads/videos";
@@ -23,6 +24,13 @@ const MAX_DIM       = 768;
 const MIN_DIM       = 256;
 
 module.exports = async function videoRoutes(fastify) {
+  function progressWithFallback(status, progress) {
+    if (typeof progress === "number") return progress;
+    if (status === "completed") return 100;
+    if (status === "processing") return 0;
+    if (status === "queued") return 0;
+    return 0;
+  }
 
   // ── POST /video/generate ──────────────────────────────────────────────────
   fastify.post("/video/generate", { preHandler: [authMiddleware] }, async (request, reply) => {
@@ -134,7 +142,7 @@ module.exports = async function videoRoutes(fastify) {
         status:        mapDbStatusToApi(record.status),
         position,
         eta,
-        progress,
+        progress:      progressWithFallback(mapDbStatusToApi(record.status), progress),
         mode:          record.mode,
         prompt:        record.prompt,
         width:         record.width,
@@ -184,7 +192,7 @@ module.exports = async function videoRoutes(fastify) {
     if (state === "failed") {
       response.error = job.failedReason || "Video generation failed";
     }
-    if (progress !== null) response.progress = progress;
+    response.progress = progressWithFallback(response.status, progress);
 
     return reply.send(response);
   });
@@ -199,6 +207,7 @@ module.exports = async function videoRoutes(fastify) {
       active:    counts.active || 0,
       completed: counts.completed || 0,
       failed:    counts.failed || 0,
+      avgTimeSec: Math.max(1, Math.round(getAvgDuration() / 1000)),
       etaModelSecPerJob: AVG_JOB_TIME_SEC,
     });
   });

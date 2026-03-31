@@ -8,9 +8,21 @@ const path       = require("path");
 const { v4: uuidv4 } = require("uuid");
 const { getWorkerConnection } = require("../lib/redis");
 const prisma = require("../lib/prisma");
+const { MAX_VIDEO_CONCURRENCY, addDuration } = require("../lib/videoQueueMetrics");
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const COMFYUI_VIDEO_URL = process.env.COMFYUI_VIDEO_URL || "http://188.124.55.89:8189";
+/** ai-dock Caddy on ComfyUI requires Bearer WEB_TOKEN for :8188 (see /opt/ai-dock/etc/environment.sh in container) */
+const COMFYUI_VIDEO_TOKEN = process.env.COMFYUI_VIDEO_TOKEN || "";
+
+function comfyAuthHeaders(extra = {}) {
+  const h = { ...extra };
+  if (COMFYUI_VIDEO_TOKEN) {
+    h.Authorization = `Bearer ${COMFYUI_VIDEO_TOKEN}`;
+  }
+  return h;
+}
+
 const OUTPUT_DIR   = process.env.VIDEO_OUTPUT_DIR   || "/var/www/site-al.ru/uploads/videos";
 const PUBLIC_BASE  = process.env.VIDEO_PUBLIC_BASE  || "https://site-al.ru/uploads/videos";
 const PREVIEW_DIR  = process.env.VIDEO_PREVIEW_DIR  || "/var/www/site-al.ru/uploads/videos/previews";
@@ -18,6 +30,8 @@ const PREVIEW_BASE = process.env.VIDEO_PREVIEW_BASE || "https://site-al.ru/uploa
 
 const VIDEO_CHECKPOINT  = process.env.VIDEO_CHECKPOINT   || "v1-5-pruned-emaonly.safetensors";
 const VIDEO_MOTION_MOD  = process.env.VIDEO_MOTION_MODEL || "v3_sd15_mm.ckpt";
+/** AnimateDiff Evolved beta schedule enum (must match node dropdown; e.g. autoselect) */
+const VIDEO_BETA_SCHEDULE = process.env.VIDEO_BETA_SCHEDULE || "autoselect";
 
 const DEFAULT_NEGATIVE =
   "blurry, low quality, bad anatomy, deformed, ugly, watermark, text, out of focus, static, noise";
@@ -50,7 +64,7 @@ function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frame
       inputs: {
         model:       ["1", 0],
         model_name:  VIDEO_MOTION_MOD,
-        beta_schedule: "linear (AnimateDiff)",
+        beta_schedule: VIDEO_BETA_SCHEDULE,
       },
     },
     "6": {
@@ -131,7 +145,7 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
       inputs: {
         model:         ["1", 0],
         model_name:    VIDEO_MOTION_MOD,
-        beta_schedule: "linear (AnimateDiff)",
+        beta_schedule: VIDEO_BETA_SCHEDULE,
       },
     },
     "9": {
@@ -181,6 +195,7 @@ async function uploadToComfyUI(imageBuffer, filename) {
 
   const res = await fetch(`${COMFYUI_VIDEO_URL}/upload/image`, {
     method: "POST",
+    headers: comfyAuthHeaders(),
     body: formData,
     signal: AbortSignal.timeout(30_000),
   });
@@ -204,7 +219,7 @@ async function submitWorkflow(workflow) {
   try {
     res = await fetch(`${COMFYUI_VIDEO_URL}/prompt`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: comfyAuthHeaders({ "Content-Type": "application/json" }),
       body:    JSON.stringify({ prompt: workflow }),
       signal:  AbortSignal.timeout(15_000),
     });
@@ -228,14 +243,17 @@ async function submitWorkflow(workflow) {
  * videoFiles → look in `gifs` (VHS_VideoCombine outputs)
  * imageFiles → look in `images` (SaveImage outputs = preview frames)
  */
-async function waitForVideoOutput(promptId, timeoutMs = 600_000) {
+async function waitForVideoOutput(promptId, totalFrames, onProgress, timeoutMs = 600_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 3000));
 
     let history;
     try {
-      const res = await fetch(`${COMFYUI_VIDEO_URL}/history/${promptId}`, { signal: AbortSignal.timeout(10_000) });
+      const res = await fetch(`${COMFYUI_VIDEO_URL}/history/${promptId}`, {
+        headers: comfyAuthHeaders(),
+        signal: AbortSignal.timeout(10_000),
+      });
       if (!res.ok) { continue; }
       history = await res.json();
     } catch (e) {
@@ -274,6 +292,12 @@ async function waitForVideoOutput(promptId, timeoutMs = 600_000) {
       }
     }
 
+    const framesGenerated = imageFiles.length;
+    if (typeof onProgress === "function" && totalFrames > 0) {
+      const progress = Math.min(80, Math.round(10 + (framesGenerated / totalFrames) * 70));
+      await onProgress(progress);
+    }
+
     if (videoFiles.length > 0) {
       process.stdout.write(`[videoWorker] video ready: ${videoFiles.map(f => f.filename).join(", ")}\n`);
       return { videoFiles, imageFiles };
@@ -284,7 +308,10 @@ async function waitForVideoOutput(promptId, timeoutMs = 600_000) {
 
 async function downloadAndSaveFile(comfyFilename, subfolder, destPath, type = "output") {
   const url = `${COMFYUI_VIDEO_URL}/view?filename=${encodeURIComponent(comfyFilename)}&subfolder=${encodeURIComponent(subfolder)}&type=${type}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+  const res = await fetch(url, {
+    headers: comfyAuthHeaders(),
+    signal: AbortSignal.timeout(120_000),
+  });
   if (!res.ok) throw new Error(`Failed to download ${comfyFilename} (${res.status})`);
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
   fs.writeFileSync(destPath, Buffer.from(await res.arrayBuffer()));
@@ -294,6 +321,7 @@ async function downloadAndSaveFile(comfyFilename, subfolder, destPath, type = "o
 // ── Worker ───────────────────────────────────────────────────────────────────
 
 async function processVideoJob(job) {
+  const startTime = Date.now();
   const {
     prompt,
     negativePrompt,
@@ -314,6 +342,7 @@ async function processVideoJob(job) {
 
   process.stdout.write(`[video:job] job=${job.id} mode=${mode} frames=${frameCount} fps=${fps}\n`);
   job.log(`[video:job] mode=${mode} frameCount=${frameCount} fps=${fps}`);
+  await job.updateProgress(5);
 
   // Mark DB record as running
   await prisma.generatedVideo.updateMany({
@@ -323,11 +352,15 @@ async function processVideoJob(job) {
 
   // Verify ComfyUI video engine is up
   try {
-    const health = await fetch(`${COMFYUI_VIDEO_URL}/system_stats`, { signal: AbortSignal.timeout(10_000) });
+    const health = await fetch(`${COMFYUI_VIDEO_URL}/system_stats`, {
+      headers: comfyAuthHeaders(),
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!health.ok) throw new Error(`HTTP ${health.status}`);
   } catch (e) {
     throw new Error(`ComfyUI video engine unreachable at ${COMFYUI_VIDEO_URL}: ${e.message}`);
   }
+  await job.updateProgress(10);
 
   process.stdout.write(`[video:render] started — mode=${mode}\n`);
   job.log(`[video:render] started`);
@@ -347,10 +380,21 @@ async function processVideoJob(job) {
     workflow = buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps });
   }
 
+  await job.updateProgress(10);
   const promptId = await submitWorkflow(workflow);
   process.stdout.write(`[video:render] ComfyUI promptId=${promptId}\n`);
 
-  const { videoFiles, imageFiles } = await waitForVideoOutput(promptId);
+  let lastProgress = 10;
+  const { videoFiles, imageFiles } = await waitForVideoOutput(
+    promptId,
+    frameCount,
+    async (p) => {
+      if (p > lastProgress) {
+        lastProgress = p;
+        await job.updateProgress(p);
+      }
+    },
+  );
 
   process.stdout.write(`[video:frames] count=${frameCount} videoFiles=${videoFiles.length} previewFrames=${imageFiles.length}\n`);
   job.log(`[video:frames] count=${frameCount}`);
@@ -366,6 +410,7 @@ async function processVideoJob(job) {
   const publicUrl = `${PUBLIC_BASE}/${savedName}`;
 
   process.stdout.write(`[video:done] saved video → ${localPath}\n`);
+  await job.updateProgress(90);
 
   // ── Save preview frame (first frame from SaveImage nodes) ─────────────────
   let previewUrl  = null;
@@ -407,6 +452,8 @@ async function processVideoJob(job) {
   }
 
   job.log(`[video:done] saved url=${publicUrl}`);
+  await job.updateProgress(100);
+  addDuration(Date.now() - startTime);
 
   return {
     url: publicUrl,
@@ -427,7 +474,7 @@ function startVideoWorker() {
 
   const worker = new Worker(queueName, processVideoJob, {
     connection:  getWorkerConnection(),
-    concurrency: 1,
+    concurrency: MAX_VIDEO_CONCURRENCY, // default 1; never > 2 (GPU safety)
     lockDuration: 660_000,  // 11 min lock — video generation takes long
   });
 
@@ -449,7 +496,9 @@ function startVideoWorker() {
     process.stderr.write(`[videoWorker] worker error: ${err.message}\n`);
   });
 
-  process.stdout.write(`[videoWorker] started. COMFYUI_VIDEO_URL=${COMFYUI_VIDEO_URL}\n`);
+  process.stdout.write(
+    `[videoWorker] started. COMFYUI_VIDEO_URL=${COMFYUI_VIDEO_URL} auth=${COMFYUI_VIDEO_TOKEN ? "bearer" : "none"}\n`,
+  );
   return worker;
 }
 
