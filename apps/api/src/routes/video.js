@@ -6,6 +6,11 @@ const { v4: uuidv4 }    = require("uuid");
 const authMiddleware     = require("../middleware/auth");
 const { getVideoQueue }  = require("../queues/videoQueue");
 const prisma             = require("../lib/prisma");
+const {
+  mapDbStatusToApi,
+  getQueuePositionAndEta,
+  AVG_JOB_TIME_SEC,
+} = require("../lib/videoQueueMetrics");
 
 const OUTPUT_DIR  = process.env.VIDEO_OUTPUT_DIR  || "/var/www/site-al.ru/uploads/videos";
 const PREVIEW_DIR = process.env.VIDEO_PREVIEW_DIR || "/var/www/site-al.ru/uploads/videos/previews";
@@ -93,9 +98,13 @@ module.exports = async function videoRoutes(fastify) {
 
     process.stdout.write(`[video:job] created jobId=${jobId} mode=${resolvedMode} ${finalWidth}x${finalHeight} ${finalFps}fps ${finalDuration}s\n`);
 
+    const { position, eta } = await getQueuePositionAndEta(queue, jobId);
+
     return reply.code(202).send({
       jobId,
       status:      "queued",
+      position,
+      eta,
       mode:        resolvedMode,
       width:       finalWidth,
       height:      finalHeight,
@@ -116,10 +125,16 @@ module.exports = async function videoRoutes(fastify) {
     }).catch(() => null);
 
     if (record) {
+      const queue = getVideoQueue();
+      const { position, eta, progress } = await getQueuePositionAndEta(queue, record.jobId);
+
       return reply.send({
         jobId:         record.jobId,
         id:            record.id,
-        status:        record.status,
+        status:        mapDbStatusToApi(record.status),
+        position,
+        eta,
+        progress,
         mode:          record.mode,
         prompt:        record.prompt,
         width:         record.width,
@@ -142,11 +157,14 @@ module.exports = async function videoRoutes(fastify) {
     if (!job) return reply.code(404).send({ error: "Job not found" });
 
     const state  = await job.getState();
+    const { position, eta, progress } = await getQueuePositionAndEta(queue, id);
     const result = job.returnvalue;
 
     const response = {
       jobId:      id,
-      status:     state,
+      status:     mapDbStatusToApi(state),
+      position,
+      eta,
       mode:       job.data.mode || "text",
       prompt:     job.data.prompt,
       width:      job.data.width,
@@ -166,9 +184,23 @@ module.exports = async function videoRoutes(fastify) {
     if (state === "failed") {
       response.error = job.failedReason || "Video generation failed";
     }
-    if (state === "active") response.progress = job.progress || 0;
+    if (progress !== null) response.progress = progress;
 
     return reply.send(response);
+  });
+
+  // ── GET /video/queue ────────────────────────────────────────────────────────
+  fastify.get("/video/queue", { preHandler: [authMiddleware] }, async (_request, reply) => {
+    const queue = getVideoQueue();
+    const counts = await queue.getJobCounts("waiting", "active", "completed", "failed", "delayed");
+
+    return reply.send({
+      waiting:   (counts.waiting || 0) + (counts.delayed || 0),
+      active:    counts.active || 0,
+      completed: counts.completed || 0,
+      failed:    counts.failed || 0,
+      etaModelSecPerJob: AVG_JOB_TIME_SEC,
+    });
   });
 
   // ── GET /video/list ───────────────────────────────────────────────────────
@@ -189,7 +221,7 @@ module.exports = async function videoRoutes(fastify) {
           items:  rows.map((r) => ({
             id:           r.id,
             jobId:        r.jobId,
-            status:       r.status,
+            status:       mapDbStatusToApi(r.status),
             mode:         r.mode,
             prompt:       r.prompt,
             width:        r.width,
