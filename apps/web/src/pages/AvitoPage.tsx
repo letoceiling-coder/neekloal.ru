@@ -1,174 +1,422 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
-  Store,
-  CheckCircle2,
-  XCircle,
-  Copy,
-  RefreshCw,
-  Loader2,
-  MessageSquare,
-  ClipboardList,
-  ChevronDown,
-  Zap,
-  Users,
-  Clock,
-  ShieldCheck,
-  AlertTriangle,
+  Store, CheckCircle2, XCircle, Copy, RefreshCw, Loader2,
+  MessageSquare, ClipboardList, ChevronDown, Zap, Users,
+  Clock, ShieldCheck, Plus, Trash2, Pencil, Eye, EyeOff,
+  ToggleLeft, ToggleRight, Link2,
 } from "lucide-react";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-} from "../components/ui";
+import { Card, CardContent, CardHeader } from "../components/ui";
 import { apiClient } from "../lib/apiClient";
 import { useAuthStore } from "../stores/authStore";
+import {
+  useAvitoAccounts,
+  useCreateAvitoAccount,
+  usePatchAvitoAccount,
+  useDeleteAvitoAccount,
+  usePatchAvitoAgent,
+  useAvitoConversations,
+  useAvitoAudit,
+  type AvitoAccount,
+  type AvitoConversation,
+  type AvitoAuditLog,
+} from "../api/avito";
 import type { Agent } from "../api/types";
 
 const WEBHOOK_BASE = "https://site-al.ru/api/avito/webhook";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-interface AvitoConversation {
-  id:             string;
-  agentId:        string;
-  chatId:         string;
-  externalUserId: string;
-  title:          string | null;
-  messageCount:   number;
-  createdAt:      string;
-  updatedAt:      string;
-}
-
-interface AvitoAuditLog {
-  id:         string;
-  agentId:    string;
-  chatId:     string;
-  authorId:   string;
-  input:      string;
-  output:     string | null;
-  decision:   string;
-  modelUsed:  string | null;
-  success:    boolean;
-  durationMs: number | null;
-  createdAt:  string;
-  classification?: {
-    intent:        string;
-    priority:      string;
-    isHotLead:     boolean;
-    requiresHuman: boolean;
-    confidence:    number;
-  } | null;
-}
-
-// ── Small helpers ─────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 const AVITO_MODES = [
-  { value: "autoreply", label: "autoreply",  desc: "ИИ отвечает сам",                color: "text-emerald-600 bg-emerald-50  border-emerald-200" },
-  { value: "copilot",   label: "copilot",    desc: "ИИ готовит, человек отправляет", color: "text-blue-600   bg-blue-50    border-blue-200" },
-  { value: "human",     label: "human",      desc: "Только запись, без ИИ",          color: "text-amber-600  bg-amber-50   border-amber-200" },
-  { value: "off",       label: "off",        desc: "Игнорировать сообщения",         color: "text-neutral-500 bg-neutral-50 border-neutral-200" },
+  { value: "autoreply", label: "autoreply", desc: "ИИ отвечает сам",                color: "text-emerald-600 bg-emerald-50  border-emerald-200" },
+  { value: "copilot",   label: "copilot",   desc: "ИИ готовит, человек отправляет", color: "text-blue-600   bg-blue-50    border-blue-200" },
+  { value: "human",     label: "human",     desc: "Только запись, без ИИ",          color: "text-amber-600  bg-amber-50   border-amber-200" },
+  { value: "off",       label: "off",       desc: "Игнорировать сообщения",         color: "text-neutral-500 bg-neutral-50 border-neutral-200" },
 ];
 
-function modeStyle(value: string) {
-  return AVITO_MODES.find((m) => m.value === value)?.color ?? AVITO_MODES[3].color;
+function modeStyle(v: string) {
+  return AVITO_MODES.find((m) => m.value === v)?.color ?? AVITO_MODES[3].color;
 }
-function modeDesc(value: string) {
-  return AVITO_MODES.find((m) => m.value === value)?.desc ?? "";
+function modeDesc(v: string) {
+  return AVITO_MODES.find((m) => m.value === v)?.desc ?? "";
 }
-
 function fmtDate(iso: string) {
-  return new Date(iso).toLocaleString("ru-RU", {
-    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
-  });
+  return new Date(iso).toLocaleString("ru-RU", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
-
-function intentBadge(intent: string) {
+function intentColor(intent: string) {
   const map: Record<string, string> = {
-    price_inquiry:  "text-violet-700 bg-violet-50",
-    availability:   "text-blue-700   bg-blue-50",
-    delivery:       "text-sky-700    bg-sky-50",
-    complaint:      "text-red-700    bg-red-50",
-    greeting:       "text-neutral-600 bg-neutral-100",
-    payment:        "text-emerald-700 bg-emerald-50",
-    product_question: "text-amber-700 bg-amber-50",
-    request_human:  "text-orange-700 bg-orange-50",
-    general:        "text-neutral-500 bg-neutral-100",
+    price_inquiry: "text-violet-700 bg-violet-50", availability: "text-blue-700 bg-blue-50",
+    delivery: "text-sky-700 bg-sky-50", complaint: "text-red-700 bg-red-50",
+    greeting: "text-neutral-600 bg-neutral-100", payment: "text-emerald-700 bg-emerald-50",
+    product_question: "text-amber-700 bg-amber-50", request_human: "text-orange-700 bg-orange-50",
+    general: "text-neutral-500 bg-neutral-100",
   };
   return map[intent] ?? "text-neutral-500 bg-neutral-100";
 }
 
-// ── Hooks ─────────────────────────────────────────────────────────────────────
+// ── AccountForm ───────────────────────────────────────────────────────────────
 
-function useAgents() {
-  const accessToken = useAuthStore((s) => s.accessToken);
-  return useQuery({
-    queryKey: ["agents"],
-    queryFn: () => apiClient.get<Agent[]>("/agents"),
-    enabled: Boolean(accessToken),
-  });
+interface AccountFormProps {
+  initial?: Partial<AvitoAccount & { accessToken?: string }>;
+  onSave:   (data: { name: string; accessToken: string; accountId: string; webhookSecret: string; isActive: boolean }) => void;
+  onCancel: () => void;
+  loading:  boolean;
 }
 
-function useAvitoStatus() {
-  const accessToken = useAuthStore((s) => s.accessToken);
-  return useQuery({
-    queryKey: ["avito-status"],
-    queryFn: async () => {
-      try {
-        await apiClient.get("/avito/chats");
-        return "connected" as const;
-      } catch {
-        return "disconnected" as const;
-      }
-    },
-    enabled: Boolean(accessToken),
-    staleTime: 30_000,
-    retry: false,
-  });
+function AccountForm({ initial, onSave, onCancel, loading }: AccountFormProps) {
+  const [name,          setName]          = useState(initial?.name ?? "");
+  const [accessToken,   setAccessToken]   = useState(initial?.accessToken ?? "");
+  const [accountId,     setAccountId]     = useState(initial?.accountId ?? "");
+  const [webhookSecret, setWebhookSecret] = useState("");
+  const [isActive,      setIsActive]      = useState(initial?.isActive ?? true);
+  const [showToken,     setShowToken]     = useState(false);
+
+  const isEdit = Boolean(initial?.id);
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!isEdit && !accessToken.trim()) return;
+    if (!accountId.trim()) return;
+    onSave({ name: name.trim(), accessToken: accessToken.trim(), accountId: accountId.trim(), webhookSecret: webhookSecret.trim(), isActive });
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-neutral-600">Название (необязательно)</label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Магазин запчастей"
+            className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-neutral-600">Account ID <span className="text-red-400">*</span></label>
+          <input
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
+            placeholder="123456789"
+            required={!isEdit}
+            className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none"
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs font-medium text-neutral-600">
+          Access Token {isEdit ? "(оставьте пустым чтобы не менять)" : <span className="text-red-400">*</span>}
+        </label>
+        <div className="relative">
+          <input
+            type={showToken ? "text" : "password"}
+            value={accessToken}
+            onChange={(e) => setAccessToken(e.target.value)}
+            placeholder={isEdit ? "••••••••• (не изменять)" : "Bearer token из Avito Developer Console"}
+            required={!isEdit}
+            className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 pr-9 text-sm placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => setShowToken(!showToken)}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
+          >
+            {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs font-medium text-neutral-600">Webhook Secret (HMAC, необязательно)</label>
+        <input
+          type="password"
+          value={webhookSecret}
+          onChange={(e) => setWebhookSecret(e.target.value)}
+          placeholder="Секрет для верификации подписи от Avito"
+          className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none"
+        />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={() => setIsActive(!isActive)}>
+          {isActive
+            ? <ToggleRight className="h-6 w-6 text-emerald-500" />
+            : <ToggleLeft  className="h-6 w-6 text-neutral-400" />}
+        </button>
+        <span className="text-sm text-neutral-600">Аккаунт активен</span>
+      </div>
+
+      <div className="flex justify-end gap-2 pt-1">
+        <button type="button" onClick={onCancel}
+          className="rounded-md border border-neutral-200 px-4 py-1.5 text-sm text-neutral-600 hover:bg-neutral-50">
+          Отмена
+        </button>
+        <button type="submit" disabled={loading}
+          className="flex items-center gap-1.5 rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+          {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          {isEdit ? "Сохранить" : "Подключить"}
+        </button>
+      </div>
+    </form>
+  );
 }
 
-function useAvitoConversations() {
-  const accessToken = useAuthStore((s) => s.accessToken);
-  return useQuery({
-    queryKey: ["avito-conversations"],
-    queryFn: () => apiClient.get<AvitoConversation[]>("/avito/conversations"),
-    enabled: Boolean(accessToken),
-    staleTime: 15_000,
-  });
+// ── AccountCard ───────────────────────────────────────────────────────────────
+
+function AccountCard({
+  account,
+  onEdit,
+  onDelete,
+  onToggle,
+  deleting,
+  toggling,
+}: {
+  account:  AvitoAccount;
+  onEdit:   () => void;
+  onDelete: () => void;
+  onToggle: () => void;
+  deleting: boolean;
+  toggling: boolean;
+}) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  return (
+    <div className={[
+      "rounded-xl border p-4 transition-all",
+      account.isActive ? "border-emerald-200 bg-emerald-50/40" : "border-neutral-200 bg-neutral-50",
+    ].join(" ")}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className={[
+            "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-sm font-bold",
+            account.isActive ? "bg-emerald-100 text-emerald-700" : "bg-neutral-200 text-neutral-500",
+          ].join(" ")}>
+            {(account.name ?? account.accountId).slice(0, 2).toUpperCase()}
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-neutral-800">
+              {account.name || `Аккаунт ${account.accountId}`}
+            </p>
+            <p className="text-xs text-neutral-500">ID: {account.accountId}</p>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1">
+          <span className={[
+            "rounded-full px-2 py-0.5 text-[11px] font-medium",
+            account.isActive ? "bg-emerald-100 text-emerald-700" : "bg-neutral-200 text-neutral-500",
+          ].join(" ")}>
+            {account.isActive ? "активен" : "выкл"}
+          </span>
+          <button onClick={onToggle} disabled={toggling}
+            className="rounded-md p-1.5 text-neutral-400 hover:bg-white hover:text-neutral-700 disabled:opacity-50"
+            title={account.isActive ? "Деактивировать" : "Активировать"}>
+            {toggling
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : account.isActive
+                ? <ToggleRight className="h-4 w-4 text-emerald-500" />
+                : <ToggleLeft  className="h-4 w-4" />}
+          </button>
+          <button onClick={onEdit}
+            className="rounded-md p-1.5 text-neutral-400 hover:bg-white hover:text-neutral-700">
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+          {confirmDelete ? (
+            <div className="flex items-center gap-1">
+              <button onClick={onDelete} disabled={deleting}
+                className="rounded-md bg-red-500 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-600 disabled:opacity-50">
+                {deleting ? "…" : "Удалить"}
+              </button>
+              <button onClick={() => setConfirmDelete(false)}
+                className="rounded-md px-2 py-1 text-[11px] text-neutral-500 hover:bg-white">
+                Отмена
+              </button>
+            </div>
+          ) : (
+            <button onClick={() => setConfirmDelete(true)}
+              className="rounded-md p-1.5 text-neutral-400 hover:bg-white hover:text-red-500">
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {account.hasToken && (
+          <span className="flex items-center gap-1 rounded-md bg-white/80 border border-neutral-200 px-2 py-0.5 text-[11px] text-neutral-500">
+            <CheckCircle2 className="h-3 w-3 text-emerald-500" /> Token OK
+          </span>
+        )}
+        {account.hasWebhookSecret && (
+          <span className="flex items-center gap-1 rounded-md bg-white/80 border border-neutral-200 px-2 py-0.5 text-[11px] text-neutral-500">
+            <ShieldCheck className="h-3 w-3 text-blue-500" /> Webhook Secret
+          </span>
+        )}
+        <span className="text-[11px] text-neutral-400 ml-auto">{fmtDate(account.createdAt)}</span>
+      </div>
+    </div>
+  );
 }
 
-function useAvitoAudit() {
-  const accessToken = useAuthStore((s) => s.accessToken);
-  return useQuery({
-    queryKey: ["avito-audit"],
-    queryFn: () => apiClient.get<AvitoAuditLog[]>("/avito/audit"),
-    enabled: Boolean(accessToken),
-    staleTime: 15_000,
-  });
+// ── AgentRow ──────────────────────────────────────────────────────────────────
+
+function AgentRow({
+  agent,
+  accounts,
+  copiedId,
+  onCopy,
+}: {
+  agent:    Agent;
+  accounts: AvitoAccount[];
+  copiedId: string | null;
+  onCopy:   (id: string) => void;
+}) {
+  const patchAgent = usePatchAvitoAgent();
+  const [modeOpen,    setModeOpen]    = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+
+  const mode            = agent.avitoMode ?? "autoreply";
+  const linkedAccount   = accounts.find((a) => a.id === agent.avitoAccountId) ?? null;
+  const webhookUrl      = `${WEBHOOK_BASE}/${agent.id}`;
+
+  function setMode(m: string) {
+    patchAgent.mutate({ agentId: agent.id, avitoMode: m });
+    setModeOpen(false);
+  }
+  function setAccount(id: string | null) {
+    patchAgent.mutate({ agentId: agent.id, avitoAccountId: id });
+    setAccountOpen(false);
+  }
+
+  return (
+    <div className="px-5 py-4">
+      <div className="flex flex-wrap items-center gap-3">
+        {/* Avatar + name */}
+        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-neutral-100 text-xs font-bold text-neutral-500">
+            {agent.name.slice(0, 2).toUpperCase()}
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-neutral-800">{agent.name}</p>
+            <p className="text-[11px] text-neutral-400">{modeDesc(mode)}</p>
+          </div>
+        </div>
+
+        {/* Account selector */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => { setAccountOpen(!accountOpen); setModeOpen(false); }}
+            disabled={patchAgent.isPending}
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
+          >
+            <Link2 className="h-3 w-3 shrink-0 text-neutral-400" />
+            <span className="max-w-[100px] truncate">
+              {linkedAccount ? (linkedAccount.name || `ID ${linkedAccount.accountId}`) : "Аккаунт…"}
+            </span>
+            <ChevronDown className={["h-3 w-3 transition-transform", accountOpen ? "rotate-180" : ""].join(" ")} />
+          </button>
+          {accountOpen && (
+            <div className="absolute left-0 top-full z-20 mt-1 w-52 rounded-lg border border-neutral-200 bg-white py-1 shadow-lg">
+              <button
+                onClick={() => setAccount(null)}
+                className="w-full px-3 py-2 text-left text-xs text-neutral-400 hover:bg-neutral-50"
+              >
+                — не привязан —
+              </button>
+              {accounts.filter((a) => a.isActive).map((a) => (
+                <button
+                  key={a.id}
+                  onClick={() => setAccount(a.id)}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-neutral-50"
+                >
+                  {a.id === agent.avitoAccountId && <CheckCircle2 className="h-3 w-3 text-emerald-500 shrink-0" />}
+                  <span className="truncate text-xs text-neutral-700">{a.name || `ID ${a.accountId}`}</span>
+                </button>
+              ))}
+              {accounts.filter((a) => a.isActive).length === 0 && (
+                <p className="px-3 py-2 text-[11px] text-neutral-400">Нет активных аккаунтов</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Mode selector */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => { setModeOpen(!modeOpen); setAccountOpen(false); }}
+            disabled={patchAgent.isPending}
+            className={["flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50", modeStyle(mode)].join(" ")}
+          >
+            {mode}
+            <ChevronDown className={["h-3 w-3 transition-transform", modeOpen ? "rotate-180" : ""].join(" ")} />
+          </button>
+          {modeOpen && (
+            <div className="absolute right-0 top-full z-20 mt-1 w-52 rounded-lg border border-neutral-200 bg-white py-1 shadow-lg">
+              {AVITO_MODES.map((m) => (
+                <button
+                  key={m.value}
+                  onClick={() => setMode(m.value)}
+                  className="w-full px-3 py-2 text-left hover:bg-neutral-50"
+                >
+                  <span className={["inline-block rounded border px-1.5 py-0.5 text-[10px] font-medium mr-2", m.color].join(" ")}>{m.value}</span>
+                  <span className="text-xs text-neutral-500">{m.desc}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Webhook URL */}
+        <div className="flex items-center gap-1.5 rounded-md border border-dashed border-neutral-300 bg-neutral-50 px-2.5 py-1.5">
+          <code className="max-w-[140px] truncate text-[10px] text-neutral-500">{webhookUrl}</code>
+          <button
+            type="button"
+            onClick={() => onCopy(agent.id)}
+            className="ml-1 text-neutral-400 hover:text-neutral-700 transition-colors"
+            title="Скопировать"
+          >
+            {copiedId === agent.id
+              ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+              : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-function usePatchAvitoMode() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ agentId, avitoMode }: { agentId: string; avitoMode: string }) =>
-      apiClient.patch<{ id: string; avitoMode: string }>(`/avito/agent/${agentId}`, { avitoMode }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["agents"] });
-    },
-  });
-}
-
-// ── Component ─────────────────────────────────────────────────────────────────
+// ── Main Page ─────────────────────────────────────────────────────────────────
 
 export function AvitoPage() {
-  const { data: agents, isLoading: agentsLoading } = useAgents();
-  const { data: status, isLoading: statusLoading, refetch: refetchStatus } = useAvitoStatus();
-  const { data: conversations, isLoading: convsLoading } = useAvitoConversations();
-  const { data: auditLogs,     isLoading: auditLoading  } = useAvitoAudit();
-  const patchMode = usePatchAvitoMode();
+  const accessToken = useAuthStore((s) => s.accessToken);
 
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [expandedAudit, setExpandedAudit] = useState<string | null>(null);
+  // Data
+  const { data: accounts, isLoading: accountsLoading, refetch: refetchAccounts } = useAvitoAccounts();
+  const { data: agents,   isLoading: agentsLoading } = useQuery({
+    queryKey: ["agents"],
+    queryFn:  () => apiClient.get<Agent[]>("/agents"),
+    enabled:  Boolean(accessToken),
+  });
+  const { data: conversations, isLoading: convsLoading  } = useAvitoConversations();
+  const { data: auditLogs,     isLoading: auditLoading  } = useAvitoAudit();
+
+  // Mutations
+  const createAccount = useCreateAvitoAccount();
+  const patchAccount  = usePatchAvitoAccount();
+  const deleteAccount = useDeleteAvitoAccount();
+
+  // UI state
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [editingId,      setEditingId]      = useState<string | null>(null);
+  const [copiedId,       setCopiedId]       = useState<string | null>(null);
+  const [expandedAudit,  setExpandedAudit]  = useState<string | null>(null);
+
+  // Derived status
+  const activeAccounts = accounts?.filter((a) => a.isActive && a.hasToken) ?? [];
+  const connected      = activeAccounts.length > 0;
 
   function copyWebhook(agentId: string) {
     void navigator.clipboard.writeText(`${WEBHOOK_BASE}/${agentId}`);
@@ -176,71 +424,98 @@ export function AvitoPage() {
     setTimeout(() => setCopiedId(null), 1800);
   }
 
-  const connected = status === "connected";
+  async function handleCreate(data: { name: string; accessToken: string; accountId: string; webhookSecret: string; isActive: boolean }) {
+    await createAccount.mutateAsync({
+      name:          data.name || undefined,
+      accessToken:   data.accessToken,
+      accountId:     data.accountId,
+      webhookSecret: data.webhookSecret || undefined,
+      isActive:      data.isActive,
+    });
+    setShowCreateForm(false);
+  }
+
+  async function handleEdit(id: string, data: { name: string; accessToken: string; accountId: string; webhookSecret: string; isActive: boolean }) {
+    await patchAccount.mutateAsync({
+      id,
+      name:          data.name || null,
+      ...(data.accessToken ? { accessToken: data.accessToken } : {}),
+      accountId:     data.accountId,
+      webhookSecret: data.webhookSecret || null,
+      isActive:      data.isActive,
+    });
+    setEditingId(null);
+  }
 
   return (
     <div className="space-y-5 transition-all duration-200 ease-out">
-      {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <div className="mb-6 flex items-start justify-between gap-4">
+
+      {/* ── Header ────────────────────────────────────────────────────────── */}
+      <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow">
             <Store className="h-5 w-5" />
           </div>
           <div>
             <h1 className="text-xl font-semibold text-neutral-900">Avito Integration</h1>
-            <p className="text-sm text-neutral-500">Управление Avito Messenger — очереди, ИИ-ответы, CRM</p>
+            <p className="text-sm text-neutral-500">Мультиаккаунт · BullMQ · ИИ-ответы · CRM</p>
           </div>
         </div>
         <button
-          onClick={() => void refetchStatus()}
-          disabled={statusLoading}
-          className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-600 shadow-sm hover:bg-neutral-50 disabled:opacity-50"
+          onClick={() => void refetchAccounts()}
+          className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-600 shadow-sm hover:bg-neutral-50"
         >
-          <RefreshCw className={["h-3.5 w-3.5", statusLoading ? "animate-spin" : ""].join(" ")} />
-          Обновить статус
+          <RefreshCw className="h-3.5 w-3.5" />
+          Обновить
         </button>
       </div>
 
-      {/* ── Status + Setup ───────────────────────────────────────────────────── */}
-      <div className="mb-5 grid gap-4 sm:grid-cols-3">
-        {/* Connection status */}
-        <Card className={["sm:col-span-1", connected ? "border-emerald-200" : "border-red-200"].join(" ")}>
+      {/* ── Stats row ─────────────────────────────────────────────────────── */}
+      <div className="grid gap-4 sm:grid-cols-4">
+        <Card className={["sm:col-span-1", connected ? "border-emerald-200" : "border-neutral-200"].join(" ")}>
           <CardContent className="flex items-center gap-3 py-4">
-            {statusLoading ? (
-              <Loader2 className="h-8 w-8 animate-spin text-neutral-300" />
-            ) : connected ? (
-              <CheckCircle2 className="h-8 w-8 shrink-0 text-emerald-500" />
-            ) : (
-              <XCircle className="h-8 w-8 shrink-0 text-red-400" />
-            )}
+            {connected
+              ? <CheckCircle2 className="h-7 w-7 shrink-0 text-emerald-500" />
+              : <XCircle      className="h-7 w-7 shrink-0 text-neutral-300" />}
             <div>
               <p className="text-sm font-semibold text-neutral-800">
-                {statusLoading ? "Проверка…" : connected ? "Подключено" : "Не подключено"}
+                {connected ? "Подключено" : "Не подключено"}
               </p>
               <p className="text-xs text-neutral-400">
-                {connected ? "Avito API доступен" : "AVITO_TOKEN не настроен"}
+                {connected ? `${activeAccounts.length} аккаунт(ов)` : "Добавьте аккаунт"}
               </p>
             </div>
           </CardContent>
         </Card>
 
-        {/* Stats */}
         <Card className="sm:col-span-1">
           <CardContent className="flex items-center gap-3 py-4">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50">
-              <MessageSquare className="h-4 w-4 text-blue-600" />
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-50">
+              <Store className="h-4 w-4 text-blue-600" />
+            </div>
+            <div>
+              <p className="text-xl font-bold text-neutral-900">{accounts?.length ?? "—"}</p>
+              <p className="text-xs text-neutral-400">Avito аккаунтов</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="sm:col-span-1">
+          <CardContent className="flex items-center gap-3 py-4">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-50">
+              <MessageSquare className="h-4 w-4 text-violet-600" />
             </div>
             <div>
               <p className="text-xl font-bold text-neutral-900">{conversations?.length ?? "—"}</p>
-              <p className="text-xs text-neutral-400">Avito диалогов</p>
+              <p className="text-xs text-neutral-400">Диалогов</p>
             </div>
           </CardContent>
         </Card>
 
         <Card className="sm:col-span-1">
           <CardContent className="flex items-center gap-3 py-4">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-50">
-              <ClipboardList className="h-4 w-4 text-violet-600" />
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-50">
+              <ClipboardList className="h-4 w-4 text-amber-600" />
             </div>
             <div>
               <p className="text-xl font-bold text-neutral-900">{auditLogs?.length ?? "—"}</p>
@@ -250,36 +525,94 @@ export function AvitoPage() {
         </Card>
       </div>
 
-      {/* ── Env Setup Hint ───────────────────────────────────────────────────── */}
-      {!connected && !statusLoading && (
-        <Card className="mb-5 border-amber-200 bg-amber-50">
-          <CardContent className="py-4">
-            <div className="flex gap-3">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-              <div>
-                <p className="text-sm font-semibold text-amber-800 mb-1">Настройте переменные среды</p>
-                <p className="text-xs text-amber-700 mb-2">Добавьте в <code className="rounded bg-amber-100 px-1 py-0.5">/var/www/site-al.ru/apps/api/.env</code>:</p>
-                <pre className="rounded-md bg-amber-100 px-3 py-2 text-xs font-mono text-amber-900 overflow-x-auto">{`AVITO_TOKEN=ваш_oauth_токен
-AVITO_ACCOUNT_ID=числовой_id_аккаунта
-AVITO_WEBHOOK_SECRET=опциональный_секрет`}</pre>
-                <p className="mt-2 text-xs text-amber-600">После изменения .env выполните: <code className="rounded bg-amber-100 px-1 py-0.5">pm2 restart ai-api</code></p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ── Agents ───────────────────────────────────────────────────────────── */}
-      <Card className="mb-5">
+      {/* ── Avito Accounts ────────────────────────────────────────────────── */}
+      <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Zap className="h-4 w-4 text-blue-500" />
-              <h2 className="text-sm font-semibold text-neutral-800">Агенты</h2>
+              <Store className="h-4 w-4 text-blue-500" />
+              <h2 className="text-sm font-semibold text-neutral-800">Avito Аккаунты</h2>
+              <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500">
+                {accounts?.length ?? 0}
+              </span>
             </div>
-            <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500">
-              {agents?.length ?? 0}
-            </span>
+            {!showCreateForm && (
+              <button
+                onClick={() => setShowCreateForm(true)}
+                className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Подключить аккаунт
+              </button>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Create form */}
+          {showCreateForm && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-4">
+              <p className="mb-3 text-sm font-semibold text-blue-800">Новый Avito аккаунт</p>
+              <AccountForm
+                onSave={handleCreate}
+                onCancel={() => setShowCreateForm(false)}
+                loading={createAccount.isPending}
+              />
+            </div>
+          )}
+
+          {/* Account list */}
+          {accountsLoading ? (
+            <div className="flex justify-center py-6">
+              <Loader2 className="h-5 w-5 animate-spin text-neutral-300" />
+            </div>
+          ) : !accounts?.length && !showCreateForm ? (
+            <div className="rounded-xl border-2 border-dashed border-neutral-200 py-10 text-center">
+              <Store className="mx-auto mb-2 h-8 w-8 text-neutral-300" />
+              <p className="text-sm font-medium text-neutral-500">Нет подключённых аккаунтов</p>
+              <p className="mt-0.5 text-xs text-neutral-400">Нажмите "Подключить аккаунт" чтобы добавить Avito</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {accounts?.map((acc) => (
+                editingId === acc.id ? (
+                  <div key={acc.id} className="rounded-xl border border-blue-200 bg-blue-50/50 p-4">
+                    <p className="mb-3 text-sm font-semibold text-blue-800">Редактировать аккаунт</p>
+                    <AccountForm
+                      initial={acc}
+                      onSave={(data) => void handleEdit(acc.id, data)}
+                      onCancel={() => setEditingId(null)}
+                      loading={patchAccount.isPending}
+                    />
+                  </div>
+                ) : (
+                  <AccountCard
+                    key={acc.id}
+                    account={acc}
+                    onEdit={() => setEditingId(acc.id)}
+                    onDelete={() => deleteAccount.mutate(acc.id)}
+                    onToggle={() => patchAccount.mutate({ id: acc.id, isActive: !acc.isActive })}
+                    deleting={deleteAccount.isPending}
+                    toggling={patchAccount.isPending}
+                  />
+                )
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── Agents ────────────────────────────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Zap className="h-4 w-4 text-amber-500" />
+              <h2 className="text-sm font-semibold text-neutral-800">Агенты</h2>
+              <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500">
+                {agents?.length ?? 0}
+              </span>
+            </div>
+            <p className="text-xs text-neutral-400">Привяжите аккаунт и выберите режим для каждого агента</p>
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -295,12 +628,9 @@ AVITO_WEBHOOK_SECRET=опциональный_секрет`}</pre>
                 <AgentRow
                   key={agent.id}
                   agent={agent}
+                  accounts={accounts ?? []}
                   copiedId={copiedId}
                   onCopy={copyWebhook}
-                  onModeChange={(mode) =>
-                    patchMode.mutate({ agentId: agent.id, avitoMode: mode })
-                  }
-                  saving={patchMode.isPending}
                 />
               ))}
             </div>
@@ -308,9 +638,8 @@ AVITO_WEBHOOK_SECRET=опциональный_секрет`}</pre>
         </CardContent>
       </Card>
 
-      {/* ── Conversations + Audit side-by-side ───────────────────────────────── */}
+      {/* ── Conversations + Audit ─────────────────────────────────────────── */}
       <div className="grid gap-5 lg:grid-cols-2">
-        {/* Conversations */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
@@ -320,30 +649,22 @@ AVITO_WEBHOOK_SECRET=опциональный_секрет`}</pre>
           </CardHeader>
           <CardContent className="p-0">
             {convsLoading ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="h-5 w-5 animate-spin text-neutral-300" />
-              </div>
+              <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-neutral-300" /></div>
             ) : !conversations?.length ? (
               <p className="py-8 text-center text-sm text-neutral-400">Нет диалогов</p>
             ) : (
               <ul className="divide-y divide-neutral-100">
-                {conversations.slice(0, 10).map((conv) => (
+                {(conversations as AvitoConversation[]).slice(0, 10).map((conv) => (
                   <li key={conv.id} className="flex items-start gap-3 px-5 py-3">
                     <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-600">
-                      {String(conv.externalUserId).slice(-2)}
+                      {String(conv.externalUserId ?? "?").slice(-2)}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="truncate text-xs font-medium text-neutral-700">
-                          {conv.chatId || "—"}
-                        </p>
-                        <span className="shrink-0 text-[10px] text-neutral-400">
-                          {fmtDate(conv.updatedAt)}
-                        </span>
+                        <p className="truncate text-xs font-medium text-neutral-700">{conv.chatId || "—"}</p>
+                        <span className="shrink-0 text-[10px] text-neutral-400">{fmtDate(conv.updatedAt)}</span>
                       </div>
-                      <p className="text-[11px] text-neutral-400">
-                        {conv.messageCount} сообщений · user {conv.externalUserId}
-                      </p>
+                      <p className="text-[11px] text-neutral-400">{conv.messageCount} сообщ. · user {conv.externalUserId}</p>
                     </div>
                   </li>
                 ))}
@@ -352,7 +673,6 @@ AVITO_WEBHOOK_SECRET=опциональный_секрет`}</pre>
           </CardContent>
         </Card>
 
-        {/* Audit log */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
@@ -362,14 +682,12 @@ AVITO_WEBHOOK_SECRET=опциональный_секрет`}</pre>
           </CardHeader>
           <CardContent className="p-0">
             {auditLoading ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="h-5 w-5 animate-spin text-neutral-300" />
-              </div>
+              <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-neutral-300" /></div>
             ) : !auditLogs?.length ? (
               <p className="py-8 text-center text-sm text-neutral-400">Нет записей</p>
             ) : (
               <ul className="divide-y divide-neutral-100">
-                {auditLogs.slice(0, 10).map((log) => (
+                {(auditLogs as AvitoAuditLog[]).slice(0, 10).map((log) => (
                   <li key={log.id}>
                     <button
                       type="button"
@@ -378,53 +696,32 @@ AVITO_WEBHOOK_SECRET=опциональный_секрет`}</pre>
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
-                          {log.success ? (
-                            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
-                          ) : (
-                            <XCircle className="h-3.5 w-3.5 shrink-0 text-red-400" />
-                          )}
-                          <span
-                            className={[
-                              "shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium",
-                              modeStyle(log.decision),
-                            ].join(" ")}
-                          >
+                          {log.success
+                            ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                            : <XCircle      className="h-3.5 w-3.5 shrink-0 text-red-400" />}
+                          <span className={["shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium", modeStyle(log.decision)].join(" ")}>
                             {log.decision}
                           </span>
                           {log.classification?.intent && (
-                            <span
-                              className={[
-                                "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
-                                intentBadge(log.classification.intent),
-                              ].join(" ")}
-                            >
+                            <span className={["shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium", intentColor(log.classification.intent)].join(" ")}>
                               {log.classification.intent}
                             </span>
                           )}
-                          <span className="truncate text-xs text-neutral-500">
-                            {log.chatId}
-                          </span>
+                          <span className="truncate text-xs text-neutral-500">{log.chatId}</span>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
-                          {log.durationMs && (
+                          {log.durationMs != null && (
                             <span className="flex items-center gap-0.5 text-[10px] text-neutral-400">
-                              <Clock className="h-3 w-3" />
-                              {log.durationMs}ms
+                              <Clock className="h-3 w-3" />{log.durationMs}ms
                             </span>
                           )}
-                          <ChevronDown
-                            className={[
-                              "h-3.5 w-3.5 text-neutral-400 transition-transform",
-                              expandedAudit === log.id ? "rotate-180" : "",
-                            ].join(" ")}
-                          />
+                          <ChevronDown className={["h-3.5 w-3.5 text-neutral-400 transition-transform", expandedAudit === log.id ? "rotate-180" : ""].join(" ")} />
                         </div>
                       </div>
                       <p className="mt-1 truncate text-left text-[11px] text-neutral-400">
                         {log.input.slice(0, 80)}{log.input.length > 80 ? "…" : ""}
                       </p>
                     </button>
-
                     {expandedAudit === log.id && (
                       <div className="border-t border-neutral-100 bg-neutral-50 px-5 py-3 space-y-2">
                         <div>
@@ -437,7 +734,7 @@ AVITO_WEBHOOK_SECRET=опциональный_секрет`}</pre>
                             <p className="text-xs text-neutral-600 leading-relaxed">{log.output.slice(0, 300)}{log.output.length > 300 ? "…" : ""}</p>
                           </div>
                         )}
-                        <div className="flex flex-wrap gap-2 text-[10px] text-neutral-500">
+                        <div className="flex flex-wrap gap-3 text-[10px] text-neutral-500">
                           {log.modelUsed && <span>model: <strong>{log.modelUsed}</strong></span>}
                           {log.classification && (
                             <>
@@ -458,8 +755,8 @@ AVITO_WEBHOOK_SECRET=опциональный_секрет`}</pre>
         </Card>
       </div>
 
-      {/* ── Pipeline Docs ────────────────────────────────────────────────────── */}
-      <Card className="mt-5">
+      {/* ── Pipeline docs ──────────────────────────────────────────────────── */}
+      <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-neutral-500" />
@@ -469,20 +766,18 @@ AVITO_WEBHOOK_SECRET=опциональный_секрет`}</pre>
         <CardContent>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {[
-              { step: "1", title: "Webhook",      desc: "Avito → POST → ACK 200 немедленно",              color: "bg-blue-50   text-blue-700",   border: "border-blue-100" },
-              { step: "2", title: "BullMQ Queue", desc: "Идемпотентность → сохранение → enqueue",          color: "bg-violet-50 text-violet-700", border: "border-violet-100" },
-              { step: "3", title: "Classifier",   desc: "intent / priority / hotLead / requiresHuman",     color: "bg-amber-50  text-amber-700",  border: "border-amber-100" },
-              { step: "4", title: "Router",       desc: "avitoMode + classifier → autoreply/copilot/human", color: "bg-emerald-50 text-emerald-700", border: "border-emerald-100" },
-              { step: "5", title: "AI (V2)",      desc: "agentChatV2 → DB-persisted context",              color: "bg-pink-50   text-pink-700",   border: "border-pink-100" },
-              { step: "6", title: "CRM",          desc: "Первый контакт → Lead создаётся автоматически",   color: "bg-sky-50    text-sky-700",    border: "border-sky-100" },
-              { step: "7", title: "Send + Retry", desc: "avitoClient.sendMessage + 1 retry on fail",       color: "bg-orange-50 text-orange-700", border: "border-orange-100" },
-              { step: "8", title: "Audit",        desc: "input/output/model/ms → AvitoAuditLog",           color: "bg-neutral-100 text-neutral-600", border: "border-neutral-200" },
+              { step: "1", title: "Webhook",      desc: "Avito → POST → ACK 200 немедленно",            color: "bg-blue-50   text-blue-700",    border: "border-blue-100" },
+              { step: "2", title: "BullMQ Queue", desc: "Идемпотентность → сохранение → enqueue",        color: "bg-violet-50 text-violet-700",  border: "border-violet-100" },
+              { step: "3", title: "Classifier",   desc: "intent / priority / hotLead / requiresHuman",   color: "bg-amber-50  text-amber-700",   border: "border-amber-100" },
+              { step: "4", title: "Router",        desc: "avitoMode + classifier → решение",              color: "bg-emerald-50 text-emerald-700",border: "border-emerald-100" },
+              { step: "5", title: "AI (V2)",       desc: "agentChatV2 → DB-persisted context",            color: "bg-pink-50   text-pink-700",    border: "border-pink-100" },
+              { step: "6", title: "CRM",           desc: "Первый контакт → Lead автоматически",          color: "bg-sky-50    text-sky-700",     border: "border-sky-100" },
+              { step: "7", title: "Send + Retry",  desc: "DB account creds → sendMessage + 1 retry",     color: "bg-orange-50 text-orange-700",  border: "border-orange-100" },
+              { step: "8", title: "Audit",         desc: "input/output/model/ms → AvitoAuditLog",        color: "bg-neutral-100 text-neutral-600", border: "border-neutral-200" },
             ].map(({ step, title, desc, color, border }) => (
               <div key={step} className={["rounded-lg border p-3", border].join(" ")}>
                 <div className="flex items-center gap-2 mb-1">
-                  <span className={["inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold", color].join(" ")}>
-                    {step}
-                  </span>
+                  <span className={["inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold", color].join(" ")}>{step}</span>
                   <p className="text-xs font-semibold text-neutral-700">{title}</p>
                 </div>
                 <p className="text-[11px] leading-relaxed text-neutral-500">{desc}</p>
@@ -491,96 +786,6 @@ AVITO_WEBHOOK_SECRET=опциональный_секрет`}</pre>
           </div>
         </CardContent>
       </Card>
-    </div>
-  );
-}
-
-// ── AgentRow sub-component ────────────────────────────────────────────────────
-
-function AgentRow({
-  agent,
-  copiedId,
-  onCopy,
-  onModeChange,
-  saving,
-}: {
-  agent: Agent;
-  copiedId: string | null;
-  onCopy: (id: string) => void;
-  onModeChange: (mode: string) => void;
-  saving: boolean;
-}) {
-  const webhookUrl = `${WEBHOOK_BASE}/${agent.id}`;
-  const mode = agent.avitoMode ?? "autoreply";
-  const [open, setOpen] = useState(false);
-
-  return (
-    <div className="px-5 py-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        {/* Left: name + mode */}
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-neutral-100 text-sm font-bold text-neutral-500">
-            {agent.name.slice(0, 2).toUpperCase()}
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-neutral-800">{agent.name}</p>
-            <p className="text-[11px] text-neutral-400">{modeDesc(mode)}</p>
-          </div>
-        </div>
-
-        {/* Right: mode selector + webhook */}
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Mode dropdown */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setOpen(!open)}
-              disabled={saving}
-              className={[
-                "flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50",
-                modeStyle(mode),
-              ].join(" ")}
-            >
-              {mode}
-              <ChevronDown className={["h-3 w-3 transition-transform", open ? "rotate-180" : ""].join(" ")} />
-            </button>
-            {open && (
-              <div className="absolute right-0 top-full z-10 mt-1 w-52 rounded-lg border border-neutral-200 bg-white py-1 shadow-lg">
-                {AVITO_MODES.map((m) => (
-                  <button
-                    key={m.value}
-                    type="button"
-                    onClick={() => { onModeChange(m.value); setOpen(false); }}
-                    className="w-full px-3 py-2 text-left hover:bg-neutral-50"
-                  >
-                    <span className={["inline-block rounded border px-1.5 py-0.5 text-[10px] font-medium mr-2", m.color].join(" ")}>
-                      {m.value}
-                    </span>
-                    <span className="text-xs text-neutral-500">{m.desc}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Webhook URL */}
-          <div className="flex items-center gap-1.5 rounded-md border border-dashed border-neutral-300 bg-neutral-50 px-2.5 py-1.5">
-            <code className="max-w-[160px] truncate text-[10px] text-neutral-500">{webhookUrl}</code>
-            <button
-              type="button"
-              onClick={() => onCopy(agent.id)}
-              className="ml-1 rounded p-0.5 text-neutral-400 hover:text-neutral-700 transition-colors"
-              title="Скопировать"
-            >
-              {copiedId === agent.id ? (
-                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-              ) : (
-                <Copy className="h-3.5 w-3.5" />
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

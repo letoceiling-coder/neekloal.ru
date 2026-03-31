@@ -21,7 +21,7 @@
 const prisma                         = require("../../lib/prisma");
 const { agentChatV2,
         findOrCreateExternalConversation } = require("../../services/agentRuntimeV2");
-const { sendMessage }                = require("../../services/avitoClient");
+const { createClient }               = require("../../services/avitoClient");
 const { classifyMessage }            = require("./avito.classifier");
 const { routeMessage }               = require("./avito.router");
 const { saveAudit }                  = require("./avito.audit");
@@ -87,22 +87,49 @@ async function processAvitoJob(job) {
       throw new Error(`Invalid job data: missing agentId/chatId/authorId`);
     }
 
-    // ── 2. Anti-loop ─────────────────────────────────────────────────────────
-    const myAccountId = process.env.AVITO_ACCOUNT_ID;
-    if (myAccountId && String(authorId) === String(myAccountId)) {
-      process.stdout.write(`[avito:processor] skip own message chatId=${chatId}\n`);
-      audit.decision = "skip";
-      return; // no audit save for self-messages (noise)
-    }
-
-    // ── 3. Load agent ────────────────────────────────────────────────────────
+    // ── 2. Load agent ────────────────────────────────────────────────────────
     const agent = await prisma.agent.findFirst({
-      where: { id: agentId, deletedAt: null },
+      where:   { id: agentId, deletedAt: null },
+      include: { avitoAccount: true },        // includes AvitoAccount if linked
     });
     if (!agent) {
       throw new Error(`Agent not found: ${agentId}`);
     }
     audit.organizationId = agent.organizationId;
+
+    // ── Resolve Avito credentials ─────────────────────────────────────────────
+    // Priority: linked AvitoAccount (DB) → env vars (legacy fallback)
+    let avitoClient = null;
+    let myAccountId = null;
+
+    if (agent.avitoAccount?.isActive) {
+      const acc = agent.avitoAccount;
+      myAccountId = acc.accountId;
+      try {
+        avitoClient = createClient({ token: acc.accessToken, accountId: acc.accountId });
+        process.stdout.write(`[avito:processor] using DB account id=${acc.id} name="${acc.name ?? ""}"\n`);
+      } catch (e) {
+        process.stderr.write(`[avito:processor] DB account credentials invalid: ${e.message}\n`);
+      }
+    } else if (process.env.AVITO_TOKEN && process.env.AVITO_ACCOUNT_ID) {
+      myAccountId = process.env.AVITO_ACCOUNT_ID;
+      try {
+        avitoClient = createClient({
+          token:     process.env.AVITO_TOKEN,
+          accountId: process.env.AVITO_ACCOUNT_ID,
+        });
+        process.stdout.write(`[avito:processor] using env-based Avito credentials (legacy)\n`);
+      } catch (e) {
+        process.stderr.write(`[avito:processor] env credentials invalid: ${e.message}\n`);
+      }
+    }
+
+    // ── 3. Anti-loop ─────────────────────────────────────────────────────────
+    if (myAccountId && String(authorId) === String(myAccountId)) {
+      process.stdout.write(`[avito:processor] skip own message chatId=${chatId}\n`);
+      audit.decision = "skip";
+      return; // no audit save for self-messages (noise)
+    }
 
     // ── 4. Find or create conversation ───────────────────────────────────────
     const conv = await findOrCreateExternalConversation(
@@ -177,7 +204,13 @@ async function processAvitoJob(job) {
 
     // ── 9. Send to Avito (autoreply only, copilot saves to DB only) ──────────
     if (routing.decision === "autoreply") {
-      await retryOnce(() => sendMessage(chatId, aiResult.reply));
+      if (!avitoClient) {
+        process.stderr.write(
+          `[avito:processor] no Avito credentials — reply saved to DB but NOT sent chatId=${chatId}\n`
+        );
+      } else {
+        await retryOnce(() => avitoClient.sendMessage(chatId, aiResult.reply));
+      }
     } else {
       // copilot: reply is saved in DB via agentChatV2, but NOT sent to Avito
       process.stdout.write(

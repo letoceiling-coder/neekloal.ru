@@ -252,6 +252,9 @@ module.exports = async function agentsRoutes(fastify) {
       const m = body.avitoMode != null ? String(body.avitoMode).trim().toLowerCase() : null;
       data.avitoMode = m && VALID.includes(m) ? m : "autoreply";
     }
+    if (body.avitoAccountId !== undefined) {
+      data.avitoAccountId = body.avitoAccountId || null;
+    }
     if (body.rules       !== undefined) data.rules = body.rules != null ? String(body.rules) : null;
     if (body.assistantId !== undefined) {
       data.assistantId =

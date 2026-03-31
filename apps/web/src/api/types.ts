@@ -55,6 +55,8 @@ export type Agent = {
   autoReply?: boolean;
   /** Avito channel mode: "autoreply" | "copilot" | "human" | "off" */
   avitoMode?: string;
+  /** ID of the linked AvitoAccount (from avito_accounts table) */
+  avitoAccountId?: string | null;
   assistantId: string | null;
   rules?: string | null;
   userId?: string;
@@ -134,6 +136,7 @@ export type UpdateAgentInput = {
   mode?: string;
   autoReply?: boolean;
   avitoMode?: string;
+  avitoAccountId?: string | null;
 };
 
 /** Ожидаемый контракт GET /conversations (когда появится на бэкенде) */

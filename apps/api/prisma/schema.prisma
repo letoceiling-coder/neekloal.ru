@@ -124,6 +124,7 @@ model Organization {
   leads             Lead[]
   leadStatusHistory LeadStatusHistory[]
   conversations     Conversation[]
+  avitoAccounts     AvitoAccount[]
   messages          Message[]
   agentExecutions   AgentExecution[]
   agentSteps        AgentStep[]
@@ -220,6 +221,9 @@ model Agent {
   /// human      — saves message only, no AI
   /// off        — ignores all incoming Avito messages
   avitoMode      String    @default("autoreply") @map("avito_mode")
+  /// FK to AvitoAccount — which Avito account handles this agent's chats
+  avitoAccountId String?   @map("avito_account_id")
+  avitoAccount   AvitoAccount? @relation(fields: [avitoAccountId], references: [id], onDelete: SetNull)
   trigger        String?
   flow           Json?
   memory         Json?
@@ -487,6 +491,30 @@ model Usage {
   @@index([assistantId])
   @@index([userId])
   @@map("usage")
+}
+
+/// Avito account credentials per organisation (multi-tenant).
+/// Replaces AVITO_TOKEN / AVITO_ACCOUNT_ID env vars.
+model AvitoAccount {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Human-readable label (e.g. "Магазин запчастей")
+  name           String?
+  /// Avito OAuth bearer token
+  accessToken    String    @map("access_token") @db.Text
+  /// Numeric Avito account / user ID (used for anti-loop and API calls)
+  accountId      String    @map("account_id")
+  /// Optional HMAC secret for webhook signature verification
+  webhookSecret  String?   @map("webhook_secret")
+  isActive       Boolean   @default(true) @map("is_active")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  agents         Agent[]
+
+  @@index([organizationId])
+  @@map("avito_accounts")
 }
 
 /// Avito webhook: one row per received event — used for idempotency
