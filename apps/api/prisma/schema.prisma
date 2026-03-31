@@ -512,6 +512,22 @@ model GeneratedImage {
   @@map("generated_images")
 }
 
+/// Execution record for each /image/generate call (brain+enhance+queue)
+model PipelineExecution {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  jobId       String?   @map("job_id")          /// primary BullMQ job id
+  jobIds      Json?     @map("job_ids")          /// all job ids (Json array, parallel variations)
+  steps       Json                               /// pipelineExecution array
+  status      String    @default("running")      /// running | completed | failed
+  createdAt   DateTime  @default(now())          @map("created_at")
+  completedAt DateTime? @map("completed_at")
+
+  @@index([jobId])
+  @@index([userId])
+  @@map("pipeline_executions")
+}
+
 /// Per-user image generation preferences / system prompt
 model UserImageSettings {
   id                String   @id @default(uuid()) @db.Uuid

@@ -246,17 +246,17 @@ module.exports = async function imageRoutes(fastify) {
         finalH = bh;
       }
     }
-    const queue = getImageQueue();
+    const queue      = getImageQueue();
+    const pipelineId = uuidv4(); // unique id for this pipeline execution record
 
-    await queue.add("generate", {
+    // ── Shared job data ───────────────────────────────────────────────────────
+    const baseJobData = {
       prompt: finalPrompt,
       negativePrompt: finalNegative || DEFAULT_NEGATIVE,
       originalPrompt: prompt.trim(),
-      width: finalW, height: finalH, jobId,
+      width: finalW, height: finalH,
       userId: request.userId,
       organizationId: request.organizationId,
-      mode: appliedMode,
-      variations: finalVariations,
       referenceImageUrl: referenceImageUrl || null,
       strength: controlStrength !== null
         ? controlStrength
@@ -265,31 +265,75 @@ module.exports = async function imageRoutes(fastify) {
       controlType: finalControlType,
       style: finalStyle,
       aspectRatio: finalAspectRatio,
-      seed: finalSeed,
       autoRemoveBg,
-    }, { jobId });
+      pipelineId, // link back to PipelineExecution for status update
+    };
+
+    // ── PARALLEL VARIATIONS: N separate BullMQ jobs (each 1 image, unique seed)
+    let allJobIds;
+    if (appliedMode === "variation" && finalVariations > 1) {
+      allJobIds = [];
+      for (let i = 0; i < finalVariations; i++) {
+        const vid = uuidv4();
+        allJobIds.push(vid);
+        await queue.add("generate", {
+          ...baseJobData,
+          jobId:      vid,
+          mode:       "text",       // each is a single-image generation
+          variations: 1,
+          seed:       Math.floor(Math.random() * 999999),
+        }, { jobId: vid });
+      }
+      process.stdout.write(
+        `[parallel:variation] count=${finalVariations} pipelineId=${pipelineId}\n`
+      );
+    } else {
+      // ── SINGLE JOB (text / reference / inpaint / controlnet) ──────────────
+      await queue.add("generate", {
+        ...baseJobData,
+        jobId,
+        mode: appliedMode,
+        variations: finalVariations,
+        seed: finalSeed,
+      }, { jobId });
+      allJobIds = [jobId];
+    }
 
     try { await redis.set(userJobKey(request.userId), activeCount + 1, "EX", 300); } catch { /* ignore */ }
 
+    // ── PIPELINE DB STORAGE ───────────────────────────────────────────────────
+    prisma.pipelineExecution.create({
+      data: {
+        id:      pipelineId,
+        userId:  request.userId,
+        jobId:   allJobIds[0],
+        jobIds:  allJobIds,          // JSON array
+        steps:   pipelineExecution,  // JSON array of step results
+        status:  "running",
+      },
+    }).catch((e) => process.stderr.write(`[pipeline:db] create failed: ${e.message}\n`));
+
     return reply.code(202).send({
-      jobId,
-      status: "queued",
-      mode: appliedMode,
-      message: "Генерация начата",
+      jobId:      allJobIds[0],
+      jobIds:     allJobIds,
+      pipelineId,
+      status:     "queued",
+      mode:       appliedMode,
+      message:    "Генерация начата",
       brain: brainResult
         ? {
-            type: brainResult.type,
-            typeLabel: brainResult.typeLabel,
-            style: brainResult.style,
-            composition: brainResult.composition,
-            suggestedMode: brainResult.suggestedMode,
-            suggestedSize: brainResult.suggestedSize,
+            type:            brainResult.type,
+            typeLabel:       brainResult.typeLabel,
+            style:           brainResult.style,
+            composition:     brainResult.composition,
+            suggestedMode:   brainResult.suggestedMode,
+            suggestedSize:   brainResult.suggestedSize,
             directivesCount: (brainResult.directives?.must?.length ?? 0) + (brainResult.directives?.should?.length ?? 0),
-            qualityCount: brainResult.directives?.quality?.length ?? 0,
-            modeApplied: appliedMode,
-            controlType: finalControlType,
+            qualityCount:    brainResult.directives?.quality?.length ?? 0,
+            modeApplied:     appliedMode,
+            controlType:     finalControlType,
             controlStrength,
-            seed: finalSeed,
+            seed:            finalSeed,
             directives: {
               must:    brainResult.directives?.must    ?? [],
               should:  brainResult.directives?.should  ?? [],
@@ -299,8 +343,8 @@ module.exports = async function imageRoutes(fastify) {
         : null,
       enhanceApplied: enhanceResult
         ? {
-            style: enhanceResult.appliedStyle,
-            aspectRatio: enhanceResult.appliedAspectRatio,
+            style:        enhanceResult.appliedStyle,
+            aspectRatio:  enhanceResult.appliedAspectRatio,
             systemPrompt: enhanceResult.appliedSystemPrompt,
           }
         : null,

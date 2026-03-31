@@ -60,6 +60,8 @@ interface ExecutionStep {
 interface ImageJob {
   id?: string;
   jobId: string;
+  jobIds?: string[];
+  pipelineId?: string;
   status: "queued" | "waiting" | "active" | "completed" | "failed";
   mode?: string;
   prompt: string;
@@ -400,6 +402,11 @@ export function ImageStudioPage() {
   const [activeJob, setActiveJob]   = useState<ImageJob | null>(null);
   const generating = genStage !== "idle" && genStage !== "done";
 
+  // Parallel variation tracking
+  const [parallelJobIds, setParallelJobIds]       = useState<string[]>([]);
+  const [parallelResults, setParallelResults]     = useState<Map<string, ImageJob>>(new Map());
+  const parallelPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // UI
   const [history, setHistory]           = useState<ImageJob[]>([]);
   const [histLoading, setHistLoading]   = useState(true);
@@ -427,6 +434,68 @@ export function ImageStudioPage() {
     pollRef.current = setInterval(() => pollJob(activeJobId), 3000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [activeJobId]);
+
+  // Parallel variation polling
+  useEffect(() => {
+    if (parallelJobIds.length === 0) return;
+    if (parallelPollRef.current) clearInterval(parallelPollRef.current);
+
+    parallelPollRef.current = setInterval(async () => {
+      const updates = new Map<string, ImageJob>(parallelResults);
+      let anyError = false;
+
+      for (const jid of parallelJobIds) {
+        const prev = updates.get(jid);
+        if (prev?.status === "completed" || prev?.status === "failed") continue;
+
+        try {
+          const res = await fetch(`${API}/image/status/${jid}`, { headers });
+          if (!res.ok) continue;
+          const job = await res.json() as ImageJob;
+          if (job.dbIds?.length) job.id = job.dbIds[0];
+          updates.set(jid, job);
+          if (job.status === "failed") anyError = true;
+        } catch { /* ignore */ }
+      }
+
+      setParallelResults(new Map(updates));
+
+      // Check if ALL are terminal
+      const allTerminal = parallelJobIds.every((jid) => {
+        const j = updates.get(jid);
+        return j?.status === "completed" || j?.status === "failed";
+      });
+
+      if (allTerminal || anyError) {
+        if (parallelPollRef.current) clearInterval(parallelPollRef.current);
+        setGenStage("done");
+        loadHistory();
+
+        // Merge all completed URLs into activeJob for display
+        const allUrls = parallelJobIds
+          .map((jid) => updates.get(jid))
+          .filter((j) => j?.status === "completed")
+          .flatMap((j) => j?.urls ?? (j?.url ? [j.url] : []));
+
+        if (allUrls.length > 0) {
+          setActiveJob((prev) => prev ? {
+            ...prev,
+            status: "completed",
+            urls: allUrls,
+            url:  allUrls[0],
+            count: allUrls.length,
+          } : null);
+        }
+
+        // Auto remove-bg (first image)
+        if (activeOptions.has("removeBg") && allUrls[0]) {
+          doRemoveBg(allUrls[0]);
+        }
+      }
+    }, 3000);
+
+    return () => { if (parallelPollRef.current) clearInterval(parallelPollRef.current); };
+  }, [parallelJobIds]);
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -550,6 +619,8 @@ export function ImageStudioPage() {
     setShowEnhanced(false);
     setActiveJob(null);
     setRemoveBgResult(null);
+    setParallelJobIds([]);
+    setParallelResults(new Map());
 
     const mode = resolveMode();
 
@@ -615,7 +686,15 @@ export function ImageStudioPage() {
       if (mode === "inpaint") body.maskUrl = maskImage?.refUrl;
 
       const res  = await fetch(`${API}/image/generate`, { method: "POST", headers, body: JSON.stringify(body) });
-      const data = await res.json() as { jobId?: string; error?: string; brain?: BrainMeta | null; pipeline?: PipelineMeta | null; pipelineExecution?: ExecutionStep[] | null };
+      const data = await res.json() as {
+        jobId?: string;
+        jobIds?: string[];
+        pipelineId?: string;
+        error?: string;
+        brain?: BrainMeta | null;
+        pipeline?: PipelineMeta | null;
+        pipelineExecution?: ExecutionStep[] | null;
+      };
 
       if (!res.ok) {
         setError("Ошибка генерации. Попробуйте изменить описание.");
@@ -624,20 +703,36 @@ export function ImageStudioPage() {
       }
 
       setGenStage("rendering");
-      setActiveJobId(data.jobId!);
+
+      const primaryJobId = data.jobId!;
+      const allJobIds    = data.jobIds ?? [primaryJobId];
+      const isParallel   = allJobIds.length > 1;
+
       setActiveJob({
-        jobId:         data.jobId!,
-        status:        "queued",
+        jobId:             primaryJobId,
+        jobIds:            allJobIds,
+        pipelineId:        data.pipelineId,
+        status:            "queued",
         mode,
-        prompt:        finalPrompt,
-        originalPrompt: raw,
-        width:         size.w,
-        height:        size.h,
-        createdAt:     new Date().toISOString(),
+        prompt:            finalPrompt,
+        originalPrompt:    raw,
+        width:             size.w,
+        height:            size.h,
+        createdAt:         new Date().toISOString(),
         brain:             data.brain             ?? null,
         pipeline:          data.pipeline          ?? null,
         pipelineExecution: data.pipelineExecution ?? null,
       });
+
+      if (isParallel) {
+        // Reset parallel state and start parallel polling
+        setParallelResults(new Map());
+        setParallelJobIds(allJobIds);
+      } else {
+        // Single job — use existing poll
+        setParallelJobIds([]);
+        setActiveJobId(primaryJobId);
+      }
     } catch {
       setError("Ошибка сети. Проверьте соединение.");
       setGenStage("idle");
@@ -670,11 +765,20 @@ export function ImageStudioPage() {
 
   // ── Derived ────────────────────────────────────────────────────────────────────
 
-  const images: string[] = activeJob?.urls?.length
-    ? activeJob.urls
-    : activeJob?.url
-      ? [activeJob.url]
-      : [];
+  // For parallel variations: merge all completed image URLs
+  const parallelUrls: string[] = parallelJobIds.length > 1
+    ? Array.from(parallelResults.values())
+        .filter((j) => j.status === "completed")
+        .flatMap((j) => j.urls ?? (j.url ? [j.url] : []))
+    : [];
+
+  const images: string[] = parallelUrls.length > 0
+    ? parallelUrls
+    : activeJob?.urls?.length
+      ? activeJob.urls
+      : activeJob?.url
+        ? [activeJob.url]
+        : [];
 
   // ══════════════════════════════════════════════════════════════════════════════
   // RENDER
@@ -1037,7 +1141,36 @@ export function ImageStudioPage() {
 
           {/* Progress */}
           {generating && (
-            <ProgressBar stage={genStage} />
+            <div className="flex flex-col items-center gap-4 w-full">
+              <ProgressBar stage={genStage} />
+              {/* Parallel variation slots */}
+              {parallelJobIds.length > 1 && (
+                <div className={cn(
+                  "grid w-full max-w-2xl gap-2",
+                  parallelJobIds.length === 2 ? "grid-cols-2" : "grid-cols-2"
+                )}>
+                  {parallelJobIds.map((jid) => {
+                    const r = parallelResults.get(jid);
+                    const done = r?.status === "completed";
+                    const failed = r?.status === "failed";
+                    const imgUrl = r?.url ?? r?.urls?.[0];
+                    return (
+                      <div key={jid} className="relative aspect-square w-full overflow-hidden rounded-xl border border-white/5 bg-neutral-900">
+                        {done && imgUrl ? (
+                          <img src={imgUrl} alt="" className="h-full w-full object-cover" />
+                        ) : failed ? (
+                          <div className="flex h-full items-center justify-center text-red-400 text-xs">❌</div>
+                        ) : (
+                          <div className="flex h-full items-center justify-center">
+                            <Loader2 className="h-5 w-5 animate-spin text-neutral-600" />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           )}
 
           {/* Result — single image */}
@@ -1110,9 +1243,14 @@ export function ImageStudioPage() {
           {/* Pipeline panel */}
           {genStage === "done" && activeJob?.status === "completed" && activeJob.pipeline && (
             <div className="mt-2 w-full max-w-2xl rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3">
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
-                🔗 Pipeline
-              </p>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">🔗 Pipeline</p>
+                {activeJob.pipelineId && (
+                  <span className="font-mono text-[9px] text-neutral-700" title="Pipeline ID">
+                    {activeJob.pipelineId.slice(0, 8)}…
+                  </span>
+                )}
+              </div>
               <ol className="flex flex-col gap-1">
                 {activeJob.pipeline.steps.map((step, i) => {
                   const icon =

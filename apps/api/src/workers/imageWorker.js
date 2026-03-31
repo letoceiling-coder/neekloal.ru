@@ -89,7 +89,7 @@ function buildControlNetWorkflow(prompt, negativePrompt, width, height, referenc
 
   // Preprocessor node class varies by control type
   const preprocessorClass = controlType === "pose"
-    ? "DWPreprocessor"
+    ? "OpenposePreprocessor"
     : "CannyEdgePreprocessor";
   const preprocessorInputs = controlType === "pose"
     ? { image: ["4", 0], detect_hand: "enable", detect_body: "enable", detect_face: "enable", resolution: Math.min(width, height) }
@@ -406,9 +406,21 @@ const worker = new Worker(
 
 worker.on("completed", (job, result) => {
   process.stdout.write(`[imageWorker] job ${job.id} completed → ${result.urls.length} image(s)\n`);
+  if (job.data?.pipelineId) {
+    prisma.pipelineExecution.update({
+      where:  { id: job.data.pipelineId },
+      data:   { status: "completed", completedAt: new Date() },
+    }).catch((e) => process.stderr.write(`[imageWorker] pipeline update failed: ${e.message}\n`));
+  }
 });
 worker.on("failed", (job, err) => {
   process.stderr.write(`[imageWorker] job ${job?.id} failed: ${err.message}\n`);
+  if (job?.data?.pipelineId) {
+    prisma.pipelineExecution.update({
+      where: { id: job.data.pipelineId },
+      data:  { status: "failed" },
+    }).catch(() => {});
+  }
 });
 worker.on("error", (err) => {
   process.stderr.write(`[imageWorker] worker error: ${err.message}\n`);

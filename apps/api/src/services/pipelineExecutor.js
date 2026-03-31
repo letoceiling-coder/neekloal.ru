@@ -9,9 +9,12 @@
  *   generate   → NOT executed here (async BullMQ) — marked "queued"
  *   postprocess→ NOT executed here (depends on generation) — marked "pending"
  *
+ * RETRY SUPPORT: each retryable step is attempted up to MAX_RETRY+1 times.
  * PARTIAL FAIL SUPPORT: each step failure is caught independently.
  * The pipeline continues even if one step fails.
  */
+
+const MAX_RETRY = 1; // 1 extra attempt (2 total) for transient errors
 
 const { analyzePrompt } = require("./aiBrainV2");
 const { enhancePrompt } = require("./promptEnhancer");
@@ -124,30 +127,57 @@ async function executeStep(step, stepResult, context) {
  *
  * @returns {Promise<Array<{type:string; status:string; output:object|null; error:string|null; durationMs:number}>>}
  */
+// Steps that can be retried (inline async steps; queue/pending steps have no throw)
+const RETRYABLE_TYPES = new Set(["brain", "enhance"]);
+
 async function executePipeline(pipeline, context) {
   const results = [];
 
   for (const step of pipeline.steps) {
     const stepResult = {
-      type:      step.type,
-      action:    step.action || null,
-      mode:      step.mode   || null,
-      label:     step.label  || step.type,
-      status:    "pending",
-      output:    null,
-      error:     null,
-      startedAt: Date.now(),
+      type:       step.type,
+      action:     step.action || null,
+      mode:       step.mode   || null,
+      label:      step.label  || step.type,
+      status:     "pending",
+      output:     null,
+      error:      null,
+      attempt:    1,
+      startedAt:  Date.now(),
       finishedAt: null,
     };
 
-    try {
-      stepResult.status = "running";
-      await executeStep(step, stepResult, context);
-    } catch (err) {
+    const canRetry = RETRYABLE_TYPES.has(step.type);
+    let attempt   = 0;
+    let success   = false;
+    let lastError = null;
+
+    while (attempt <= (canRetry ? MAX_RETRY : 0) && !success) {
+      attempt++;
+      stepResult.attempt = attempt;
+      stepResult.status  = "running";
+
+      try {
+        await executeStep(step, stepResult, context);
+        success = true;
+        // If executeStep didn't set a terminal status, default to "done"
+        if (stepResult.status === "running") stepResult.status = "done";
+      } catch (err) {
+        lastError = err;
+        if (canRetry && attempt <= MAX_RETRY) {
+          process.stdout.write(
+            `[executor:retry] ${step.type} attempt=${attempt} err="${err.message}" — retrying\n`
+          );
+        }
+      }
+    }
+
+    if (!success) {
       stepResult.status = "failed";
-      stepResult.error  = err.message;
-      process.stderr.write(`[executor:error] ${step.type}: ${err.message}\n`);
-      // ⚠️ Do NOT rethrow — partial failure support
+      stepResult.error  = lastError?.message ?? "unknown error";
+      process.stderr.write(
+        `[executor:error] ${step.type} failed after ${attempt} attempt(s): ${lastError?.message}\n`
+      );
     }
 
     stepResult.finishedAt = Date.now();
@@ -155,7 +185,8 @@ async function executePipeline(pipeline, context) {
 
     process.stdout.write(
       `[executor:step] ${step.type} → ${stepResult.status}` +
-      (stepResult.durationMs > 0 ? ` (${stepResult.durationMs}ms)` : "") + "\n"
+      (stepResult.attempt > 1 ? ` (attempt=${stepResult.attempt})` : "") +
+      (stepResult.durationMs > 50 ? ` (${stepResult.durationMs}ms)` : "") + "\n"
     );
 
     results.push(stepResult);
