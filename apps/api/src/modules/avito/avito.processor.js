@@ -4,44 +4,45 @@
  * avito.processor.js — BullMQ job processor for Avito messages.
  *
  * Full pipeline per message:
- *   1. Extract & validate job data
- *   2. Anti-loop guard (skip own messages)
- *   3. Load agent from DB
- *   4. Find-or-create AgentConversation (source="avito")
- *   5. CRM: create Lead on first contact
- *   6. Classify message
- *   7. Route → decision (autoreply | copilot | human | skip)
- *   8. If autoreply/copilot: call agentChatV2 (no external call for copilot)
- *   9. If autoreply: sendMessage to Avito (with 1 retry)
- *  10. Save AvitoAuditLog
+ *   1.  Extract & validate job data
+ *   2.  Load agent from DB
+ *   3.  Resolve Avito credentials (DB account → env fallback)
+ *   4.  Anti-loop guard (skip own messages)
+ *   5.  Find-or-create AgentConversation (source="avito")
+ *   6.  Classify message
+ *   7.  Upsert AvitoLead FSM row (create or update intent/status/phone)
+ *   8.  Apply FSM transition (resolveNextState)
+ *   9.  Phone extraction — if found: set phone + force HANDOFF
+ *  10.  CRM: first contact → create Lead; subsequent → sync status
+ *  11.  Route → decision (autoreply | copilot | human | skip)
+ *  12.  HANDOFF guard: stop AI, log [avito:handoff]
+ *  13.  Build system prompt (sales FSM prompt + agent.rules)
+ *  14.  AI response (autoreply / copilot)
+ *  15.  Send to Avito (autoreply only, with 1 retry)
+ *  16.  Save AvitoAuditLog
  *
  * NOT_TOUCHING: agentRuntime.js (V1), any existing route outside /modules/avito
  */
 
-const prisma                         = require("../../lib/prisma");
+const prisma                              = require("../../lib/prisma");
 const { agentChatV2,
         findOrCreateExternalConversation } = require("../../services/agentRuntimeV2");
-const { createClient }               = require("../../services/avitoClient");
-const { classifyMessage }            = require("./avito.classifier");
-const { routeMessage }               = require("./avito.router");
-const { saveAudit }                  = require("./avito.audit");
-const { maybeCreateLead }            = require("./avito.crm");
+const { createClient }                    = require("../../services/avitoClient");
+const { classifyMessage }                 = require("./avito.classifier");
+const { routeMessage }                    = require("./avito.router");
+const { saveAudit }                       = require("./avito.audit");
+const { maybeCreateLead, syncLeadStatus } = require("./avito.crm");
+const { resolveNextState, extractPhone, buildSalesPrompt } = require("./avito.fsm");
 
 // ── Retry helper ──────────────────────────────────────────────────────────────
 
-/**
- * Call `fn()`, and if it throws retry once after `delayMs`.
- * @param {Function} fn
- * @param {number}   delayMs
- * @returns {Promise<any>}
- */
 async function retryOnce(fn, delayMs = 2_000) {
   try {
     return await fn();
   } catch (firstErr) {
     process.stderr.write(`[avito:send] first attempt failed (${firstErr.message}) — retrying in ${delayMs}ms\n`);
     await new Promise((r) => setTimeout(r, delayMs));
-    return await fn();   // throws on second failure — BullMQ will catch
+    return await fn();
   }
 }
 
@@ -49,8 +50,6 @@ async function retryOnce(fn, delayMs = 2_000) {
 
 /**
  * Process a single "avito_message" BullMQ job.
- * Exported and used as the BullMQ Worker processor function.
- *
  * @param {import("bullmq").Job} job
  */
 async function processAvitoJob(job) {
@@ -62,7 +61,6 @@ async function processAvitoJob(job) {
     `from=${authorId} text="${String(text ?? "").slice(0, 60)}"\n`
   );
 
-  // Audit state — populated as pipeline progresses
   const audit = {
     agentId,
     organizationId: null,
@@ -90,15 +88,12 @@ async function processAvitoJob(job) {
     // ── 2. Load agent ────────────────────────────────────────────────────────
     const agent = await prisma.agent.findFirst({
       where:   { id: agentId, deletedAt: null },
-      include: { avitoAccount: true },        // includes AvitoAccount if linked
+      include: { avitoAccount: true },
     });
-    if (!agent) {
-      throw new Error(`Agent not found: ${agentId}`);
-    }
+    if (!agent) throw new Error(`Agent not found: ${agentId}`);
     audit.organizationId = agent.organizationId;
 
-    // ── Resolve Avito credentials ─────────────────────────────────────────────
-    // Priority: linked AvitoAccount (DB) → env vars (legacy fallback)
+    // ── 3. Resolve Avito credentials ──────────────────────────────────────────
     let avitoClient = null;
     let myAccountId = null;
 
@@ -124,14 +119,14 @@ async function processAvitoJob(job) {
       }
     }
 
-    // ── 3. Anti-loop ─────────────────────────────────────────────────────────
+    // ── 4. Anti-loop ─────────────────────────────────────────────────────────
     if (myAccountId && String(authorId) === String(myAccountId)) {
       process.stdout.write(`[avito:processor] skip own message chatId=${chatId}\n`);
       audit.decision = "skip";
-      return; // no audit save for self-messages (noise)
+      return;
     }
 
-    // ── 4. Find or create conversation ───────────────────────────────────────
+    // ── 5. Find or create conversation ───────────────────────────────────────
     const conv = await findOrCreateExternalConversation(
       agentId,
       agent.organizationId,
@@ -143,42 +138,111 @@ async function processAvitoJob(job) {
 
     const isFirstMessage = !Array.isArray(conv.messages) || conv.messages.length === 0;
 
-    // ── 5. CRM: first contact ────────────────────────────────────────────────
+    // ── 6. Classify ──────────────────────────────────────────────────────────
+    const classification = classifyMessage(text);
+    audit.classification = classification;
+
+    // ── 7. Upsert AvitoLead FSM row ──────────────────────────────────────────
+    let lead = await prisma.avitoLead.upsert({
+      where:  { agentId_chatId: { agentId, chatId } },
+      create: {
+        agentId,
+        conversationId: conv.id,
+        chatId,
+        externalUserId: String(authorId),
+        status:         "NEW",
+        intent:         classification.intent,
+        priority:       classification.priority,
+        isHot:          classification.isHotLead,
+        lastMessageAt:  new Date(),
+      },
+      update: {
+        intent:        classification.intent,
+        priority:      classification.priority,
+        isHot:         classification.isHotLead,
+        lastMessageAt: new Date(),
+      },
+    });
+
+    // ── 8. FSM transition ─────────────────────────────────────────────────────
+    const nextStatus = resolveNextState(lead, classification);
+    if (nextStatus !== lead.status) {
+      lead = await prisma.avitoLead.update({
+        where: { id: lead.id },
+        data:  { status: nextStatus },
+      });
+      process.stdout.write(
+        `[avito:fsm] lead=${lead.id} ${lead.status} → wait... updated to ${nextStatus}\n`
+      );
+    }
+    // Reflect updated status in the in-memory object
+    lead = { ...lead, status: nextStatus };
+
+    process.stdout.write(
+      `[avito:fsm] lead=${lead.id} status=${lead.status} intent=${classification.intent} isHot=${lead.isHot}\n`
+    );
+
+    // ── 9. Phone extraction ───────────────────────────────────────────────────
+    const detectedPhone = extractPhone(text);
+    if (detectedPhone && !lead.phone) {
+      lead = await prisma.avitoLead.update({
+        where: { id: lead.id },
+        data:  { phone: detectedPhone, status: "HANDOFF" },
+      });
+      process.stdout.write(
+        `[avito:contact] phone=${detectedPhone} chatId=${chatId} → HANDOFF\n`
+      );
+      lead = { ...lead, status: "HANDOFF" };
+    }
+
+    // ── 10. CRM sync ─────────────────────────────────────────────────────────
     if (isFirstMessage) {
-      // We call classification early for the isHotLead flag
-      const earlyClass = classifyMessage(text);
-      audit.classification = earlyClass;
       await maybeCreateLead({
         organizationId: agent.organizationId,
         chatId,
         authorId,
         firstMessage:   text,
-        isHotLead:      earlyClass.isHotLead,
+        isHotLead:      classification.isHotLead,
+        avitoStatus:    lead.status,
+      });
+    } else {
+      await syncLeadStatus({
+        organizationId: agent.organizationId,
+        authorId,
+        avitoStatus:    lead.status,
       });
     }
 
-    // ── 6. Classify ──────────────────────────────────────────────────────────
-    const classification = audit.classification ?? classifyMessage(text);
-    audit.classification  = classification;
-
-    // ── 7. Route ─────────────────────────────────────────────────────────────
-    const routing = routeMessage(agent, classification);
+    // ── 11. Route ─────────────────────────────────────────────────────────────
+    const routing = routeMessage(agent, classification, lead);
     audit.decision = routing.decision;
 
     process.stdout.write(
       `[avito:router] decision=${routing.decision} reason="${routing.reason}"\n`
     );
 
-    if (routing.decision === "skip" || routing.decision === "human") {
-      // Human mode: message already saved in conversation by findOrCreate logic
-      // (agentChatV2 will persist it when called; for "human" we just skip AI)
+    // ── 12. HANDOFF guard — stop AI completely ────────────────────────────────
+    if (lead.status === "HANDOFF") {
+      process.stdout.write(
+        `[avito:handoff] stopped AI lead=${lead.id} chatId=${chatId}\n`
+      );
       audit.success = true;
       return;
     }
 
-    // ── 8. AI response (autoreply OR copilot) ────────────────────────────────
-    const systemPrompt = agent.rules?.trim() || null;
+    if (routing.decision === "skip" || routing.decision === "human") {
+      audit.success = true;
+      return;
+    }
 
+    // ── 13. Build system prompt — sales FSM + agent rules ─────────────────────
+    const salesPrompt  = buildSalesPrompt(lead);
+    const agentRules   = agent.rules?.trim() || "";
+    const systemPrompt = agentRules
+      ? `${salesPrompt}\n\n---\nДополнительные правила:\n${agentRules}`
+      : salesPrompt;
+
+    // ── 14. AI response (autoreply OR copilot) ────────────────────────────────
     let aiResult;
     try {
       aiResult = await agentChatV2({
@@ -191,7 +255,7 @@ async function processAvitoJob(job) {
     } catch (aiErr) {
       audit.error   = `agentChatV2: ${aiErr.message}`;
       audit.success = false;
-      throw aiErr; // let BullMQ retry the whole job
+      throw aiErr;
     }
 
     audit.output    = aiResult.reply;
@@ -202,7 +266,7 @@ async function processAvitoJob(job) {
       `[avito:processor] AI reply model=${aiResult.modelUsed} chars=${aiResult.reply.length}\n`
     );
 
-    // ── 9. Send to Avito (autoreply only, copilot saves to DB only) ──────────
+    // ── 15. Send to Avito (autoreply only) ────────────────────────────────────
     if (routing.decision === "autoreply") {
       if (!avitoClient) {
         process.stderr.write(
@@ -212,7 +276,6 @@ async function processAvitoJob(job) {
         await retryOnce(() => avitoClient.sendMessage(chatId, aiResult.reply));
       }
     } else {
-      // copilot: reply is saved in DB via agentChatV2, but NOT sent to Avito
       process.stdout.write(
         `[avito:processor] copilot: reply saved to DB chatId=${chatId} — NOT sent\n`
       );
@@ -222,10 +285,9 @@ async function processAvitoJob(job) {
     audit.success = false;
     audit.error   = err.message;
     process.stderr.write(`[avito:processor] ✗ job=${job.id} err="${err.message}"\n`);
-    throw err; // re-throw so BullMQ marks the job as failed / retries
+    throw err;
   } finally {
     audit.durationMs = Date.now() - startMs;
-    // Always save audit (except self-messages where we return early)
     if (audit.organizationId) {
       await saveAudit(audit);
     }

@@ -3,14 +3,19 @@
 /**
  * avito.router.js — routing decision engine.
  *
- * Combines agent.avitoMode + classifier output to decide
- * what action to take for each incoming message.
+ * Combines agent.avitoMode + classifier output + FSM lead state
+ * to decide what action to take for each incoming message.
  *
  * Decisions:
  *   "autoreply" — AI generates + sends automatically
  *   "copilot"   — AI generates, saved to DB, NOT sent (human reviews)
  *   "human"     — no AI, message saved for human operator
  *   "skip"      — ignore completely (mode=off)
+ *
+ * FSM overrides (highest priority, applied before mode check):
+ *   lead.isHot === true  → "human"
+ *   lead.status === "HANDOFF" → "human"
+ *   intent === "complaint"   → "human"
  */
 
 /**
@@ -25,35 +30,47 @@
 /**
  * Decide how to respond to a classified Avito message.
  *
- * @param {object} agent           Prisma Agent row
- * @param {object} classification  Result from classifyMessage()
+ * @param {object}      agent           Prisma Agent row
+ * @param {object}      classification  Result from classifyMessage()
+ * @param {object|null} lead            AvitoLead FSM row (may be null on first message)
  * @returns {RoutingResult}
  */
-function routeMessage(agent, classification) {
-  // Resolve effective mode:
-  // 1. agent.avitoMode (new field — explicit)
-  // 2. Fallback: autoReply=false → "human", autoReply=true → "autoreply"
+function routeMessage(agent, classification, lead = null) {
+  // ── FSM overrides (take precedence over agent mode) ──────────────────────────
+
+  // Hot lead → always human
+  if (lead && lead.isHot) {
+    return { decision: "human", reason: "fsm:isHot=true" };
+  }
+
+  // HANDOFF state → always human (AI stopped, no reply sent)
+  if (lead && lead.status === "HANDOFF") {
+    return { decision: "human", reason: "fsm:status=HANDOFF" };
+  }
+
+  // Complaint → always escalate to human
+  if (classification.intent === "complaint") {
+    return { decision: "human", reason: "classifier:intent=complaint" };
+  }
+
+  // ── Resolve agent mode ───────────────────────────────────────────────────────
   const mode =
     (agent.avitoMode && agent.avitoMode.trim()) ||
     (agent.autoReply === false ? "human" : "autoreply");
 
-  // Hard stop: agent has disabled Avito entirely
+  // Hard stop
   if (mode === "off") {
     return { decision: "skip", reason: "avitoMode=off" };
   }
 
-  // Classifier overrides: always escalate to human if required
-  if (classification.requiresHuman) {
-    // In copilot/autoreply modes, downgrade to human if classifier demands it
-    if (mode !== "human") {
-      return {
-        decision: "human",
-        reason:   `classifier:requiresHuman intent=${classification.intent}`,
-      };
-    }
+  // Classifier requiresHuman still honoured in non-human modes
+  if (classification.requiresHuman && mode !== "human") {
+    return {
+      decision: "human",
+      reason:   `classifier:requiresHuman intent=${classification.intent}`,
+    };
   }
 
-  // Respect explicit mode setting
   if (mode === "human") {
     return { decision: "human", reason: "avitoMode=human" };
   }

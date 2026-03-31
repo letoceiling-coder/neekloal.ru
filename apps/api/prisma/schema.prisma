@@ -563,6 +563,33 @@ model AvitoAuditLog {
   @@map("avito_audit_logs")
 }
 
+/// Avito sales FSM lead — tracks each unique Avito user through the sales funnel
+model AvitoLead {
+  id              String   @id @default(uuid())
+  agentId         String   @map("agent_id")
+  conversationId  String   @map("conversation_id")
+  chatId          String   @map("chat_id")
+  externalUserId  String?  @map("external_user_id")
+
+  /// FSM state: NEW | QUALIFYING | INTERESTED | HANDOFF | CLOSED | LOST
+  status          String   @default("NEW")
+
+  intent          String?
+  priority        String?
+  isHot           Boolean  @default(false) @map("is_hot")
+
+  name            String?
+  phone           String?
+  budget          Int?
+
+  lastMessageAt   DateTime @default(now()) @map("last_message_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([agentId, chatId])
+  @@index([agentId, chatId])
+  @@map("avito_leads")
+}
+
 /// Per API key hash — rate limiting (PostgreSQL row per key hash)
 model RateLimitState {
   keyHash String   @id @map("key_hash")

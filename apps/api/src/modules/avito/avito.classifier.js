@@ -53,6 +53,18 @@ const INTENT_RULES = [
     ],
   },
   {
+    intent:   "ready_to_buy",
+    patterns: [
+      /беру|куплю|покупаю|готов купить|хочу купить|оформ|хочу заказать|буду брать|согласен/,
+    ],
+  },
+  {
+    intent:   "contact_request",
+    patterns: [
+      /мой номер|позвоните|перезвоните|свяжитесь со мной|мой телефон|напишите мне|могу оставить контакт/,
+    ],
+  },
+  {
     intent:   "request_human",
     patterns: [
       /позовите|переключ|живой человек|оператор|менеджер|с человеком|не бот/,
@@ -60,9 +72,9 @@ const INTENT_RULES = [
   },
 ];
 
-const HIGH_PRIORITY_INTENTS  = new Set(["complaint", "price_inquiry", "availability"]);
+const HIGH_PRIORITY_INTENTS  = new Set(["complaint", "price_inquiry", "availability", "ready_to_buy", "contact_request"]);
 const HUMAN_REQUIRED_INTENTS = new Set(["complaint", "request_human"]);
-const HOT_LEAD_INTENTS       = new Set(["price_inquiry", "availability", "payment"]);
+const HOT_LEAD_INTENTS       = new Set(["price_inquiry", "availability", "payment", "ready_to_buy", "contact_request"]);
 
 // ── Core function ─────────────────────────────────────────────────────────────
 
