@@ -80,11 +80,75 @@ User input: "${userPrompt}"`;
 }
 
 /**
- * Enhance a user prompt using Ollama LLM.
+ * Apply brain directives on top of an LLM-generated prompt and negative.
+ * MUST items are appended unconditionally; auto-corrections fix known omissions.
+ *
+ * @param {string} llmPrompt
+ * @param {string} llmNegative
+ * @param {{ type?: string; directives?: { must: string[]; should: string[]; negative: string[] } } | null} brain
+ * @returns {{ finalPrompt: string; finalNegative: string }}
+ */
+function applyDirectives(llmPrompt, llmNegative, brain) {
+  let prompt   = llmPrompt;
+  let negative = llmNegative;
+
+  if (!brain) return { finalPrompt: prompt, finalNegative: negative };
+
+  const { directives, type } = brain;
+  const must    = directives?.must    ?? [];
+  const should  = directives?.should  ?? [];
+  const negDirs = directives?.negative ?? [];
+
+  // ── Append MUST directives (these CANNOT be omitted) ─────────────────────
+  // Only add terms not already in the LLM output (case-insensitive dedup)
+  const lp = prompt.toLowerCase();
+  const mustToAdd = must.filter((m) => !lp.includes(m.toLowerCase()));
+  if (mustToAdd.length) {
+    prompt = [prompt.trim(), ...mustToAdd].join(", ");
+  }
+
+  // ── Append SHOULD directives (quality boosters) ──────────────────────────
+  const shouldToAdd = should.filter((s) => !lp.includes(s.toLowerCase())).slice(0, 2);
+  if (shouldToAdd.length) {
+    prompt = [prompt.trim(), ...shouldToAdd].join(", ");
+  }
+
+  // ── Auto-corrections ──────────────────────────────────────────────────────
+  if (type === "character" && !prompt.toLowerCase().includes("full body")) {
+    prompt += ", full body";
+  }
+  if (type === "logo" && !prompt.toLowerCase().includes("vector")) {
+    prompt += ", vector, clean design";
+  }
+  if (type === "product" && !prompt.toLowerCase().includes("studio")) {
+    prompt += ", studio lighting";
+  }
+
+  // ── Merge brain negative directives ──────────────────────────────────────
+  const negLower = negative.toLowerCase();
+  const negToAdd = negDirs.filter((n) => !negLower.includes(n.toLowerCase()));
+  if (negToAdd.length) {
+    negative = [negative.trim(), ...negToAdd].join(", ");
+  }
+
+  process.stdout.write(
+    `[enhancer:final] promptLength=${prompt.length} mustCount=${must.length}\n`
+  );
+
+  return { finalPrompt: prompt, finalNegative: negative };
+}
+
+/**
+ * Enhance a user prompt using Ollama LLM + brain directives.
  * Falls back to original prompt + default negative on any error.
  *
  * @param {string} userPrompt
- * @param {{ style?: string; aspectRatio?: string; systemPrompt?: string }} [options]
+ * @param {{
+ *   style?: string;
+ *   aspectRatio?: string;
+ *   systemPrompt?: string;
+ *   brain?: { type?: string; directives?: { must: string[]; should: string[]; negative: string[] } } | null;
+ * }} [options]
  * @returns {Promise<{
  *   enhancedPrompt: string;
  *   negativePrompt: string;
@@ -95,7 +159,7 @@ User input: "${userPrompt}"`;
  * }>}
  */
 async function enhancePrompt(userPrompt, options = {}) {
-  const { style, aspectRatio, systemPrompt } = options;
+  const { style, aspectRatio, systemPrompt, brain } = options;
   process.stdout.write(`[enhancer] input: "${userPrompt.slice(0, 80)}"\n`);
 
   try {
@@ -106,9 +170,17 @@ async function enhancePrompt(userPrompt, options = {}) {
     const parsed = safeParseJSON(raw);
 
     if (parsed) {
-      process.stdout.write(`[enhancer] output: "${parsed.enhancedPrompt.slice(0, 80)}"\n`);
+      // Apply brain directives on top of LLM output
+      const { finalPrompt, finalNegative } = applyDirectives(
+        parsed.enhancedPrompt,
+        parsed.negativePrompt,
+        brain ?? null
+      );
+
+      process.stdout.write(`[enhancer] output: "${finalPrompt.slice(0, 100)}"\n`);
       return {
-        ...parsed,
+        enhancedPrompt: finalPrompt,
+        negativePrompt: finalNegative,
         enhanced: true,
         appliedStyle: style || null,
         appliedAspectRatio: aspectRatio || null,
@@ -121,9 +193,16 @@ async function enhancePrompt(userPrompt, options = {}) {
     process.stdout.write(`[enhancer] LLM error: ${err.message}\n`);
   }
 
+  // Fallback: still apply directives even without LLM
+  const { finalPrompt, finalNegative } = applyDirectives(
+    userPrompt,
+    DEFAULT_NEGATIVE,
+    brain ?? null
+  );
+
   return {
-    enhancedPrompt: userPrompt,
-    negativePrompt: DEFAULT_NEGATIVE,
+    enhancedPrompt: finalPrompt,
+    negativePrompt: finalNegative,
     enhanced: false,
     appliedStyle: null,
     appliedAspectRatio: null,

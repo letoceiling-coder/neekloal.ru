@@ -256,6 +256,110 @@ const ENHANCER_HINTS = {
   unknown:      "Make it visually striking, well composed, professional quality.",
 };
 
+// ── Directives builder ────────────────────────────────────────────────────────
+//
+// must[]   — обязательны, LLM не может их игнорировать
+// should[] — желательны (повышают качество)
+// negative[] — добавляются в negative prompt
+
+const GLOBAL_NEGATIVE = [
+  "blurry", "low quality", "distorted", "bad anatomy", "extra limbs",
+  "extra objects", "deformed", "watermark", "text overlay", "ugly",
+  "out of focus", "overexposed", "duplicate", "jpeg artifacts",
+];
+
+/**
+ * Строит директивы для конкретного типа + специфики промпта.
+ *
+ * @param {string} type
+ * @param {string} prompt  (lowercase)
+ * @returns {{ must: string[]; should: string[]; negative: string[] }}
+ */
+function buildDirectives(type, prompt) {
+  const p = prompt.toLowerCase();
+  const must    = [];
+  const should  = [];
+  const negative = [...GLOBAL_NEGATIVE];
+
+  switch (type) {
+    case "character": {
+      must.push("character design", "full body", "centered composition", "high detail");
+      if (p.includes("кот") || p.includes("cat") || p.includes("животн") || p.includes("animal")) {
+        must.push("anthropomorphic", "clear subject");
+      }
+      if (p.includes("в сапогах") || p.includes("boots") || p.includes("in boots")) {
+        must.push("wearing boots");
+      }
+      if (p.includes("в шляпе") || p.includes("hat") || p.includes("in hat")) {
+        must.push("wearing hat");
+      }
+      if (p.includes("в костюме") || p.includes("suit") || p.includes("armor")) {
+        must.push("wearing suit");
+      }
+      should.push("dramatic lighting", "depth of field", "sharp focus");
+      negative.push("multiple subjects", "crowded scene");
+      break;
+    }
+    case "logo": {
+      must.push("vector logo", "minimalist", "centered", "clean white background");
+      should.push("high contrast", "flat design", "scalable");
+      negative.push("photo", "realistic", "gradient", "texture", "face", "person", "complex background");
+      break;
+    }
+    case "banner": {
+      must.push("horizontal composition", "marketing banner", "bold typography area");
+      should.push("high contrast", "strong focal point", "negative space for text");
+      negative.push("cluttered", "too many elements", "small text");
+      break;
+    }
+    case "product": {
+      must.push("product photography", "studio lighting", "clean background", "sharp focus");
+      should.push("commercial quality", "shadow", "reflection");
+      negative.push("person", "hand", "cluttered background", "grain");
+      break;
+    }
+    case "landscape": {
+      must.push("wide angle", "rule of thirds", "high resolution", "epic scene");
+      should.push("cinematic lighting", "atmosphere", "depth layers");
+      negative.push("person", "building", "urban");
+      break;
+    }
+    case "food": {
+      must.push("food photography", "appetizing", "styled plating");
+      should.push("shallow depth of field", "top view or 45°", "fresh ingredients");
+      negative.push("person", "hand", "raw uncooked", "dirty");
+      break;
+    }
+    case "architecture": {
+      must.push("architectural photography", "perspective lines", "dramatic sky");
+      should.push("golden hour", "sharp lines", "symmetry");
+      negative.push("person", "car", "blurry");
+      break;
+    }
+    case "ui": {
+      must.push("UI design", "clean layout", "modern interface", "device mockup");
+      should.push("glassmorphism", "consistent spacing", "pixel-perfect");
+      negative.push("person", "realistic photo", "blurry");
+      break;
+    }
+    case "abstract": {
+      must.push("full frame", "intricate detail", "vibrant colors");
+      should.push("flowing forms", "depth", "color harmony");
+      break;
+    }
+    default: {
+      should.push("cinematic", "masterpiece", "ultra detailed");
+      break;
+    }
+  }
+
+  process.stdout.write(
+    `[brain:directives] type=${type} must=${must.length} should=${should.length}\n`
+  );
+
+  return { must, should, negative };
+}
+
 // ── Core functions ─────────────────────────────────────────────────────────────
 
 function detectType(prompt) {
@@ -310,18 +414,23 @@ function analyzePrompt(prompt, context = {}) {
 
   if (!prompt || typeof prompt !== "string") return fallback;
 
-  const type         = detectType(prompt);
-  const typeLabel    = TYPES[type] ?? TYPES.unknown;
+  const type          = detectType(prompt);
+  const typeLabel     = TYPES[type] ?? TYPES.unknown;
   const explicitStyle = detectStyle(prompt, context.userStyle ?? null);
-  const style        = explicitStyle || STYLE_DEFAULTS[type];
-  const composition  = COMPOSITION_DEFAULTS[type];
-  const quality      = QUALITY_HINTS[type];
+  const style         = explicitStyle || STYLE_DEFAULTS[type];
+  const composition   = COMPOSITION_DEFAULTS[type];
+  const quality       = QUALITY_HINTS[type];
   const suggestedSize = SIZE_DEFAULTS[type] ?? SIZE_DEFAULTS.unknown;
-  const { w, h }     = suggestedSize;
-  const suggestedMode = detectMode(prompt, context);
+  const { w, h }      = suggestedSize;
+  const suggestedMode       = detectMode(prompt, context);
   const enhancedPromptHints = ENHANCER_HINTS[type] ?? ENHANCER_HINTS.unknown;
+  const directives          = buildDirectives(type, prompt);
 
-  const result = {
+  process.stdout.write(
+    `[brainV2] type=${type} (${typeLabel}) style="${style}" mode=${suggestedMode}\n`
+  );
+
+  return {
     type,
     typeLabel,
     style,
@@ -332,13 +441,8 @@ function analyzePrompt(prompt, context = {}) {
     suggestedSize,
     aspectRatioLabel: getAspectRatioLabel(w, h),
     explicitStyle,
+    directives,
   };
-
-  process.stdout.write(
-    `[brainV2] type=${type} (${typeLabel}) style="${style}" mode=${suggestedMode}\n`
-  );
-
-  return result;
 }
 
 module.exports = { analyzePrompt };

@@ -72,7 +72,7 @@ module.exports = async function imageRoutes(fastify) {
     const systemPrompt = userSettings?.useSystemPrompt ? (userSettings.imageSystemPrompt || null) : null;
     const enhancerSystem = [systemPrompt, brain.composition, brain.enhancedPromptHints].filter(Boolean).join("\n") || null;
 
-    const result = await enhancePrompt(prompt.trim(), { style: finalStyle, aspectRatio: finalAspectRatio, systemPrompt: enhancerSystem });
+    const result = await enhancePrompt(prompt.trim(), { style: finalStyle, aspectRatio: finalAspectRatio, systemPrompt: enhancerSystem, brain });
     return reply.send({
       enhancedPrompt: result.enhancedPrompt,
       negativePrompt: result.negativePrompt,
@@ -136,21 +136,42 @@ module.exports = async function imageRoutes(fastify) {
     let enhanceResult = null;
     let brainResult = null;
 
-    // ── AI Brain v2: analyze prompt and fill in missing parameters ───────────
+    // ── AI Brain v2: analyze prompt + build directives ────────────────────────
     if (useSmartEnhance) {
       brainResult = analyzePrompt(finalPrompt, { enableVariations: resolvedMode === "variation" });
+    }
+
+    // ── STEP 4: Auto mode-switch (brain suggestion, user didn't force a mode) ─
+    // User-forced modes: if frontend sent mode != "text" they explicitly chose it.
+    let appliedMode = resolvedMode;
+    const userForcedMode = resolvedMode !== "text";
+    if (!userForcedMode && brainResult?.suggestedMode === "variation") {
+      appliedMode = "variation";
+      process.stdout.write(`[mode:auto] suggested=variation applied=variation\n`);
+    } else {
+      process.stdout.write(`[mode:auto] suggested=${brainResult?.suggestedMode ?? "text"} applied=${appliedMode}\n`);
+    }
+    const finalVariations = appliedMode === "variation"
+      ? Math.min(Math.max(Number(variations) || 4, 2), 8)
+      : Math.min(Math.max(Number(variations) || 1, 1), 8);
+
+    // ── STEP 5: Auto controlnet for character + referenceImage ────────────────
+    let finalControlType = resolvedControlType;
+    if (referenceImageUrl && brainResult?.type === "character" && appliedMode !== "controlnet") {
+      appliedMode       = "controlnet";
+      finalControlType  = "pose";
+      process.stdout.write(`[controlnet:auto] character+reference → mode=controlnet controlType=pose\n`);
     }
 
     // Apply brain suggestions only if user didn't supply explicit values
     const finalStyle = style || (brainResult?.style ?? null);
     const finalAspectRatio = aspectRatio || (brainResult?.aspectRatioLabel ?? null);
 
-    // Use brain-suggested dimensions if user left them at default 1024×1024 and brain suggests different
+    // Use brain-suggested dimensions if user left defaults and brain suggests different
     let finalW = w;
     let finalH = h;
     if (!style && !aspectRatio && brainResult?.suggestedSize) {
       const { w: bw, h: bh } = brainResult.suggestedSize;
-      // Only override if within valid bounds and user didn't customize
       if (bw >= MIN_DIM && bw <= MAX_WIDTH && bh >= MIN_DIM && bh <= MAX_HEIGHT) {
         finalW = bw;
         finalH = bh;
@@ -163,15 +184,16 @@ module.exports = async function imageRoutes(fastify) {
       }).catch(() => null);
       const systemPrompt = userSettings?.useSystemPrompt ? (userSettings.imageSystemPrompt || null) : null;
 
-      // Pass brain composition + quality hints to the LLM enhancer
       const compositionHint = brainResult?.composition ?? null;
       const promptHints     = brainResult?.enhancedPromptHints ?? null;
       const enhancerSystemPrompt = [systemPrompt, compositionHint, promptHints].filter(Boolean).join("\n") || null;
 
+      // ── Pass brain (with directives) to enhancer ──────────────────────────
       enhanceResult = await enhancePrompt(finalPrompt, {
         style: finalStyle,
         aspectRatio: finalAspectRatio,
         systemPrompt: enhancerSystemPrompt,
+        brain: brainResult,   // ← directives flow here
       });
       finalPrompt = enhanceResult.enhancedPrompt;
       finalNegative = enhanceResult.negativePrompt;
@@ -187,12 +209,12 @@ module.exports = async function imageRoutes(fastify) {
       width: finalW, height: finalH, jobId,
       userId: request.userId,
       organizationId: request.organizationId,
-      mode: resolvedMode,
-      variations: Math.min(Math.max(Number(variations) || 4, 1), 8),
+      mode: appliedMode,
+      variations: finalVariations,
       referenceImageUrl: referenceImageUrl || null,
       strength: Math.min(Math.max(Number(strength) || 0.5, 0.1), 1.0),
       maskUrl: maskUrl || null,
-      controlType: resolvedControlType,
+      controlType: finalControlType,
       style: finalStyle,
       aspectRatio: finalAspectRatio,
     }, { jobId });
@@ -202,7 +224,7 @@ module.exports = async function imageRoutes(fastify) {
     return reply.code(202).send({
       jobId,
       status: "queued",
-      mode: resolvedMode,
+      mode: appliedMode,
       message: "Генерация начата",
       brain: brainResult
         ? {
@@ -212,6 +234,8 @@ module.exports = async function imageRoutes(fastify) {
             composition: brainResult.composition,
             suggestedMode: brainResult.suggestedMode,
             suggestedSize: brainResult.suggestedSize,
+            directivesCount: (brainResult.directives?.must?.length ?? 0) + (brainResult.directives?.should?.length ?? 0),
+            modeApplied: appliedMode,
           }
         : null,
       enhanceApplied: enhanceResult
