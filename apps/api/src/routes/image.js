@@ -155,12 +155,22 @@ module.exports = async function imageRoutes(fastify) {
       ? Math.min(Math.max(Number(variations) || 4, 2), 8)
       : Math.min(Math.max(Number(variations) || 1, 1), 8);
 
-    // ── STEP 5: Auto controlnet for character + referenceImage ────────────────
+    // ── STEP 5: Smart controlnet for referenceImage + brain type ─────────────
     let finalControlType = resolvedControlType;
-    if (referenceImageUrl && brainResult?.type === "character" && appliedMode !== "controlnet") {
-      appliedMode       = "controlnet";
-      finalControlType  = "pose";
-      process.stdout.write(`[controlnet:auto] character+reference → mode=controlnet controlType=pose\n`);
+    if (referenceImageUrl && appliedMode !== "controlnet") {
+      const btype = brainResult?.type;
+      if (btype === "character") {
+        appliedMode      = "controlnet";
+        finalControlType = "pose";
+      } else if (btype === "product" || btype === "architecture") {
+        appliedMode      = "controlnet";
+        finalControlType = "canny";
+      }
+      if (appliedMode === "controlnet") {
+        process.stdout.write(
+          `[controlnet:auto] type=${btype} controlType=${finalControlType}\n`
+        );
+      }
     }
 
     // Apply brain suggestions only if user didn't supply explicit values
@@ -235,7 +245,13 @@ module.exports = async function imageRoutes(fastify) {
             suggestedMode: brainResult.suggestedMode,
             suggestedSize: brainResult.suggestedSize,
             directivesCount: (brainResult.directives?.must?.length ?? 0) + (brainResult.directives?.should?.length ?? 0),
+            qualityCount: brainResult.directives?.quality?.length ?? 0,
             modeApplied: appliedMode,
+            directives: {
+              must:    brainResult.directives?.must    ?? [],
+              should:  brainResult.directives?.should  ?? [],
+              quality: brainResult.directives?.quality ?? [],
+            },
           }
         : null,
       enhanceApplied: enhanceResult

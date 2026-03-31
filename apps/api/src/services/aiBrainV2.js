@@ -273,13 +273,17 @@ const GLOBAL_NEGATIVE = [
  *
  * @param {string} type
  * @param {string} prompt  (lowercase)
- * @returns {{ must: string[]; should: string[]; negative: string[] }}
+ * @returns {{ must: string[]; should: string[]; negative: string[]; quality: string[] }}
  */
 function buildDirectives(type, prompt) {
   const p = prompt.toLowerCase();
   const must    = [];
   const should  = [];
+  const quality = [];
   const negative = [...GLOBAL_NEGATIVE];
+
+  // ── Universal quality (always) ────────────────────────────────────────────
+  quality.push("ultra detailed", "high resolution", "sharp focus");
 
   switch (type) {
     case "character": {
@@ -296,59 +300,69 @@ function buildDirectives(type, prompt) {
       if (p.includes("в костюме") || p.includes("suit") || p.includes("armor")) {
         must.push("wearing suit");
       }
-      should.push("dramatic lighting", "depth of field", "sharp focus");
+      should.push("dramatic lighting", "depth of field");
+      quality.push("cinematic lighting", "detailed face", "professional character design");
       negative.push("multiple subjects", "crowded scene");
       break;
     }
     case "logo": {
       must.push("vector logo", "minimalist", "centered", "clean white background");
       should.push("high contrast", "flat design", "scalable");
+      quality.push("crisp edges", "vector quality", "professional branding");
       negative.push("photo", "realistic", "gradient", "texture", "face", "person", "complex background");
       break;
     }
     case "banner": {
       must.push("horizontal composition", "marketing banner", "bold typography area");
       should.push("high contrast", "strong focal point", "negative space for text");
+      quality.push("high-resolution", "professional print quality", "vivid colors");
       negative.push("cluttered", "too many elements", "small text");
       break;
     }
     case "product": {
       must.push("product photography", "studio lighting", "clean background", "sharp focus");
       should.push("commercial quality", "shadow", "reflection");
+      quality.push("studio lighting", "photorealistic", "clean reflections");
       negative.push("person", "hand", "cluttered background", "grain");
       break;
     }
     case "landscape": {
-      must.push("wide angle", "rule of thirds", "high resolution", "epic scene");
-      should.push("cinematic lighting", "atmosphere", "depth layers");
+      must.push("wide angle", "rule of thirds", "epic scene");
+      should.push("atmosphere", "depth layers", "cinematic composition");
+      quality.push("8k", "wide dynamic range", "epic lighting");
       negative.push("person", "building", "urban");
       break;
     }
     case "food": {
       must.push("food photography", "appetizing", "styled plating");
       should.push("shallow depth of field", "top view or 45°", "fresh ingredients");
+      quality.push("vibrant colors", "professional food photography", "crisp details");
       negative.push("person", "hand", "raw uncooked", "dirty");
       break;
     }
     case "architecture": {
       must.push("architectural photography", "perspective lines", "dramatic sky");
       should.push("golden hour", "sharp lines", "symmetry");
+      quality.push("8k render", "architectural detail", "high dynamic range");
       negative.push("person", "car", "blurry");
       break;
     }
     case "ui": {
       must.push("UI design", "clean layout", "modern interface", "device mockup");
       should.push("glassmorphism", "consistent spacing", "pixel-perfect");
+      quality.push("high-fidelity", "retina quality", "professional UI");
       negative.push("person", "realistic photo", "blurry");
       break;
     }
     case "abstract": {
       must.push("full frame", "intricate detail", "vibrant colors");
       should.push("flowing forms", "depth", "color harmony");
+      quality.push("4k", "masterpiece", "stunning visuals");
       break;
     }
     default: {
-      should.push("cinematic", "masterpiece", "ultra detailed");
+      should.push("cinematic", "masterpiece");
+      quality.push("ultra detailed", "8k resolution");
       break;
     }
   }
@@ -356,8 +370,11 @@ function buildDirectives(type, prompt) {
   process.stdout.write(
     `[brain:directives] type=${type} must=${must.length} should=${should.length}\n`
   );
+  process.stdout.write(
+    `[brain:quality] type=${type} count=${quality.length}\n`
+  );
 
-  return { must, should, negative };
+  return { must, should, negative, quality };
 }
 
 // ── Core functions ─────────────────────────────────────────────────────────────

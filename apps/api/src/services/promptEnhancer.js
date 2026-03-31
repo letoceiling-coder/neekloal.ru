@@ -95,22 +95,28 @@ function applyDirectives(llmPrompt, llmNegative, brain) {
   if (!brain) return { finalPrompt: prompt, finalNegative: negative };
 
   const { directives, type } = brain;
-  const must    = directives?.must    ?? [];
-  const should  = directives?.should  ?? [];
+  const must    = directives?.must     ?? [];
+  const should  = directives?.should   ?? [];
+  const quality = directives?.quality  ?? [];
   const negDirs = directives?.negative ?? [];
 
   // ── Append MUST directives (these CANNOT be omitted) ─────────────────────
-  // Only add terms not already in the LLM output (case-insensitive dedup)
   const lp = prompt.toLowerCase();
   const mustToAdd = must.filter((m) => !lp.includes(m.toLowerCase()));
   if (mustToAdd.length) {
     prompt = [prompt.trim(), ...mustToAdd].join(", ");
   }
 
-  // ── Append SHOULD directives (quality boosters) ──────────────────────────
-  const shouldToAdd = should.filter((s) => !lp.includes(s.toLowerCase())).slice(0, 2);
+  // ── Append SHOULD directives (ALL — no slicing) ───────────────────────────
+  const shouldToAdd = should.filter((s) => !lp.includes(s.toLowerCase()));
   if (shouldToAdd.length) {
     prompt = [prompt.trim(), ...shouldToAdd].join(", ");
+  }
+
+  // ── Append QUALITY directives ──────────────────────────────────────────────
+  const qualityToAdd = quality.filter((q) => !lp.includes(q.toLowerCase()));
+  if (qualityToAdd.length) {
+    prompt = [prompt.trim(), ...qualityToAdd].join(", ");
   }
 
   // ── Auto-corrections ──────────────────────────────────────────────────────
@@ -132,7 +138,7 @@ function applyDirectives(llmPrompt, llmNegative, brain) {
   }
 
   process.stdout.write(
-    `[enhancer:final] promptLength=${prompt.length} mustCount=${must.length}\n`
+    `[enhancer:final] promptLength=${prompt.length} mustCount=${must.length} qualityCount=${quality.length}\n`
   );
 
   return { finalPrompt: prompt, finalNegative: negative };

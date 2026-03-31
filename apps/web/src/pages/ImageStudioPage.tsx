@@ -18,6 +18,18 @@ const API = import.meta.env.VITE_API_URL ?? "/api";
 
 type QuickOption = "variations" | "reference" | "inpaint" | "controlnet" | "removeBg";
 
+interface BrainMeta {
+  type?: string;
+  typeLabel?: string;
+  style?: string;
+  composition?: string;
+  suggestedMode?: string;
+  directivesCount?: number;
+  qualityCount?: number;
+  modeApplied?: string;
+  directives?: { must?: string[]; should?: string[]; quality?: string[] };
+}
+
 interface ImageJob {
   id?: string;
   jobId: string;
@@ -34,6 +46,7 @@ interface ImageJob {
   count?: number;
   error?: string;
   createdAt: string;
+  brain?: BrainMeta | null;
 }
 
 interface EnhanceInfo {
@@ -573,7 +586,7 @@ export function ImageStudioPage() {
       if (mode === "inpaint") body.maskUrl = maskImage?.refUrl;
 
       const res  = await fetch(`${API}/image/generate`, { method: "POST", headers, body: JSON.stringify(body) });
-      const data = await res.json() as { jobId?: string; error?: string };
+      const data = await res.json() as { jobId?: string; error?: string; brain?: BrainMeta | null };
 
       if (!res.ok) {
         setError("Ошибка генерации. Попробуйте изменить описание.");
@@ -592,6 +605,7 @@ export function ImageStudioPage() {
         width:         size.w,
         height:        size.h,
         createdAt:     new Date().toISOString(),
+        brain:         data.brain ?? null,
       });
     } catch {
       setError("Ошибка сети. Проверьте соединение.");
@@ -1035,6 +1049,30 @@ export function ImageStudioPage() {
                   </span>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* AI Applied panel */}
+          {genStage === "done" && activeJob?.status === "completed" && activeJob.brain && (
+            <div className="mt-3 w-full max-w-2xl rounded-xl border border-white/5 bg-white/[0.03] px-4 py-3">
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+                🧠 AI применил
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  ...(activeJob.brain.directives?.must?.slice(0, 3) ?? []),
+                  ...(activeJob.brain.directives?.quality?.slice(0, 2) ?? []),
+                ].map((tag) => (
+                  <span key={tag} className="inline-flex items-center gap-1 rounded-lg bg-violet-500/10 px-2.5 py-1 text-[11px] text-violet-300">
+                    <span className="text-violet-400">✔</span> {tag}
+                  </span>
+                ))}
+                {activeJob.brain.typeLabel && (
+                  <span className="inline-flex items-center gap-1 rounded-lg bg-neutral-700/40 px-2.5 py-1 text-[11px] text-neutral-400">
+                    {activeJob.brain.typeLabel}
+                  </span>
+                )}
+              </div>
             </div>
           )}
 
