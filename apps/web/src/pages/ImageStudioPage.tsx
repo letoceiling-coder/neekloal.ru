@@ -1,30 +1,31 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+/**
+ * ImageStudioPage — полный рерайт UI (Midjourney / Runway / Leonardo AI level)
+ */
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import {
-  ImageIcon, Loader2, RefreshCw, Sparkles, X,
-  Download, Trash2, RotateCcw, Eye, Info,
-  Layers, SlidersHorizontal, Paintbrush, Upload, Settings2, Scissors,
+  Sparkles, Loader2, Download, Trash2, RotateCcw, Eye,
+  ChevronDown, ChevronUp, Upload, X, Scissors, Settings2,
+  ImageIcon, ZoomIn, Clock,
 } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
 
+console.log("NEW UI LOADED");
+
 const API = import.meta.env.VITE_API_URL ?? "/api";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────────────
 
-type ImageMode = "text" | "variation" | "reference" | "inpaint" | "controlnet";
-type ControlType = "canny" | "pose";
+type QuickOption = "variations" | "reference" | "inpaint" | "controlnet" | "removeBg";
 
 interface ImageJob {
-  /** DB record id (preferred for delete) or BullMQ job id for legacy */
   id?: string;
   jobId: string;
   status: "queued" | "waiting" | "active" | "completed" | "failed";
-  mode?: ImageMode;
+  mode?: string;
   prompt: string;
   originalPrompt?: string;
-  negativePrompt?: string;
   style?: string;
-  aspectRatio?: string;
   width: number;
   height: number;
   url?: string;
@@ -35,17 +36,12 @@ interface ImageJob {
   createdAt: string;
 }
 
-interface EnhanceApplied {
-  style: string | null;
-  aspectRatio: string | null;
-  systemPrompt: boolean;
-}
-
-interface BrainResult {
-  type: string;
-  style: string;
-  composition: string;
-  suggestedSize?: { w: number; h: number };
+interface EnhanceInfo {
+  enhancedPrompt: string;
+  negativePrompt?: string;
+  style?: string | null;
+  aspectRatio?: string | null;
+  brain?: { type: string; style: string; composition: string } | null;
 }
 
 interface RefImage {
@@ -53,13 +49,30 @@ interface RefImage {
   refUrl: string;
 }
 
-type GenStage = "idle" | "enhancing" | "uploading" | "queuing" | "rendering" | "done";
+type GenStage = "idle" | "enhancing" | "queuing" | "rendering" | "done";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────────────
 
 function cn(...cls: (string | false | undefined | null)[]) {
   return cls.filter(Boolean).join(" ");
 }
+
+const STYLE_CARDS = [
+  { value: "cinematic",  label: "Cinematic",  desc: "Киношный свет",    emoji: "🎬" },
+  { value: "pixar",      label: "Pixar 3D",   desc: "Мультяшный 3D",    emoji: "🎨" },
+  { value: "realistic",  label: "Realistic",  desc: "Фотореализм",      emoji: "📷" },
+  { value: "anime",      label: "Anime",      desc: "Аниме стиль",      emoji: "⛩️" },
+  { value: "watercolor", label: "Watercolor", desc: "Акварель",          emoji: "🖌️" },
+  { value: "3d-render",  label: "3D Render",  desc: "3D рендеринг",     emoji: "💎" },
+];
+
+const QUICK_OPTIONS: { id: QuickOption; label: string; emoji: string; desc: string }[] = [
+  { id: "variations",  label: "Вариации",   emoji: "🎯", desc: "Несколько версий" },
+  { id: "reference",   label: "По образцу", emoji: "🖼",  desc: "Изображение-основа" },
+  { id: "inpaint",     label: "Редактирование", emoji: "✏️", desc: "Изменить область" },
+  { id: "controlnet",  label: "ControlNet", emoji: "🧬", desc: "Контроль формы/позы" },
+  { id: "removeBg",    label: "Убрать фон", emoji: "✂️", desc: "Прозрачный PNG" },
+];
 
 const PRESET_SIZES = [
   { label: "1:1",  w: 1024, h: 1024 },
@@ -68,175 +81,196 @@ const PRESET_SIZES = [
   { label: "4:3",  w: 1024, h: 768  },
 ];
 
-const STYLE_PRESETS = [
-  { label: "Cinematic", value: "cinematic", desc: "Киношный свет, глубина",  emoji: "🎬" },
-  { label: "Pixar 3D",  value: "pixar",     desc: "Мультяшный 3D стиль",     emoji: "🎨" },
-  { label: "Realistic", value: "realistic", desc: "Фотореализм",             emoji: "📷" },
-  { label: "Anime",     value: "anime",     desc: "Аниме стиль",             emoji: "⛩️" },
+const STAGE_STEPS: { stage: GenStage; label: string }[] = [
+  { stage: "enhancing", label: "Улучшение промпта" },
+  { stage: "queuing",   label: "Отправка в очередь" },
+  { stage: "rendering", label: "Рендеринг" },
 ];
 
-const PROMPT_EXAMPLES = [
-  "кот в сапогах",
-  "modern SaaS dashboard",
-  "cozy coffee shop",
-  "neon geometric art",
-];
-
-const STAGE_LABELS: Record<GenStage, string> = {
-  idle:      "",
-  enhancing: "✨ Улучшаем промпт…",
-  uploading: "📤 Загружаем изображение…",
-  queuing:   "Отправляем в очередь…",
-  rendering: "Рисуем…",
-  done:      "Готово",
+const MODE_ICON: Record<string, string> = {
+  text: "🧠", variation: "🎯", reference: "🖼", inpaint: "✏️", controlnet: "🧬",
 };
-
-const CONTROL_TYPES: { id: ControlType; label: string; hint: string }[] = [
-  { id: "canny", label: "Контур (Canny)", hint: "Строгий контурный контроль — идеально для архитектуры, объектов" },
-  { id: "pose",  label: "Поза (Pose)",    hint: "Контроль положения тела — идеально для персонажей" },
-];
-
-/** Режим генерации (производный): не путать с smartMode. */
-function computeResolvedMode(
-  enableVariations: boolean,
-  enableControlNet: boolean,
-  referenceImage: RefImage | null,
-  maskImage: RefImage | null
-): ImageMode {
-  if (enableVariations) return "variation";
-  if (enableControlNet && referenceImage?.refUrl) return "controlnet";
-  if (maskImage?.refUrl && referenceImage?.refUrl) return "inpaint";
-  if (referenceImage?.refUrl) return "reference";
-  return "text";
-}
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: ImageJob["status"] }) {
-  const map: Record<ImageJob["status"], { label: string; cls: string }> = {
-    queued:    { label: "В очереди",  cls: "bg-neutral-100 text-neutral-500" },
-    waiting:   { label: "Ожидание",   cls: "bg-neutral-100 text-neutral-500" },
-    active:    { label: "Генерация…", cls: "bg-blue-50 text-blue-600 animate-pulse" },
-    completed: { label: "Готово",     cls: "bg-green-50 text-green-700" },
-    failed:    { label: "Ошибка",     cls: "bg-red-50 text-red-600" },
-  };
-  const { label, cls } = map[status] ?? map.failed;
-  return (
-    <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", cls)}>
-      {label}
-    </span>
-  );
-}
+function ProgressBar({ stage }: { stage: GenStage }) {
+  const stepIndex = STAGE_STEPS.findIndex((s) => s.stage === stage);
+  const total = STAGE_STEPS.length;
+  const pct = stepIndex < 0 ? 0 : ((stepIndex + 1) / total) * 100;
 
-function ImageUploadBox({
-  label,
-  hint,
-  image,
-  uploading,
-  onSelect,
-}: {
-  label: string;
-  hint?: string;
-  image: RefImage | null;
-  uploading: boolean;
-  onSelect: (file: File) => void;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
   return (
-    <div className="flex min-w-0 flex-col gap-1.5">
-      <label className="text-xs font-medium text-neutral-700 break-words">{label}</label>
-      {hint && <p className="text-[11px] text-neutral-400 break-words [overflow-wrap:anywhere]">{hint}</p>}
-      <button
-        type="button"
-        onClick={() => inputRef.current?.click()}
-        className={cn(
-          "relative flex min-h-[90px] w-full items-center justify-center rounded-xl border-2 border-dashed transition",
-          image
-            ? "border-violet-300 bg-violet-50"
-            : "border-neutral-200 bg-neutral-50 hover:border-violet-300 hover:bg-violet-50"
-        )}
-      >
-        {uploading ? (
-          <Loader2 className="h-6 w-6 animate-spin text-violet-400" />
-        ) : image ? (
-          <img
-            src={image.previewUrl}
-            alt=""
-            className="max-h-[80px] w-full rounded-lg object-contain"
-          />
-        ) : (
-          <div className="flex flex-col items-center gap-1.5 text-neutral-400">
-            <Upload className="h-6 w-6" />
-            <span className="text-xs">Нажмите для загрузки</span>
+    <div className="w-full max-w-sm">
+      <div className="mb-3 flex items-center justify-between text-xs text-neutral-500">
+        <span>{STAGE_STEPS[Math.max(0, stepIndex)]?.label ?? "Обработка…"}</span>
+        <span>{Math.round(pct)}%</span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-100">
+        <div
+          className="h-full rounded-full bg-violet-500 transition-all duration-700"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="mt-4 flex justify-center gap-6">
+        {STAGE_STEPS.map((s, i) => (
+          <div key={s.stage} className="flex flex-col items-center gap-1">
+            <div className={cn(
+              "h-2 w-2 rounded-full transition-colors",
+              i <= stepIndex ? "bg-violet-500" : "bg-neutral-200"
+            )} />
+            <span className={cn(
+              "text-[10px]",
+              i <= stepIndex ? "text-violet-600 font-medium" : "text-neutral-400"
+            )}>
+              {s.label}
+            </span>
           </div>
-        )}
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/webp"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) onSelect(f);
-          e.target.value = "";
-        }}
-      />
+        ))}
+      </div>
     </div>
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+function HistoryCard({
+  job,
+  active,
+  onClick,
+  onReuse,
+  onDelete,
+}: {
+  job: ImageJob;
+  active: boolean;
+  onClick: () => void;
+  onReuse: () => void;
+  onDelete: () => void;
+}) {
+  const thumb = job.url ?? job.urls?.[0];
+  const count = job.urls?.length ?? (job.count ?? 1);
+  const statusColor = {
+    queued: "bg-neutral-200", waiting: "bg-neutral-200",
+    active: "bg-blue-400 animate-pulse",
+    completed: "bg-emerald-400", failed: "bg-red-400",
+  }[job.status] ?? "bg-neutral-200";
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "group relative flex w-full gap-2.5 rounded-xl border p-2 text-left transition",
+        active
+          ? "border-violet-300 bg-violet-50"
+          : "border-transparent bg-neutral-50 hover:border-neutral-200 hover:bg-white"
+      )}
+    >
+      {/* Thumbnail */}
+      <div className="relative h-12 w-12 flex-shrink-0 overflow-hidden rounded-lg bg-neutral-100">
+        {thumb ? (
+          <img src={thumb} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center">
+            <ImageIcon className="h-4 w-4 text-neutral-300" />
+          </div>
+        )}
+        {count > 1 && (
+          <span className="absolute bottom-0.5 right-0.5 rounded bg-black/70 px-1 text-[9px] font-bold text-white">
+            ×{count}
+          </span>
+        )}
+      </div>
+
+      {/* Info */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <span className={cn("h-1.5 w-1.5 flex-shrink-0 rounded-full", statusColor)} />
+          <span className="truncate text-[11px] text-neutral-500">
+            {MODE_ICON[job.mode ?? "text"]} {job.status === "failed" ? "Ошибка" : job.status === "active" ? "Генерация…" : job.status === "completed" ? "Готово" : "В очереди"}
+          </span>
+        </div>
+        <p className="mt-0.5 truncate text-xs font-medium text-neutral-700">
+          {job.originalPrompt ?? job.prompt}
+        </p>
+        <p className="mt-0.5 text-[10px] text-neutral-400">
+          {new Date(job.createdAt).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" })}
+        </p>
+      </div>
+
+      {/* Hover actions */}
+      <div className="absolute inset-y-0 right-1 hidden items-center gap-0.5 group-hover:flex">
+        <button
+          type="button"
+          title="Повторить"
+          onClick={(e) => { e.stopPropagation(); onReuse(); }}
+          className="rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+        >
+          <RotateCcw className="h-3 w-3" />
+        </button>
+        <button
+          type="button"
+          title="Удалить"
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          className="rounded-lg p-1.5 text-neutral-400 hover:bg-red-50 hover:text-red-500"
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
+      </div>
+    </button>
+  );
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
 
 export function ImageStudioPage() {
   const accessToken = useAuthStore((s) => s.accessToken);
   const headers = { Authorization: `Bearer ${accessToken ?? ""}`, "Content-Type": "application/json" };
 
-  const [prompt, setPrompt] = useState("");
-  const [style, setStyle] = useState("");
-  const [size, setSize] = useState(PRESET_SIZES[0]);
-  const [smartMode, setSmartMode] = useState(true);
-  const [enableVariations, setEnableVariations] = useState(false);
-  const [enableReference, setEnableReference] = useState(false);
-  const [enableInpaint, setEnableInpaint] = useState(false);
-  const [enableControlNet, setEnableControlNet] = useState(false);
-  const [controlType, setControlType] = useState<ControlType>("canny");
+  // Prompt & style
+  const [prompt, setPrompt]   = useState("");
+  const [style, setStyle]     = useState("");
+  const [size, setSize]       = useState(PRESET_SIZES[0]);
+  const [negPrompt, setNegPrompt] = useState("");
+  const [steps, setSteps]     = useState(30);
+  const [cfg, setCfg]         = useState(7);
+  const [seed, setSeed]       = useState("");
 
+  // Smart mode
+  const [smartMode, setSmartMode]   = useState(true);
+  const [enhanceInfo, setEnhanceInfo] = useState<EnhanceInfo | null>(null);
+  const [showEnhanced, setShowEnhanced] = useState(false);
+
+  // Quick options
+  const [activeOptions, setActiveOptions] = useState<Set<QuickOption>>(new Set());
   const [variationCount, setVariationCount] = useState(4);
+  const [controlType, setControlType] = useState<"canny" | "pose">("canny");
+  const [strength, setStrength] = useState(0.5);
 
-  // Reference/Inpaint controls
-  const [referenceImage, setReferenceImage] = useState<RefImage | null>(null);
-  const [maskImage, setMaskImage]           = useState<RefImage | null>(null);
-  const [strength, setStrength]             = useState(0.5);
-  const [refUploading, setRefUploading]     = useState(false);
-  const [maskUploading, setMaskUploading]   = useState(false);
+  // Reference image
+  const [refImage, setRefImage]     = useState<RefImage | null>(null);
+  const [maskImage, setMaskImage]   = useState<RefImage | null>(null);
+  const [refUploading, setRefUploading] = useState(false);
+  const [maskUploading, setMaskUploading] = useState(false);
 
-  // Generation state
-  const [genStage, setGenStage]               = useState<GenStage>("idle");
-  const [activeJobId, setActiveJobId]         = useState<string | null>(null);
-  const [activeJob, setActiveJob]             = useState<ImageJob | null>(null);
-  const [lastEnhanced, setLastEnhanced]       = useState<{ prompt: string; negative: string } | null>(null);
-  const [showEnhancedPrompt, setShowEnhancedPrompt] = useState(false);
-  const [enhanceApplied, setEnhanceApplied]   = useState<EnhanceApplied | null>(null);
-  const [brainResult, setBrainResult]         = useState<BrainResult | null>(null);
+  // Generation
+  const [genStage, setGenStage]     = useState<GenStage>("idle");
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [activeJob, setActiveJob]   = useState<ImageJob | null>(null);
+  const generating = genStage !== "idle" && genStage !== "done";
 
-  // UI state
-  const [history, setHistory]               = useState<ImageJob[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(true);
-  const [error, setError]                   = useState<string | null>(null);
-  const [lightbox, setLightbox]             = useState<string | null>(null);
-  const [deleteModal, setDeleteModal]       = useState<{ id: string; jobId: string; url?: string } | null>(null);
-  const [deleting, setDeleting]             = useState(false);
+  // UI
+  const [history, setHistory]           = useState<ImageJob[]>([]);
+  const [histLoading, setHistLoading]   = useState(true);
+  const [error, setError]               = useState<string | null>(null);
+  const [lightbox, setLightbox]         = useState<string | null>(null);
+  const [deleteModal, setDeleteModal]   = useState<{ id: string; jobId: string } | null>(null);
+  const [deleting, setDeleting]         = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Remove bg result
   const [removingBg, setRemovingBg]         = useState(false);
   const [removeBgResult, setRemoveBgResult] = useState<{ url: string } | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const generating = genStage !== "idle" && genStage !== "done";
-
-  const resolvedMode = useMemo(
-    () => computeResolvedMode(enableVariations, enableControlNet, referenceImage, maskImage),
-    [enableVariations, enableControlNet, referenceImage, maskImage]
-  );
+  const refInputRef  = useRef<HTMLInputElement>(null);
+  const maskInputRef = useRef<HTMLInputElement>(null);
 
   // ── Effects ─────────────────────────────────────────────────────────────────
 
@@ -249,18 +283,34 @@ export function ImageStudioPage() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [activeJobId]);
 
-  useEffect(() => {
-    if (!enableReference && !enableInpaint && !enableControlNet) setReferenceImage(null);
-  }, [enableReference, enableInpaint, enableControlNet]);
+  // ── Helpers ──────────────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    if (!enableInpaint) setMaskImage(null);
-  }, [enableInpaint]);
+  const toggleOption = useCallback((opt: QuickOption) => {
+    setActiveOptions((prev) => {
+      const next = new Set(prev);
+      if (next.has(opt)) next.delete(opt); else next.add(opt);
+      // Mutex: only one image-source option at a time for reference/inpaint/controlnet
+      if (opt !== "removeBg" && opt !== "variations") {
+        for (const o of ["reference", "inpaint", "controlnet"] as QuickOption[]) {
+          if (o !== opt) next.delete(o);
+        }
+      }
+      return next;
+    });
+  }, []);
 
-  // ── API helpers ──────────────────────────────────────────────────────────────
+  function resolveMode(): string {
+    if (activeOptions.has("variations"))  return "variation";
+    if (activeOptions.has("controlnet") && refImage) return "controlnet";
+    if (activeOptions.has("inpaint") && refImage && maskImage) return "inpaint";
+    if (activeOptions.has("reference") && refImage) return "reference";
+    return "text";
+  }
+
+  // ── API ──────────────────────────────────────────────────────────────────────
 
   async function loadHistory() {
-    setHistoryLoading(true);
+    setHistLoading(true);
     try {
       const res = await fetch(`${API}/image/list`, { headers });
       if (res.ok) {
@@ -268,7 +318,7 @@ export function ImageStudioPage() {
         setHistory(data.items ?? []);
       }
     } finally {
-      setHistoryLoading(false);
+      setHistLoading(false);
     }
   }
 
@@ -277,7 +327,6 @@ export function ImageStudioPage() {
       const res = await fetch(`${API}/image/status/${jobId}`, { headers });
       if (!res.ok) return;
       const job = await res.json() as ImageJob;
-      // Prefer first DB id as the canonical id for operations
       if (job.dbIds?.length) job.id = job.dbIds[0];
       setActiveJob(job);
       if (job.status === "active") setGenStage("rendering");
@@ -285,1146 +334,799 @@ export function ImageStudioPage() {
         if (pollRef.current) clearInterval(pollRef.current);
         setGenStage("done");
         setActiveJobId(null);
-        await loadHistory();
+        loadHistory();
+
+        // Auto remove-bg
+        if (job.status === "completed" && activeOptions.has("removeBg") && job.url) {
+          doRemoveBg(job.url);
+        }
       }
     } catch { /* ignore */ }
   }
 
   async function uploadRefFile(file: File): Promise<string> {
-    const formData = new FormData();
-    formData.append("file", file);
+    const fd = new FormData();
+    fd.append("file", file);
     const res = await fetch(`${API}/image/upload-ref`, {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken ?? ""}` },
-      body: formData,
+      body: fd,
     });
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({} as { error?: string }));
-      throw new Error(d.error ?? "Ошибка загрузки файла");
-    }
-    const data = await res.json() as { refUrl: string };
-    return data.refUrl;
+    if (!res.ok) throw new Error("Ошибка загрузки файла");
+    const d = await res.json() as { refUrl: string };
+    return d.refUrl;
   }
 
   async function handleSelectRef(file: File) {
     setRefUploading(true);
-    const previewUrl = URL.createObjectURL(file);
     try {
-      const refUrl = await uploadRefFile(file);
-      setReferenceImage({ previewUrl, refUrl });
+      const refUrl  = await uploadRefFile(file);
+      setRefImage({ previewUrl: URL.createObjectURL(file), refUrl });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка загрузки изображения");
-    } finally {
-      setRefUploading(false);
-    }
+    } finally { setRefUploading(false); }
   }
 
   async function handleSelectMask(file: File) {
     setMaskUploading(true);
-    const previewUrl = URL.createObjectURL(file);
     try {
       const refUrl = await uploadRefFile(file);
-      setMaskImage({ previewUrl, refUrl });
+      setMaskImage({ previewUrl: URL.createObjectURL(file), refUrl });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка загрузки маски");
-    } finally {
-      setMaskUploading(false);
-    }
+    } finally { setMaskUploading(false); }
   }
 
-  // ── Generate ─────────────────────────────────────────────────────────────────
-
-  async function handleGenerate(overridePrompt?: string) {
-    const rawPrompt = (overridePrompt ?? prompt).trim();
-    if (!rawPrompt || generating) return;
-
-    setError(null);
-    setLastEnhanced(null);
-    setShowEnhancedPrompt(false);
-    setEnhanceApplied(null);
-    setBrainResult(null);
-    setActiveJob(null);
-
-    const modeForJob = computeResolvedMode(enableVariations, enableControlNet, referenceImage, maskImage);
-    const shouldEnhance = smartMode;
-
-    try {
-      let finalPrompt = rawPrompt;
-      let finalNegative: string | undefined;
-
-      if (shouldEnhance) {
-        setGenStage("enhancing");
-        const res = await fetch(`${API}/image/enhance`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            prompt: rawPrompt,
-            style: style || undefined,
-            aspectRatio: `${size.w}:${size.h}`,
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json() as {
-            enhancedPrompt?: string;
-            negativePrompt?: string;
-            appliedStyle?: string | null;
-            appliedAspectRatio?: string | null;
-            appliedSystemPrompt?: boolean;
-            brain?: BrainResult | null;
-          };
-          if (data.enhancedPrompt) {
-            finalPrompt = data.enhancedPrompt;
-            finalNegative = data.negativePrompt;
-            setLastEnhanced({ prompt: data.enhancedPrompt, negative: data.negativePrompt ?? "" });
-            setEnhanceApplied({
-              style: data.appliedStyle ?? null,
-              aspectRatio: data.appliedAspectRatio ?? null,
-              systemPrompt: data.appliedSystemPrompt ?? false,
-            });
-            if (data.brain) setBrainResult(data.brain);
-          }
-        }
-      }
-
-      setGenStage("queuing");
-
-      const body: Record<string, unknown> = {
-        prompt: finalPrompt,
-        width: size.w,
-        height: size.h,
-        mode: modeForJob,
-        smartMode,
-        variations: enableVariations ? variationCount : 1,
-        aspectRatio: `${size.w}:${size.h}`,
-        ...(modeForJob === "controlnet" ? { controlType } : {}),
-      };
-
-      if (finalNegative) body.negativePrompt = finalNegative;
-      if (style) body.style = style;
-
-      if (modeForJob === "reference" || modeForJob === "inpaint") {
-        body.referenceImageUrl = referenceImage?.refUrl;
-        body.strength = strength;
-      }
-      if (modeForJob === "inpaint") {
-        body.maskUrl = maskImage?.refUrl;
-      }
-
-      const res = await fetch(`${API}/image/generate`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-      });
-      const data = await res.json() as {
-        jobId?: string;
-        error?: string;
-        enhanceApplied?: EnhanceApplied | null;
-        brain?: BrainResult | null;
-      };
-
-      if (!res.ok) {
-        setError(data.error ?? "Ошибка запуска генерации");
-        setGenStage("idle");
-        return;
-      }
-
-      // If server enhanced (backend-only path), capture what was applied
-      if (data.enhanceApplied && !enhanceApplied) {
-        setEnhanceApplied(data.enhanceApplied);
-      }
-      if (data.brain) setBrainResult(data.brain);
-
-      setGenStage("rendering");
-      setActiveJobId(data.jobId!);
-      setActiveJob({
-        jobId: data.jobId!,
-        status: "queued",
-        mode: modeForJob,
-        prompt: finalPrompt,
-        originalPrompt: rawPrompt,
-        width: size.w,
-        height: size.h,
-        createdAt: new Date().toISOString(),
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Ошибка сети");
-      setGenStage("idle");
-    }
-  }
-
-  // ── Delete ───────────────────────────────────────────────────────────────────
-
-  async function handleRemoveBg(imageUrl: string) {
+  async function doRemoveBg(imageUrl: string) {
     setRemovingBg(true);
     setRemoveBgResult(null);
     try {
       const res = await fetch(`${API}/image/remove-bg`, {
         method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ imageUrl }),
       });
-      const data = await res.json() as { url?: string; error?: string };
-      if (!res.ok || !data.url) {
-        setError(data.error ?? "Не удалось убрать фон");
-        return;
-      }
-      setRemoveBgResult({ url: data.url });
+      const d = await res.json() as { url?: string; error?: string };
+      if (res.ok && d.url) setRemoveBgResult({ url: d.url });
+      else setError(d.error ?? "Не удалось убрать фон");
     } catch {
       setError("Ошибка удаления фона");
-    } finally {
-      setRemovingBg(false);
+    } finally { setRemovingBg(false); }
+  }
+
+  // ── Generate ─────────────────────────────────────────────────────────────────
+
+  async function handleGenerate(overridePrompt?: string) {
+    const raw = (overridePrompt ?? prompt).trim();
+    if (!raw || generating) return;
+
+    setError(null);
+    setEnhanceInfo(null);
+    setShowEnhanced(false);
+    setActiveJob(null);
+    setRemoveBgResult(null);
+
+    const mode = resolveMode();
+
+    try {
+      let finalPrompt = raw;
+      let finalNeg    = negPrompt || undefined;
+
+      // 1. Enhance
+      if (smartMode) {
+        setGenStage("enhancing");
+        const res = await fetch(`${API}/image/enhance`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            prompt: raw,
+            style: style || undefined,
+            aspectRatio: `${size.w}:${size.h}`,
+          }),
+        });
+        if (res.ok) {
+          const d = await res.json() as {
+            enhancedPrompt?: string;
+            negativePrompt?: string;
+            appliedStyle?: string | null;
+            appliedAspectRatio?: string | null;
+            brain?: { type: string; style: string; composition: string } | null;
+          };
+          if (d.enhancedPrompt) {
+            finalPrompt = d.enhancedPrompt;
+            finalNeg    = d.negativePrompt ?? finalNeg;
+            setEnhanceInfo({
+              enhancedPrompt: d.enhancedPrompt,
+              negativePrompt: d.negativePrompt,
+              style: d.appliedStyle,
+              aspectRatio: d.appliedAspectRatio,
+              brain: d.brain,
+            });
+          }
+        }
+      }
+
+      // 2. Queue
+      setGenStage("queuing");
+      const body: Record<string, unknown> = {
+        prompt:       finalPrompt,
+        width:        size.w,
+        height:       size.h,
+        mode,
+        smartMode,
+        variations:   activeOptions.has("variations") ? variationCount : 1,
+        aspectRatio:  `${size.w}:${size.h}`,
+        steps,
+        cfgScale:     cfg,
+        ...(seed ? { seed: Number(seed) } : {}),
+      };
+      if (finalNeg)  body.negativePrompt = finalNeg;
+      if (style)     body.style = style;
+      if (mode === "controlnet") body.controlType = controlType;
+      if (mode === "reference" || mode === "inpaint") {
+        body.referenceImageUrl = refImage?.refUrl;
+        body.strength = strength;
+      }
+      if (mode === "inpaint") body.maskUrl = maskImage?.refUrl;
+
+      const res  = await fetch(`${API}/image/generate`, { method: "POST", headers, body: JSON.stringify(body) });
+      const data = await res.json() as { jobId?: string; error?: string };
+
+      if (!res.ok) {
+        setError("Ошибка генерации. Попробуйте изменить описание.");
+        setGenStage("idle");
+        return;
+      }
+
+      setGenStage("rendering");
+      setActiveJobId(data.jobId!);
+      setActiveJob({
+        jobId:         data.jobId!,
+        status:        "queued",
+        mode,
+        prompt:        finalPrompt,
+        originalPrompt: raw,
+        width:         size.w,
+        height:        size.h,
+        createdAt:     new Date().toISOString(),
+      });
+    } catch {
+      setError("Ошибка сети. Проверьте соединение.");
+      setGenStage("idle");
     }
   }
 
-  async function handleDelete(imageId: string, jobId?: string) {
+  // ── Delete ────────────────────────────────────────────────────────────────────
+
+  async function handleDelete(id: string, jobId: string) {
     setDeleting(true);
-    const deleteId = imageId || jobId || "";
-    const deleteHeaders = { Authorization: `Bearer ${accessToken ?? ""}` };
+    const delId = id || jobId;
     try {
-      const res = await fetch(`${API}/image/${deleteId}`, { method: "DELETE", headers: deleteHeaders });
+      const res = await fetch(`${API}/image/${delId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken ?? ""}` },
+      });
       if (res.ok || res.status === 404) {
-        setHistory((prev) => prev.filter((j) => (j.id ?? j.jobId) !== deleteId));
-        const match = activeJob?.id === deleteId || activeJob?.jobId === deleteId;
-        if (match) { setActiveJob(null); setGenStage("idle"); }
+        setHistory((prev) => prev.filter((j) => (j.id ?? j.jobId) !== delId));
+        if (activeJob?.id === delId || activeJob?.jobId === delId) {
+          setActiveJob(null);
+          setGenStage("idle");
+        }
         if (lightbox) setLightbox(null);
-      } else {
-        const d = await res.json().catch(() => ({} as { error?: string }));
-        setError(d.error ?? `Ошибка удаления (HTTP ${res.status})`);
       }
-    } catch {
-      setError("Ошибка сети");
-    } finally {
+    } catch { /* ignore */ } finally {
       setDeleting(false);
       setDeleteModal(null);
     }
   }
 
-  // ── Computed ─────────────────────────────────────────────────────────────────
+  // ── Derived ────────────────────────────────────────────────────────────────────
 
-  const canGenerate = (() => {
-    if (!prompt.trim() || generating) return false;
-    if (refUploading || maskUploading) return false;
-    if (enableVariations) return true;
-    if (enableInpaint) return !!(referenceImage?.refUrl && maskImage?.refUrl);
-    if (enableControlNet) return !!referenceImage?.refUrl;
-    if (enableReference) return !!referenceImage?.refUrl;
-    return true;
-  })();
+  const images: string[] = activeJob?.urls?.length
+    ? activeJob.urls
+    : activeJob?.url
+      ? [activeJob.url]
+      : [];
 
-  const resultUrls = activeJob?.urls ?? (activeJob?.url ? [activeJob.url] : []);
-  const isMultiResult = resultUrls.length > 1;
-
-  // ── Render ───────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════════
+  // RENDER
+  // ══════════════════════════════════════════════════════════════════════════════
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-0 md:flex-row">
+    <div className="flex h-screen flex-col overflow-hidden bg-neutral-950">
 
-      {/* ══ LEFT PANEL ══════════════════════════════════════════════════════════ */}
-      <div className="flex min-w-0 w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-neutral-200 bg-white p-5 md:w-80 md:border-b-0 md:border-r [overflow-wrap:anywhere]">
-
-        {/* Header */}
-        <div className="flex items-center justify-between gap-2 break-words">
-          <div className="flex items-center gap-2">
-            <ImageIcon className="h-5 w-5 shrink-0 text-violet-500" />
-            <h1 className="text-base font-semibold text-neutral-900">Image Studio</h1>
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <header className="flex h-12 flex-shrink-0 items-center justify-between border-b border-white/5 px-5">
+        <div className="flex items-center gap-2">
+          <div className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-500">
+            <Sparkles className="h-3.5 w-3.5 text-white" />
           </div>
-          <Link
-            to="/image-studio/settings"
-            title="Настройки"
-            className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-neutral-100 hover:text-neutral-600"
-          >
-            <Settings2 className="h-4 w-4" />
-          </Link>
+          <span className="text-sm font-semibold text-white">Image Studio</span>
         </div>
-
-        {/* Режимы: чекбоксы (smartMode ≠ mode) */}
-        <div className="flex flex-col gap-2 rounded-xl border border-neutral-200 bg-neutral-50/80 p-3">
-          <p className="text-[11px] font-medium text-neutral-500">Настройки генерации</p>
-          <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800">
-            <input
-              type="checkbox"
-              checked={smartMode}
-              onChange={(e) => setSmartMode(e.target.checked)}
-              className="mt-0.5 h-4 w-4 shrink-0 rounded border-neutral-300 accent-violet-600"
-            />
-            <span className="break-words">Умный режим — улучшать промпт (AI)</span>
-          </label>
-          <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800">
-            <input
-              type="checkbox"
-              checked={enableVariations}
-              onChange={(e) => setEnableVariations(e.target.checked)}
-              className="mt-0.5 h-4 w-4 shrink-0 rounded border-neutral-300 accent-violet-600"
-            />
-            <span className="break-words">Вариации — несколько картинок за раз</span>
-          </label>
-          <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800">
-            <input
-              type="checkbox"
-              checked={enableReference}
-              onChange={(e) => setEnableReference(e.target.checked)}
-              className="mt-0.5 h-4 w-4 shrink-0 rounded border-neutral-300 accent-violet-600"
-            />
-            <span className="break-words">По образцу — img2img</span>
-          </label>
-          <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800">
-            <input
-              type="checkbox"
-              checked={enableInpaint}
-              onChange={(e) => setEnableInpaint(e.target.checked)}
-              className="mt-0.5 h-4 w-4 shrink-0 rounded border-neutral-300 accent-violet-600"
-            />
-            <span className="break-words">Редактирование — маска области</span>
-          </label>
-          <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800">
-            <input
-              type="checkbox"
-              checked={enableControlNet}
-              onChange={(e) => {
-                setEnableControlNet(e.target.checked);
-                if (e.target.checked) { setEnableInpaint(false); setEnableReference(false); }
-              }}
-              className="mt-0.5 h-4 w-4 shrink-0 rounded border-neutral-300 accent-violet-600"
-            />
-            <span className="break-words">🧬 ControlNet — контроль формы/позы</span>
-          </label>
-        </div>
-
-        {/* ControlNet type + hint */}
-        {enableControlNet && (
-          <div className="flex flex-col gap-2 rounded-xl border border-violet-100 bg-violet-50 p-3">
-            <p className="text-[11px] font-medium text-violet-700">Тип контроля</p>
-            <div className="flex flex-col gap-2">
-              {CONTROL_TYPES.map((ct) => (
-                <label key={ct.id} className="flex cursor-pointer items-start gap-2">
-                  <input
-                    type="radio"
-                    name="controlType"
-                    value={ct.id}
-                    checked={controlType === ct.id}
-                    onChange={() => setControlType(ct.id)}
-                    className="mt-0.5 h-4 w-4 shrink-0 accent-violet-600"
-                  />
-                  <div>
-                    <p className="text-xs font-medium text-neutral-800">{ct.label}</p>
-                    <p className="text-[10px] text-neutral-500 break-words">{ct.hint}</p>
-                  </div>
-                </label>
-              ))}
-            </div>
-            <p className="mt-1 flex items-start gap-1 text-[10px] text-violet-500">
-              <Info className="mt-0.5 h-3 w-3 shrink-0" />
-              Используйте изображение как основу композиции. Загрузите фото ниже.
-            </p>
-          </div>
-        )}
-
-        <p className="flex items-start gap-1 text-[11px] text-neutral-400 break-words">
-          <Info className="mt-0.5 h-3 w-3 shrink-0" />
-          Сейчас: {resolvedMode === "text" && "текст → изображение"}
-          {resolvedMode === "variation" && "несколько вариантов"}
-          {resolvedMode === "reference" && "по загруженному образцу"}
-          {resolvedMode === "inpaint" && "замена по маске"}
-          {resolvedMode === "controlnet" && `🧬 ControlNet (${controlType})`}
-          {smartMode && " · умный промпт включён"}
-        </p>
-
-        {/* Prompt textarea */}
-        <div className="flex min-w-0 flex-col gap-1.5">
-          <label className="text-xs font-medium text-neutral-700">Описание</label>
-          <textarea
-            className="min-h-[80px] max-w-full resize-y rounded-xl border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-900 placeholder-neutral-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-100 break-words [overflow-wrap:anywhere]"
-            placeholder={
-              enableInpaint
-                ? "Что должно появиться в выделенной области…"
-                : "Например: кот в сапогах…"
-            }
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleGenerate(); }}
-          />
-          <div className="flex flex-wrap gap-2">
-            {PROMPT_EXAMPLES.map((ex) => (
-              <button
-                key={ex}
-                type="button"
-                onClick={() => setPrompt(ex)}
-                className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 text-[11px] text-neutral-500 transition hover:border-violet-300 hover:text-violet-600 break-words max-w-full text-left"
-              >
-                {ex}
-              </button>
-            ))}
-          </div>
-          {/* Live brain detection chip */}
-          {smartMode && prompt.trim().length > 4 && (
-            <PromptBrainChip prompt={prompt} />
-          )}
-        </div>
-
-        {enableVariations && (
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <label className="flex items-center gap-1.5 text-xs font-medium text-neutral-700">
-              <Layers className="h-3.5 w-3.5 shrink-0" />
-              Количество вариантов
-            </label>
-            <div className="flex flex-wrap gap-2">
-              {[2, 4, 6].map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => setVariationCount(n)}
-                  className={cn(
-                    "min-w-[3rem] flex-1 rounded-xl border py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
-                    variationCount === n
-                      ? "border-violet-400 bg-violet-50 text-violet-700"
-                      : "border-neutral-200 bg-neutral-50 text-neutral-500 hover:border-neutral-300"
-                  )}
-                >
-                  {n}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {(enableReference || enableInpaint || enableControlNet) && (
-          <ImageUploadBox
-            label={enableControlNet ? "Исходное изображение (для ControlNet)" : enableInpaint ? "Исходное изображение" : "Образец"}
-            hint={enableControlNet ? "Форма/поза этого изображения будет перенесена в генерацию" : enableInpaint ? undefined : "Генерация будет похожа на этот образец"}
-            image={referenceImage}
-            uploading={refUploading}
-            onSelect={handleSelectRef}
-          />
-        )}
-
-        {resolvedMode === "reference" && (
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <label className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-neutral-700">
-              <span className="flex items-center gap-1.5 break-words">
-                <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
-                Сходство с образцом
-              </span>
-              <span className="shrink-0 text-violet-600 font-semibold">{Math.round(strength * 100)}%</span>
-            </label>
-            <input
-              type="range"
-              min={0.1}
-              max={0.9}
-              step={0.05}
-              value={strength}
-              onChange={(e) => setStrength(Number(e.target.value))}
-              className="w-full max-w-full accent-violet-600"
-            />
-            <div className="flex flex-wrap justify-between gap-1 text-[10px] text-neutral-400">
-              <span className="break-words">Больше творчества</span>
-              <span className="break-words">Ближе к образцу</span>
-            </div>
-          </div>
-        )}
-
-        {enableInpaint && (
-          <ImageUploadBox
-            label="Маска (область изменения)"
-            hint="Белый = изменить, чёрный = оставить"
-            image={maskImage}
-            uploading={maskUploading}
-            onSelect={handleSelectMask}
-          />
-        )}
-
-        <div className="flex min-w-0 flex-col gap-1.5">
-          <label className="text-xs font-medium text-neutral-700">Стиль</label>
-          <div className="grid grid-cols-2 gap-1.5">
-            {STYLE_PRESETS.map((s) => (
-              <button
-                key={s.value}
-                type="button"
-                onClick={() => setStyle(style === s.value ? "" : s.value)}
-                className={cn(
-                  "flex min-w-0 flex-col gap-0.5 rounded-xl border p-2.5 text-left transition break-words",
-                  style === s.value
-                    ? "border-violet-400 bg-violet-50"
-                    : "border-neutral-200 bg-neutral-50 hover:border-neutral-300 hover:bg-white"
-                )}
-              >
-                <span className="text-base leading-none">{s.emoji}</span>
-                <span className={cn("text-xs font-semibold break-words", style === s.value ? "text-violet-700" : "text-neutral-700")}>
-                  {s.label}
-                </span>
-                <span className="text-[10px] text-neutral-400 leading-tight break-words">{s.desc}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Size presets */}
-        <div className="flex min-w-0 flex-col gap-1.5">
-          <label className="text-xs font-medium text-neutral-700">Формат</label>
-          <div className="flex flex-wrap gap-2">
-            {PRESET_SIZES.map((s) => (
-              <button
-                key={s.label}
-                type="button"
-                onClick={() => setSize(s)}
-                className={cn(
-                  "rounded-lg border px-3 py-1.5 text-xs font-medium transition",
-                  size.label === s.label
-                    ? "border-violet-400 bg-violet-50 text-violet-700"
-                    : "border-neutral-200 bg-neutral-50 text-neutral-500 hover:border-neutral-300"
-                )}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
-          <p className="text-[11px] text-neutral-400 break-words">{size.w} × {size.h} px</p>
-        </div>
-
-        {/* Error */}
-        {error && (
-          <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3">
-            <X className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-red-700">Ошибка</p>
-              <p className="mt-0.5 text-xs text-red-500 break-words">{error}</p>
-            </div>
-            <button type="button" onClick={() => setError(null)} className="shrink-0 text-red-400 hover:text-red-600">
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        )}
-
-        {/* Generate button */}
-        <button
-          type="button"
-          disabled={!canGenerate}
-          onClick={() => handleGenerate()}
-          className={cn(
-            "relative flex w-full max-w-full flex-wrap items-center justify-center gap-2 rounded-xl px-4 py-3.5 text-sm font-semibold transition",
-            !canGenerate
-              ? "cursor-not-allowed bg-neutral-100 text-neutral-400"
-              : "bg-violet-600 text-white shadow-sm hover:bg-violet-700 active:scale-[0.98]"
-          )}
+        <Link
+          to="/image-studio/settings"
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs text-neutral-400 hover:bg-white/5 hover:text-white"
         >
-          {generating ? (
-            <>
-              <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-              <span className="break-words text-center">{STAGE_LABELS[genStage]}</span>
-            </>
-          ) : (
-            <>
-              {resolvedMode === "inpaint" ? (
-                <Paintbrush className="h-4 w-4 shrink-0" />
-              ) : resolvedMode === "variation" ? (
-                <Layers className="h-4 w-4 shrink-0" />
-              ) : (
-                <Sparkles className="h-4 w-4 shrink-0" />
-              )}
-              <span className="break-words text-center">
-                {resolvedMode === "variation" ? `Создать ${variationCount} варианта` :
-                 resolvedMode === "reference" ? "По образцу" :
-                 resolvedMode === "inpaint"   ? "Применить маску" :
-                 "Сгенерировать"}
-              </span>
-              {smartMode && (
-                <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[10px] font-medium">+AI</span>
-              )}
-            </>
-          )}
-        </button>
-      </div>
+          <Settings2 className="h-3.5 w-3.5" />
+          Настройки
+        </Link>
+      </header>
 
-      {/* ══ CENTER PREVIEW ══════════════════════════════════════════════════════ */}
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-start gap-4 overflow-y-auto bg-neutral-50 p-6">
+      {/* ── Body ────────────────────────────────────────────────────────────── */}
+      <div className="flex min-h-0 flex-1">
 
-        {/* Generating state */}
-        {generating ? (
-          <div className="flex flex-col items-center gap-5 pt-8">
-            <div className="relative">
-              <div className="h-52 w-52 rounded-2xl border-2 border-dashed border-violet-200 bg-white" />
-              <Loader2 className="absolute inset-0 m-auto h-10 w-10 animate-spin text-violet-400" />
+        {/* ════ LEFT PANEL ═══════════════════════════════════════════════════ */}
+        <aside className="flex w-[320px] flex-shrink-0 flex-col gap-0 overflow-y-auto border-r border-white/5 bg-neutral-900">
+          <div className="flex flex-col gap-4 p-4">
+
+            {/* 1. Prompt */}
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-medium text-neutral-300">Промпт</label>
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleGenerate(); }}
+                placeholder="Опиши изображение..."
+                rows={4}
+                className="w-full resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-neutral-500 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/40 [overflow-wrap:anywhere]"
+              />
+              {/* Smart feedback */}
+              {enhanceInfo && showEnhanced && (
+                <div className="rounded-lg border border-violet-500/30 bg-violet-500/10 p-2.5 text-xs text-violet-300">
+                  <p className="font-medium mb-1">✨ Улучшенный промпт:</p>
+                  <p className="text-neutral-300 leading-relaxed">{enhanceInfo.enhancedPrompt}</p>
+                  {enhanceInfo.brain && (
+                    <p className="mt-1.5 text-violet-400 opacity-70">
+                      🧠 {enhanceInfo.brain.type} · {enhanceInfo.brain.style}
+                    </p>
+                  )}
+                </div>
+              )}
+              {enhanceInfo && !showEnhanced && (
+                <button
+                  type="button"
+                  onClick={() => setShowEnhanced(true)}
+                  className="flex items-center gap-1.5 self-start rounded-lg border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-xs font-medium text-violet-400 hover:bg-violet-500/20"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  Промпт улучшен
+                  <Eye className="h-3 w-3" />
+                  показать
+                </button>
+              )}
             </div>
-            <div className="flex flex-col items-center gap-2">
-              <p className="text-sm font-semibold text-neutral-700">{STAGE_LABELS[genStage]}</p>
-              <p className="max-w-full px-2 text-center text-xs text-neutral-400 break-words [overflow-wrap:anywhere]">
-                {activeJob?.originalPrompt ?? prompt}
-              </p>
-              {(activeJob?.mode === "variation" || enableVariations) && (
-                <p className="text-xs text-violet-500">Генерируем {variationCount} вариантов…</p>
+
+            {/* 2. Smart Mode */}
+            <div className="flex items-start justify-between gap-3 rounded-xl border border-white/5 bg-white/[0.03] p-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-white">🧠 Умный режим</p>
+                <p className="mt-0.5 text-[11px] text-neutral-500 leading-relaxed">
+                  AI улучшает и настраивает генерацию
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSmartMode((p) => !p)}
+                className={cn(
+                  "relative mt-0.5 h-6 w-11 flex-shrink-0 rounded-full border transition-colors",
+                  smartMode ? "border-violet-500 bg-violet-500" : "border-white/10 bg-white/5"
+                )}
+              >
+                <span className={cn(
+                  "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
+                  smartMode ? "left-5" : "left-0.5"
+                )} />
+              </button>
+            </div>
+
+            {/* 3. Quick Options */}
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-medium text-neutral-400">Опции</label>
+              <div className="flex flex-wrap gap-1.5">
+                {QUICK_OPTIONS.map((opt) => {
+                  const active = activeOptions.has(opt.id);
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => toggleOption(opt.id)}
+                      title={opt.desc}
+                      className={cn(
+                        "flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition",
+                        active
+                          ? "border-violet-500/50 bg-violet-500/20 text-violet-300"
+                          : "border-white/10 bg-white/5 text-neutral-400 hover:border-white/20 hover:text-neutral-200"
+                      )}
+                    >
+                      <span>{opt.emoji}</span>
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Conditional sub-options */}
+              {activeOptions.has("variations") && (
+                <div className="flex items-center gap-2 rounded-lg bg-white/[0.03] px-3 py-2">
+                  <span className="text-xs text-neutral-400">Вариантов:</span>
+                  {[2, 4, 6].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setVariationCount(n)}
+                      className={cn(
+                        "rounded-lg px-2.5 py-1 text-xs font-medium transition",
+                        variationCount === n
+                          ? "bg-violet-500 text-white"
+                          : "bg-white/5 text-neutral-400 hover:bg-white/10 hover:text-white"
+                      )}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
               )}
-              <div className="mt-1 flex items-center gap-2">
-                {(["enhancing", "queuing", "rendering"] as const).map((s, i) => {
-                    const stageOrder: GenStage[] = ["enhancing", "queuing", "rendering"];
-                    const currentIdx = stageOrder.indexOf(genStage as GenStage);
-                    const stepIdx = stageOrder.indexOf(s);
-                    const isPast = currentIdx > stepIdx;
-                    const isCurrent = genStage === s;
-                    return (
-                      <div key={s} className="flex items-center gap-2">
-                        {i > 0 && <div className="h-px w-6 bg-neutral-200" />}
-                        <div className={cn(
-                          "h-2 w-2 rounded-full transition-all",
-                          isCurrent ? "scale-125 bg-violet-500" :
-                          isPast ? "bg-violet-300" : "bg-neutral-200"
-                        )} />
+
+              {(activeOptions.has("reference") || activeOptions.has("inpaint") || activeOptions.has("controlnet")) && (
+                <div className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
+                  <p className="mb-2 text-[11px] font-medium text-neutral-400">
+                    {activeOptions.has("controlnet") ? "🧬 Изображение для ControlNet" : "🖼 Изображение-основа"}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => refInputRef.current?.click()}
+                    className={cn(
+                      "flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed py-3 text-xs transition",
+                      refImage
+                        ? "border-violet-500/40 bg-violet-500/10 text-violet-400"
+                        : "border-white/10 text-neutral-500 hover:border-violet-500/30 hover:text-neutral-300"
+                    )}
+                  >
+                    {refUploading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : refImage ? (
+                      <img src={refImage.previewUrl} alt="" className="h-8 w-8 rounded object-cover" />
+                    ) : (
+                      <><Upload className="h-4 w-4" /> Загрузить изображение</>
+                    )}
+                  </button>
+                  <input ref={refInputRef} type="file" accept="image/*" className="hidden"
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) handleSelectRef(f); e.target.value = ""; }}
+                  />
+
+                  {activeOptions.has("reference") && (
+                    <div className="mt-2">
+                      <div className="flex items-center justify-between text-[11px] text-neutral-400 mb-1">
+                        <span>Сходство</span><span>{Math.round(strength * 100)}%</span>
                       </div>
-                    );
-                  })}
+                      <input type="range" min="0.2" max="0.8" step="0.05" value={strength}
+                        onChange={(e) => setStrength(Number(e.target.value))}
+                        className="w-full accent-violet-500"
+                      />
+                    </div>
+                  )}
+
+                  {activeOptions.has("controlnet") && (
+                    <div className="mt-2 flex gap-2">
+                      {(["canny", "pose"] as const).map((t) => (
+                        <button key={t} type="button" onClick={() => setControlType(t)}
+                          className={cn(
+                            "flex-1 rounded-lg py-1 text-xs font-medium transition",
+                            controlType === t ? "bg-violet-500 text-white" : "bg-white/5 text-neutral-400 hover:bg-white/10"
+                          )}
+                        >
+                          {t === "canny" ? "Контур" : "Поза"}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {activeOptions.has("inpaint") && refImage && (
+                    <div className="mt-2">
+                      <p className="mb-2 text-[11px] font-medium text-neutral-400">✏️ Маска (область изменения)</p>
+                      <button type="button" onClick={() => maskInputRef.current?.click()}
+                        className={cn(
+                          "flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed py-2 text-xs transition",
+                          maskImage ? "border-amber-500/40 bg-amber-500/10 text-amber-400" : "border-white/10 text-neutral-500 hover:border-amber-500/30"
+                        )}
+                      >
+                        {maskUploading ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : maskImage ? <img src={maskImage.previewUrl} alt="" className="h-6 w-6 rounded object-cover" />
+                          : <><Upload className="h-4 w-4" /> Загрузить маску</>}
+                      </button>
+                      <input ref={maskInputRef} type="file" accept="image/*" className="hidden"
+                        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleSelectMask(f); e.target.value = ""; }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 4. Style */}
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-medium text-neutral-400">Стиль</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {STYLE_CARDS.map((s) => (
+                  <button
+                    key={s.value}
+                    type="button"
+                    onClick={() => setStyle(style === s.value ? "" : s.value)}
+                    className={cn(
+                      "flex flex-col items-center gap-1 rounded-xl border py-2.5 text-center transition",
+                      style === s.value
+                        ? "border-violet-500/50 bg-violet-500/20"
+                        : "border-white/5 bg-white/[0.03] hover:border-white/10 hover:bg-white/5"
+                    )}
+                  >
+                    <span className="text-lg">{s.emoji}</span>
+                    <span className={cn("text-[11px] font-medium leading-tight", style === s.value ? "text-violet-300" : "text-neutral-300")}>
+                      {s.label}
+                    </span>
+                    <span className="text-[9px] text-neutral-500 leading-tight">{s.desc}</span>
+                  </button>
+                ))}
               </div>
             </div>
-          </div>
 
-        /* Completed — multiple images (variations) */
-        ) : activeJob?.status === "completed" && isMultiResult ? (
-          <div className="flex w-full flex-col gap-4">
-            {lastEnhanced && (
-              <EnhancedBadge
-                enhanced={lastEnhanced}
-                show={showEnhancedPrompt}
-                onToggle={() => setShowEnhancedPrompt((v) => !v)}
-              />
-            )}
-            <SmartFeedback applied={enhanceApplied} brain={brainResult} />
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-neutral-700">
-                🎯 {resultUrls.length} вариантов
-              </p>
+            {/* 4b. Size */}
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-medium text-neutral-400">Размер</label>
+              <div className="flex gap-1.5">
+                {PRESET_SIZES.map((p) => (
+                  <button key={p.label} type="button" onClick={() => setSize(p)}
+                    className={cn(
+                      "flex-1 rounded-lg py-1.5 text-xs font-medium transition",
+                      size.label === p.label
+                        ? "bg-violet-500 text-white"
+                        : "bg-white/5 text-neutral-400 hover:bg-white/10 hover:text-white"
+                    )}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              {resultUrls.map((url, idx) => (
-                <div key={url} className="group relative overflow-hidden rounded-2xl border border-neutral-200 shadow-sm">
-                  <img
-                    src={url}
-                    alt={`Вариант ${idx + 1}`}
-                    className="w-full cursor-zoom-in object-cover transition group-hover:brightness-90"
-                    style={{ aspectRatio: `${activeJob.width}/${activeJob.height}` }}
-                    onClick={() => setLightbox(url)}
-                  />
-                  <div className="absolute inset-0 flex items-end justify-center bg-gradient-to-t from-black/60 to-transparent p-3 opacity-0 transition-opacity group-hover:opacity-100">
-                    <div className="flex flex-wrap justify-center gap-2">
-                      <a
-                        href={url}
-                        download
-                        className="flex items-center gap-1 rounded-full bg-white/90 px-2.5 py-1.5 text-xs font-medium text-neutral-800 shadow transition hover:bg-white"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <Download className="h-3 w-3" />
-                        Скачать
-                      </a>
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); setDeleteModal({ id: activeJob.id ?? activeJob.jobId, jobId: activeJob.jobId }); }}
-                        className="flex items-center gap-1 rounded-full bg-red-500/90 px-2.5 py-1.5 text-xs font-medium text-white shadow transition hover:bg-red-500"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                        Удалить
-                      </button>
-                    </div>
+
+            {/* 5. Advanced */}
+            <div className="rounded-xl border border-white/5 bg-white/[0.03]">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((p) => !p)}
+                className="flex w-full items-center justify-between px-3 py-2.5 text-xs font-medium text-neutral-400 hover:text-neutral-200"
+              >
+                <span>▼ Расширенные настройки</span>
+                {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              </button>
+              {showAdvanced && (
+                <div className="flex flex-col gap-3 border-t border-white/5 px-3 pb-3 pt-3">
+                  <AdvancedField label="Шаги" hint="20–50">
+                    <input type="number" min={10} max={100} value={steps} onChange={(e) => setSteps(Number(e.target.value))}
+                      className="w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-white outline-none focus:border-violet-500"
+                    />
+                  </AdvancedField>
+                  <AdvancedField label="CFG Scale" hint="1–20">
+                    <input type="number" min={1} max={20} value={cfg} onChange={(e) => setCfg(Number(e.target.value))}
+                      className="w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-white outline-none focus:border-violet-500"
+                    />
+                  </AdvancedField>
+                  <AdvancedField label="Seed" hint="пусто = случайный">
+                    <input type="number" value={seed} onChange={(e) => setSeed(e.target.value)}
+                      placeholder="случайный"
+                      className="w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-white placeholder-neutral-600 outline-none focus:border-violet-500"
+                    />
+                  </AdvancedField>
+                  <AdvancedField label="Negative Prompt" hint="">
+                    <textarea value={negPrompt} onChange={(e) => setNegPrompt(e.target.value)}
+                      rows={2} placeholder="Что НЕ рисовать..."
+                      className="w-full resize-none rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-white placeholder-neutral-600 outline-none focus:border-violet-500"
+                    />
+                  </AdvancedField>
+                </div>
+              )}
+            </div>
+
+            {/* 6. Generate Button */}
+            <button
+              type="button"
+              onClick={() => handleGenerate()}
+              disabled={!prompt.trim() || generating}
+              className={cn(
+                "relative flex w-full items-center justify-center gap-2 rounded-xl py-3.5 text-sm font-semibold transition",
+                !prompt.trim() || generating
+                  ? "cursor-not-allowed bg-white/5 text-neutral-500"
+                  : "bg-violet-500 text-white shadow-lg shadow-violet-500/20 hover:bg-violet-400 active:scale-[0.99]"
+              )}
+            >
+              {generating ? (
+                <><Loader2 className="h-4 w-4 animate-spin" /> Генерация…</>
+              ) : (
+                <><Sparkles className="h-4 w-4" /> Сгенерировать</>
+              )}
+              {smartMode && !generating && (
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-bold text-white/90">
+                  +AI
+                </span>
+              )}
+            </button>
+
+          </div>
+        </aside>
+
+        {/* ════ CENTER — PREVIEW ═════════════════════════════════════════════ */}
+        <main className="flex min-w-0 flex-1 flex-col items-center justify-center bg-neutral-950 p-6">
+
+          {/* Error */}
+          {error && (
+            <div className="mb-4 flex w-full max-w-xl items-start gap-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3.5">
+              <X className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-400" />
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-red-400">❌ Ошибка генерации</p>
+                <p className="mt-0.5 text-xs text-red-400/70">Попробуйте изменить описание</p>
+              </div>
+              <button type="button" onClick={() => setError(null)} className="ml-auto text-red-400/50 hover:text-red-400">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Empty state */}
+          {genStage === "idle" && !activeJob && (
+            <div className="flex flex-col items-center gap-4 text-center">
+              <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-white/5">
+                <Sparkles className="h-10 w-10 text-violet-400 opacity-60" />
+              </div>
+              <div>
+                <p className="text-base font-medium text-neutral-300">Опиши изображение</p>
+                <p className="mt-1 text-sm text-neutral-600">и нажми Сгенерировать</p>
+              </div>
+              <p className="text-xs text-neutral-700">Ctrl+Enter для быстрого запуска</p>
+            </div>
+          )}
+
+          {/* Progress */}
+          {generating && (
+            <ProgressBar stage={genStage} />
+          )}
+
+          {/* Result — single image */}
+          {genStage === "done" && activeJob?.status === "completed" && images.length === 1 && (
+            <div className="group relative max-w-xl w-full">
+              <img
+                src={images[0]}
+                alt={activeJob.prompt}
+                className="w-full rounded-2xl shadow-2xl shadow-black/60 cursor-zoom-in"
+                onClick={() => setLightbox(images[0])}
+              />
+              {/* Overlay */}
+              <div className="absolute inset-0 flex flex-col items-end justify-start gap-2 rounded-2xl bg-black/0 p-3 opacity-0 transition-all group-hover:bg-black/30 group-hover:opacity-100">
+                <div className="flex gap-2">
+                  <OverlayBtn icon={<Download className="h-4 w-4" />} label="Скачать" href={images[0]} download />
+                  <OverlayBtn icon={<RotateCcw className="h-4 w-4" />} label="Повторить" onClick={() => handleGenerate(activeJob.originalPrompt ?? activeJob.prompt)} />
+                  <OverlayBtn icon={<Scissors className="h-4 w-4" />} label="Убрать фон" onClick={() => doRemoveBg(images[0])} />
+                  <OverlayBtn icon={<Trash2 className="h-4 w-4" />} label="Удалить" danger onClick={() => setDeleteModal({ id: activeJob.id ?? activeJob.jobId, jobId: activeJob.jobId })} />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Result — variations grid */}
+          {genStage === "done" && activeJob?.status === "completed" && images.length > 1 && (
+            <div className={cn(
+              "grid w-full max-w-2xl gap-3",
+              images.length === 2 ? "grid-cols-2" : "grid-cols-2"
+            )}>
+              {images.map((url, i) => (
+                <div key={url} className="group relative aspect-square overflow-hidden rounded-xl">
+                  <img src={url} alt="" className="h-full w-full object-cover" />
+                  <div className="absolute inset-0 flex items-end justify-end gap-1.5 bg-black/0 p-2 opacity-0 transition-all group-hover:bg-black/40 group-hover:opacity-100">
+                    <OverlayBtn icon={<ZoomIn className="h-3.5 w-3.5" />} label="Открыть" onClick={() => setLightbox(url)} />
+                    <OverlayBtn icon={<Download className="h-3.5 w-3.5" />} label="Скачать" href={url} download />
+                    <OverlayBtn icon={<Scissors className="h-3.5 w-3.5" />} label="Убрать фон" onClick={() => doRemoveBg(url)} />
                   </div>
-                  <span className="absolute left-2 top-2 rounded-full bg-black/40 px-2 py-0.5 text-[10px] font-medium text-white">
-                    #{idx + 1}
+                  <span className="absolute left-2 top-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                    #{i + 1}
                   </span>
                 </div>
               ))}
             </div>
-            <p className="max-w-full px-2 text-center text-xs text-neutral-400 italic break-words [overflow-wrap:anywhere]">
-              "{activeJob.originalPrompt ?? activeJob.prompt}"
-            </p>
-          </div>
+          )}
 
-        /* Completed — single image */
-        ) : activeJob?.status === "completed" && activeJob.url ? (
-          <div className="flex flex-col items-center gap-3">
-            {lastEnhanced && (
-              <EnhancedBadge
-                enhanced={lastEnhanced}
-                show={showEnhancedPrompt}
-                onToggle={() => setShowEnhancedPrompt((v) => !v)}
-              />
-            )}
-            <SmartFeedback applied={enhanceApplied} brain={brainResult} />
-            {activeJob.mode && activeJob.mode !== "text" && (
-              <div className="flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-3 py-1">
-                <span className="text-xs font-medium text-violet-700">
-                  {activeJob.mode === "reference"   && "🖼 По образцу"}
-                  {activeJob.mode === "inpaint"    && "✏️ Редактирование"}
-                  {activeJob.mode === "controlnet" && "🧬 ControlNet"}
-                </span>
+          {/* Failed */}
+          {genStage === "done" && activeJob?.status === "failed" && (
+            <div className="flex flex-col items-center gap-3 text-center">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-red-500/10">
+                <X className="h-8 w-8 text-red-400" />
               </div>
-            )}
-            <div className="group relative">
-              <img
-                src={activeJob.url}
-                alt={activeJob.prompt}
-                className="max-h-[480px] max-w-full cursor-zoom-in rounded-2xl border border-neutral-200 shadow-md"
-                onClick={() => setLightbox(activeJob.url!)}
-              />
-              <div className="absolute inset-0 flex items-end justify-center rounded-2xl bg-gradient-to-t from-black/60 to-transparent p-4 opacity-0 transition-opacity group-hover:opacity-100">
-                <div className="flex max-w-full flex-wrap justify-center gap-2">
-                  <a
-                    href={activeJob.url}
-                    download
-                    className="flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-xs font-medium text-neutral-800 shadow transition hover:bg-white"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    Скачать
-                  </a>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); handleGenerate(activeJob.originalPrompt ?? prompt); }}
-                    className="flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-xs font-medium text-neutral-800 shadow transition hover:bg-white"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    Перегенерировать
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); handleRemoveBg(activeJob.url!); }}
-                    className="flex items-center gap-1.5 rounded-full bg-emerald-500/90 px-3 py-1.5 text-xs font-medium text-white shadow transition hover:bg-emerald-500"
-                  >
-                    <Scissors className="h-3.5 w-3.5" />
-                    Убрать фон
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); setDeleteModal({ id: activeJob.id ?? activeJob.jobId, jobId: activeJob.jobId, url: activeJob.url }); }}
-                    className="flex items-center gap-1.5 rounded-full bg-red-500/90 px-3 py-1.5 text-xs font-medium text-white shadow transition hover:bg-red-500"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    Удалить
-                  </button>
-                </div>
-              </div>
-            </div>
-            <p className="max-w-full px-2 text-center text-xs text-neutral-400 italic break-words [overflow-wrap:anywhere] md:max-w-md">
-              "{activeJob.originalPrompt ?? activeJob.prompt}"
-            </p>
-          </div>
-
-        /* Failed */
-        ) : activeJob?.status === "failed" ? (
-          <div className="flex flex-col items-center gap-4 pt-8">
-            <div className="flex h-52 w-52 flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-red-200 bg-white">
-              <X className="h-12 w-12 text-red-300" />
-            </div>
-            <div className="text-center">
-              <p className="text-sm font-semibold text-red-600">Ошибка генерации</p>
-              <p className="mt-1 max-w-xs text-xs text-neutral-400">
-                {activeJob.error && !activeJob.error.includes("[object")
-                  ? activeJob.error
-                  : "Попробуйте изменить описание или выбрать другой стиль"}
-              </p>
-              <button
-                type="button"
-                onClick={() => handleGenerate()}
-                className="mt-3 flex items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-4 py-1.5 text-xs font-medium text-neutral-600 transition hover:border-violet-300 hover:text-violet-600 mx-auto"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
+              <p className="font-medium text-red-400">❌ Ошибка генерации</p>
+              <p className="text-sm text-neutral-500">Попробуйте изменить описание</p>
+              <button type="button" onClick={() => { setActiveJob(null); setGenStage("idle"); setError(null); }}
+                className="rounded-xl bg-white/5 px-4 py-2 text-sm text-neutral-300 hover:bg-white/10">
                 Попробовать снова
               </button>
             </div>
+          )}
+
+          {/* Remove bg loader */}
+          {removingBg && (
+            <div className="mt-6 flex items-center gap-2 rounded-xl bg-white/5 px-4 py-2.5 text-sm text-neutral-300">
+              <Loader2 className="h-4 w-4 animate-spin text-violet-400" />
+              Убираем фон…
+            </div>
+          )}
+
+          {/* Remove bg result */}
+          {removeBgResult && (
+            <div className="mt-6 flex flex-col items-center gap-3">
+              <p className="text-xs font-medium text-emerald-400">✅ Фон удалён</p>
+              <div
+                className="overflow-hidden rounded-xl border border-white/10"
+                style={{ background: "repeating-conic-gradient(#1a1a1a 0% 25%, #111 0% 50%) 0 0 / 16px 16px" }}
+              >
+                <img src={removeBgResult.url} alt="no-bg" className="max-h-60 object-contain" />
+              </div>
+              <a href={removeBgResult.url} download
+                className="flex items-center gap-1.5 rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs font-medium text-emerald-400 hover:bg-emerald-500/30">
+                <Download className="h-3.5 w-3.5" />
+                Скачать PNG
+              </a>
+            </div>
+          )}
+
+        </main>
+
+        {/* ════ RIGHT — HISTORY ══════════════════════════════════════════════ */}
+        <aside className="flex w-[280px] flex-shrink-0 flex-col border-l border-white/5 bg-neutral-900">
+          <div className="flex items-center justify-between border-b border-white/5 px-3 py-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-400">
+              <Clock className="h-3.5 w-3.5" />
+              История
+            </div>
+            <button type="button" onClick={loadHistory}
+              className="rounded-lg p-1 text-neutral-600 hover:bg-white/5 hover:text-neutral-300">
+              <RotateCcw className="h-3 w-3" />
+            </button>
           </div>
 
-        /* Empty state */
-        ) : (
-          <div className="flex flex-col items-center gap-4 pt-8 text-center">
-            <div className="rounded-3xl border-2 border-dashed border-neutral-200 bg-white p-14">
-              <ImageIcon className="mx-auto h-14 w-14 text-neutral-200" />
-            </div>
-            <div className="max-w-md break-words px-2 [overflow-wrap:anywhere]">
-              <p className="text-sm font-semibold text-neutral-600">
-                {resolvedMode === "text"      && "Введите описание и нажмите Сгенерировать"}
-                {resolvedMode === "variation" && `Введите описание — будет создано ${variationCount} вариантов`}
-                {resolvedMode === "reference" && "Загрузите образец и опишите желаемый результат"}
-                {resolvedMode === "inpaint"   && "Загрузите изображение и маску области изменения"}
-              </p>
-              <p className="mt-1 text-xs text-neutral-400">
-                Можно сочетать умный режим с вариациями, образцом или маской.
-              </p>
-            </div>
+          <div className="flex-1 overflow-y-auto p-2">
+            {histLoading ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="h-5 w-5 animate-spin text-neutral-600" />
+              </div>
+            ) : history.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 py-8 text-center">
+                <ImageIcon className="h-8 w-8 text-neutral-700" />
+                <p className="text-xs text-neutral-600">История пуста</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1">
+                {history.map((job) => (
+                  <HistoryCard
+                    key={job.id ?? job.jobId}
+                    job={job}
+                    active={(activeJob?.id ?? activeJob?.jobId) === (job.id ?? job.jobId)}
+                    onClick={() => {
+                      setActiveJob(job);
+                      setGenStage("done");
+                      setError(null);
+                    }}
+                    onReuse={() => {
+                      setPrompt(job.originalPrompt ?? job.prompt);
+                      setActiveJob(null);
+                      setGenStage("idle");
+                    }}
+                    onDelete={() => setDeleteModal({ id: job.id ?? job.jobId, jobId: job.jobId })}
+                  />
+                ))}
+              </div>
+            )}
           </div>
-        )}
+        </aside>
       </div>
 
-      {/* ══ RIGHT HISTORY ═══════════════════════════════════════════════════════ */}
-      <div className="flex w-full shrink-0 flex-col gap-3 overflow-y-auto border-t border-neutral-200 bg-white p-4 md:w-64 md:border-l md:border-t-0">
-        <div className="flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-widest text-neutral-400">История</p>
-          <button
-            type="button"
-            onClick={loadHistory}
-            className="rounded-md p-1 text-neutral-400 transition hover:bg-neutral-100 hover:text-neutral-600"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-          </button>
-        </div>
-
-        {historyLoading ? (
-          <div className="flex justify-center py-6">
-            <Loader2 className="h-5 w-5 animate-spin text-neutral-300" />
-          </div>
-        ) : history.length === 0 ? (
-          <p className="py-6 text-center text-xs text-neutral-400">Пока нет генераций</p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {history.map((job) => (
-              <HistoryCard
-                key={job.jobId}
-                job={job}
-                onOpen={() => {
-                  const url = job.urls?.[0] ?? job.url;
-                  if (url) setLightbox(url);
-                }}
-                onDelete={() => setDeleteModal({ id: job.id ?? job.jobId, jobId: job.jobId, url: job.url })}
-                onRegenerate={() => handleGenerate(job.originalPrompt ?? job.prompt)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* ══ LIGHTBOX ════════════════════════════════════════════════════════════ */}
+      {/* ══ LIGHTBOX ══════════════════════════════════════════════════════════ */}
       {lightbox && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
           onClick={() => setLightbox(null)}
         >
-          <button
-            type="button"
-            className="absolute right-5 top-5 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
-            onClick={() => setLightbox(null)}
-          >
+          <button type="button" className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20">
             <X className="h-5 w-5" />
           </button>
           <img
             src={lightbox}
             alt=""
-            className="max-h-full max-w-full rounded-xl shadow-2xl"
+            className="max-h-[90vh] max-w-[90vw] rounded-2xl shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           />
-        </div>
-      )}
-
-      {/* ══ REMOVE BG LOADING ════════════════════════════════════════════════════ */}
-      {removingBg && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/60">
-          <Loader2 className="h-10 w-10 animate-spin text-white" />
-          <p className="text-sm font-medium text-white">Убираем фон…</p>
-          <p className="text-xs text-white/60">Обычно 10–30 секунд</p>
-        </div>
-      )}
-
-      {/* ══ REMOVE BG RESULT ═════════════════════════════════════════════════════ */}
-      {removeBgResult && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-          onClick={() => setRemoveBgResult(null)}
-        >
-          <div
-            className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl bg-white p-6 shadow-xl"
+          <a href={lightbox} download
+            className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-xl bg-white/10 px-4 py-2 text-sm text-white hover:bg-white/20"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between w-full">
-              <p className="font-semibold text-neutral-900">✅ Фон удалён</p>
-              <button
-                type="button"
-                onClick={() => setRemoveBgResult(null)}
-                className="rounded-lg p-1 text-neutral-400 hover:bg-neutral-100"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            {/* Checkerboard background to show transparency */}
-            <div
-              className="w-full rounded-xl overflow-hidden border border-neutral-200"
-              style={{ background: "repeating-conic-gradient(#e5e7eb 0% 25%, white 0% 50%) 0 0 / 16px 16px" }}
-            >
-              <img
-                src={removeBgResult.url}
-                alt="Без фона"
-                className="w-full max-h-80 object-contain"
-              />
-            </div>
-            <div className="flex w-full gap-3">
-              <a
-                href={removeBgResult.url}
-                download
-                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-neutral-900 py-2.5 text-sm font-medium text-white transition hover:bg-neutral-800"
-              >
-                <Download className="h-4 w-4" />
-                Скачать PNG
-              </a>
-              <button
-                type="button"
-                onClick={() => setRemoveBgResult(null)}
-                className="flex-1 rounded-xl border border-neutral-200 py-2.5 text-sm font-medium text-neutral-600 transition hover:bg-neutral-50"
-              >
-                Закрыть
-              </button>
-            </div>
-          </div>
+            <Download className="h-4 w-4" /> Скачать
+          </a>
         </div>
       )}
 
-      {/* ══ DELETE MODAL ════════════════════════════════════════════════════════ */}
+      {/* ══ DELETE MODAL ══════════════════════════════════════════════════════ */}
       {deleteModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
           onClick={() => !deleting && setDeleteModal(null)}
         >
           <div
-            className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl"
+            className="flex w-full max-w-sm flex-col gap-4 rounded-2xl border border-white/10 bg-neutral-900 p-6"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex flex-col items-center gap-4 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
-                <Trash2 className="h-6 w-6 text-red-500" />
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10">
+                <Trash2 className="h-5 w-5 text-red-400" />
               </div>
               <div>
-                <p className="font-semibold text-neutral-900">Удалить изображение?</p>
-                <p className="mt-1 text-sm text-neutral-500">Файл будет удалён безвозвратно</p>
+                <p className="font-semibold text-white">Удалить изображение?</p>
+                <p className="text-sm text-neutral-500">Файл будет удалён безвозвратно</p>
               </div>
-              <div className="flex w-full gap-3">
-                <button
-                  type="button"
-                  disabled={deleting}
-                  onClick={() => setDeleteModal(null)}
-                  className="flex-1 rounded-xl border border-neutral-200 bg-neutral-50 py-2.5 text-sm font-medium text-neutral-600 transition hover:bg-neutral-100 disabled:opacity-50"
-                >
-                  Отмена
-                </button>
-                <button
-                  type="button"
-                  disabled={deleting}
-                  onClick={() => handleDelete(deleteModal.id, deleteModal.jobId)}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-red-500 py-2.5 text-sm font-semibold text-white transition hover:bg-red-600 disabled:opacity-50"
-                >
-                  {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                  Удалить
-                </button>
-              </div>
+            </div>
+            <div className="flex gap-3">
+              <button type="button" disabled={deleting} onClick={() => setDeleteModal(null)}
+                className="flex-1 rounded-xl border border-white/10 py-2.5 text-sm text-neutral-400 hover:bg-white/5 disabled:opacity-50">
+                Отмена
+              </button>
+              <button type="button" disabled={deleting}
+                onClick={() => handleDelete(deleteModal.id, deleteModal.jobId)}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-red-500 py-2.5 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50">
+                {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                Удалить
+              </button>
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 }
 
-// ── Client-side brain (mirrors server aiBrain.js) ────────────────────────────
+// ── Micro helpers ─────────────────────────────────────────────────────────────
 
-const CLIENT_TYPE_RULES: Array<{ type: string; keywords: string[] }> = [
-  { type: "character",    keywords: ["человек","woman","man","girl","boy","женщина","мужчина","девушка","парень","warrior","hero","персонаж","character","portrait","портрет","лицо","face","person","люди","people","princess","queen","king","ninja","samurai","astronaut"] },
-  { type: "animal",       keywords: ["cat","dog","кот","собака","кошка","животное","animal","wolf","волк","fox","лиса","bear","медведь","lion","тигр","tiger","bird","птица","horse","лошадь","dragon","дракон","creature","rabbit","кролик","deer","олень","fish","рыба"] },
-  { type: "landscape",    keywords: ["landscape","пейзаж","mountain","гора","forest","лес","ocean","море","sea","lake","озеро","river","река","desert","пустыня","sky","небо","sunset","закат","sunrise","рассвет","nature","природа","field","поле","valley","canyon","waterfall","beach","пляж","island","остров","snow","снег","jungle","cave"] },
-  { type: "architecture", keywords: ["building","здание","house","дом","castle","замок","tower","башня","bridge","мост","cathedral","church","храм","city","город","street","улица","interior","интерьер","room","комната","architecture","архитектура","palace","дворец","ruins","ruинs","skyscraper","temple","alley"] },
-  { type: "product",      keywords: ["product","товар","bottle","бутылка","box","коробка","package","упаковка","label","этикетка","perfume","духи","phone","телефон","laptop","ноутбук","watch","часы","shoes","обувь","bag","сумка","car","машина","jewelry","ring","кольцо","cup","кружка"] },
-  { type: "food",         keywords: ["food","еда","dish","блюдо","meal","ужин","завтрак","обед","breakfast","lunch","dinner","pizza","burger","sushi","cake","торт","coffee","кофе","tea","чай","fruit","фрукт","vegetable","овощ","bread","хлеб","pasta","soup","суп","salad","салат","dessert","cocktail","wine","вино"] },
-  { type: "abstract",     keywords: ["abstract","абстракция","pattern","узор","texture","текстура","fractal","digital art","geometry","геометрия","mandala","neon","неон","glitch","space","cosmos","космос","nebula","galaxy","energy","энергия","flow","light","свет"] },
-];
-
-function clientDetectType(prompt: string): string {
-  const lower = prompt.toLowerCase();
-  let best = { type: "unknown", score: 0 };
-  for (const r of CLIENT_TYPE_RULES) {
-    const score = r.keywords.filter((kw) => lower.includes(kw)).length;
-    if (score > best.score) best = { type: r.type, score };
-  }
-  return best.type;
-}
-
-function PromptBrainChip({ prompt }: { prompt: string }) {
-  const type = clientDetectType(prompt);
-  if (type === "unknown") return null;
+function AdvancedField({ label, hint, children }: { label: string; hint: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-1.5 text-[10px] text-violet-500">
-      <span className="font-medium">🧠</span>
-      <span>AI Brain: определён как <span className="font-semibold">{TYPE_LABEL[type]}</span></span>
-    </div>
-  );
-}
-
-// ── Smart mode feedback ───────────────────────────────────────────────────────
-
-const TYPE_LABEL: Record<string, string> = {
-  character:    "🧑 персонаж",
-  animal:       "🐾 животное",
-  landscape:    "🌄 пейзаж",
-  architecture: "🏛 архитектура",
-  product:      "📦 продукт",
-  food:         "🍽 еда",
-  abstract:     "🌀 абстракция",
-  unknown:      "🧠 общий",
-};
-
-function SmartFeedback({
-  applied,
-  brain,
-}: {
-  applied: EnhanceApplied | null;
-  brain: BrainResult | null;
-}) {
-  if (!applied && !brain) return null;
-
-  const items: { label: string; sub?: string }[] = [];
-  if (brain?.type) items.push({ label: TYPE_LABEL[brain.type] ?? brain.type });
-  if (applied?.style || brain?.style) items.push({ label: `стиль: ${applied?.style ?? brain?.style}` });
-  if (applied?.aspectRatio) items.push({ label: `формат: ${applied.aspectRatio}` });
-  if (applied?.systemPrompt) items.push({ label: "системный промпт" });
-  if (!items.length) return null;
-
-  return (
-    <div className="flex w-full max-w-lg flex-col gap-1.5 rounded-xl border border-violet-100 bg-violet-50 px-3 py-2.5">
-      <span className="text-xs font-semibold text-violet-700">✨ Умный режим применил:</span>
-      <div className="flex flex-wrap gap-1.5">
-        {items.map((item, i) => (
-          <span key={i} className="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-[11px] text-violet-600 break-words">
-            {item.label}
-          </span>
-        ))}
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <label className="text-[11px] font-medium text-neutral-400">{label}</label>
+        {hint && <span className="text-[10px] text-neutral-600">{hint}</span>}
       </div>
-      {brain?.composition && (
-        <p className="text-[10px] text-violet-400 break-words leading-relaxed">
-          📐 {brain.composition}
-        </p>
-      )}
+      {children}
     </div>
   );
 }
 
-// ── Enhanced prompt badge ─────────────────────────────────────────────────────
-
-function EnhancedBadge({
-  enhanced,
-  show,
-  onToggle,
+function OverlayBtn({
+  icon, label, href, download, onClick, danger,
 }: {
-  enhanced: { prompt: string; negative: string };
-  show: boolean;
-  onToggle: () => void;
+  icon: React.ReactNode;
+  label: string;
+  href?: string;
+  download?: boolean;
+  onClick?: () => void;
+  danger?: boolean;
 }) {
+  const cls = cn(
+    "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium backdrop-blur-sm transition",
+    danger
+      ? "bg-red-500/80 text-white hover:bg-red-500"
+      : "bg-black/60 text-white hover:bg-black/80"
+  );
+  if (href) return (
+    <a href={href} download={download} className={cls} title={label}
+      onClick={(e) => e.stopPropagation()}>
+      {icon} {label}
+    </a>
+  );
   return (
-    <div className="w-full max-w-lg flex flex-col gap-2">
-      <div className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
-        <span className="text-xs font-medium text-amber-700">✨ Промпт улучшен автоматически</span>
-        <button
-          type="button"
-          onClick={onToggle}
-          className="flex items-center gap-1 text-[11px] text-amber-600 hover:text-amber-800"
-        >
-          <Eye className="h-3 w-3" />
-          {show ? "Скрыть" : "Показать"}
-        </button>
-      </div>
-      {show && (
-        <div className="rounded-xl border border-amber-200 bg-white p-3">
-          <p className="text-[11px] font-medium text-neutral-500 mb-1">Улучшенный промпт:</p>
-          <p className="text-xs text-neutral-700 leading-relaxed break-words [overflow-wrap:anywhere]">{enhanced.prompt}</p>
-        </div>
-      )}
-    </div>
+    <button type="button" className={cls} title={label}
+      onClick={(e) => { e.stopPropagation(); onClick?.(); }}>
+      {icon} {label}
+    </button>
   );
 }
-
-// ── History card ──────────────────────────────────────────────────────────────
-
-const MODE_ICON: Record<string, string> = {
-  text:       "🧠",
-  variation:  "🎯",
-  reference:  "🖼",
-  inpaint:    "✏️",
-  controlnet: "🧬",
-};
-
-function HistoryCard({
-  job,
-  onOpen,
-  onDelete,
-  onRegenerate,
-}: {
-  job: ImageJob;
-  onOpen: () => void;
-  onDelete: () => void;
-  onRegenerate: () => void;
-}) {
-  const thumbUrl = job.urls?.[0] ?? job.url;
-  const isMulti = (job.urls?.length ?? 0) > 1;
-
-  return (
-    <div className="group relative flex flex-col gap-1.5 rounded-xl border border-neutral-200 bg-neutral-50 p-2 transition hover:border-neutral-300 hover:bg-white">
-      {thumbUrl ? (
-        <div className="relative cursor-pointer overflow-hidden rounded-lg" onClick={onOpen}>
-          <img
-            src={thumbUrl}
-            alt={job.prompt}
-            className="w-full object-cover transition group-hover:brightness-95"
-            style={{ aspectRatio: `${job.width}/${job.height}`, maxHeight: 110 }}
-          />
-          {isMulti && (
-            <span className="absolute right-1.5 top-1.5 rounded-full bg-black/50 px-1.5 py-0.5 text-[10px] font-medium text-white">
-              ×{job.urls!.length}
-            </span>
-          )}
-          <div className="absolute inset-0 flex flex-wrap items-center justify-center gap-2 bg-black/40 px-1 opacity-0 transition-opacity group-hover:opacity-100">
-            <button
-              type="button"
-              title="Открыть"
-              onClick={(e) => { e.stopPropagation(); onOpen(); }}
-              className="rounded-full bg-white/90 p-1.5 transition hover:bg-white"
-            >
-              <Eye className="h-3.5 w-3.5 text-neutral-700" />
-            </button>
-            <button
-              type="button"
-              title="Перегенерировать"
-              onClick={(e) => { e.stopPropagation(); onRegenerate(); }}
-              className="rounded-full bg-white/90 p-1.5 transition hover:bg-white"
-            >
-              <RotateCcw className="h-3.5 w-3.5 text-neutral-700" />
-            </button>
-            <button
-              type="button"
-              title="Удалить"
-              onClick={(e) => { e.stopPropagation(); onDelete(); }}
-              className="rounded-full bg-red-500/90 p-1.5 transition hover:bg-red-500"
-            >
-              <Trash2 className="h-3.5 w-3.5 text-white" />
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div
-          className="flex items-center justify-center rounded-lg bg-neutral-100"
-          style={{ height: 56 }}
-        >
-          {job.status === "active" || job.status === "queued" || job.status === "waiting" ? (
-            <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />
-          ) : (
-            <X className="h-4 w-4 text-red-300" />
-          )}
-        </div>
-      )}
-
-      <div className="flex items-center justify-between gap-1">
-        <div className="flex items-center gap-1">
-          {job.mode && <span className="text-[11px]">{MODE_ICON[job.mode] ?? "🧠"}</span>}
-          <StatusBadge status={job.status} />
-        </div>
-        {job.status === "failed" && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            className="text-neutral-300 transition hover:text-red-400"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-      <p className="line-clamp-2 text-[11px] leading-snug text-neutral-500 break-words [overflow-wrap:anywhere]">
-        {job.originalPrompt ?? job.prompt}
-      </p>
-    </div>
-  );
-}
-
