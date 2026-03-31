@@ -19,6 +19,7 @@ import { RegisterPage } from "./pages/auth/RegisterPage";
 import { ResetPasswordPage } from "./pages/auth/ResetPasswordPage";
 import { ImageStudioPage } from "./pages/ImageStudioPage";
 import { ImageSettingsPage } from "./pages/ImageSettingsPage";
+import { AvitoPage } from "./pages/AvitoPage";
 import { AgentChatPage } from "./pages/AgentChatPage";
 import { AdminLeadsPage } from "./pages/admin/AdminLeadsPage";
 import { AdminOrganizationsPage } from "./pages/admin/AdminOrganizationsPage";
@@ -60,6 +61,7 @@ export default function App() {
           <Route path="settings" element={<SettingsPage />} />
           <Route path="image-studio" element={<ImageStudioPage />} />
           <Route path="image-studio/settings" element={<ImageSettingsPage />} />
+          <Route path="avito" element={<AvitoPage />} />
         </Route>
       </Route>
 

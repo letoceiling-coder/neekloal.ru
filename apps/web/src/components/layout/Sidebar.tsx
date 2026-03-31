@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   MessageSquare,
   Settings,
+  Store,
 } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useUiStore } from "../../stores/uiStore";
@@ -26,8 +27,9 @@ export const sidebarNav: {
   { to: "/knowledge", label: "База знаний", Icon: BookOpen },
   { to: "/api-keys", label: "API ключи", Icon: Key },
   { to: "/image-studio", label: "Image Studio", Icon: Image },
-  { to: "/analytics", label: "Аналитика", Icon: BarChart3 },
-  { to: "/settings", label: "Настройки", Icon: Settings },
+  { to: "/avito",        label: "Avito",        Icon: Store },
+  { to: "/analytics",   label: "Аналитика",    Icon: BarChart3 },
+  { to: "/settings",    label: "Настройки",    Icon: Settings },
 ];
 
 export function Sidebar() {
