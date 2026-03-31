@@ -72,6 +72,9 @@ function fetch(url, opts = {}) {
 }
 
 async function getAuthToken() {
+  // Accept pre-built token (avoids password dependency in CI)
+  if (process.env.TEST_TOKEN) return process.env.TEST_TOKEN;
+
   const res = await fetch(`${BASE_URL}/auth/login`, {
     method: "POST",
     body: { email: process.env.TEST_EMAIL || "admin@admin.com", password: process.env.TEST_PASS || "admin123" },
