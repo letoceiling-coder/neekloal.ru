@@ -528,6 +528,24 @@ model PipelineExecution {
   @@map("pipeline_executions")
 }
 
+/// Agent playground: persistent multi-session conversations with full message history
+model AgentConversation {
+  id             String   @id @default(uuid()) @db.Uuid
+  agentId        String   @map("agent_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  title          String?
+  /// JSON array of {role, content} messages (user + assistant turns, no system)
+  messages       Json     @default("[]")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt      @map("updated_at")
+
+  @@index([agentId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("agent_conversations")
+}
+
 /// Per-user image generation preferences / system prompt
 model UserImageSettings {
   id                String   @id @default(uuid()) @db.Uuid

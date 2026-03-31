@@ -5,6 +5,14 @@ const authMiddleware = require("../middleware/auth");
 const agentRunRateLimit = require("../middleware/agentRunRateLimit");
 const { runAgentEngine } = require("../services/agentEngineRun");
 const { agentChat } = require("../services/agentRuntime");
+const {
+  createConversation,
+  getConversation,
+  listConversations,
+  clearConversation,
+  agentChatV2,
+  streamAgentChat,
+} = require("../services/agentRuntimeV2");
 
 // ─── LLM helper (same approach as chat.js) ────────────────────────────────────
 function getGenerateUrl() {
@@ -322,5 +330,181 @@ module.exports = async function agentsRoutes(fastify) {
       request.log.error({ err }, "agentChat failed");
       return reply.code(502).send({ error: `LLM error: ${err.message}` });
     }
+  });
+
+  // ── POST /agents/conversations ────────────────────────────────────────────
+  // Create a new playground conversation (V2).
+  fastify.post("/agents/conversations", { preHandler: [authMiddleware] }, async (request, reply) => {
+    if (!request.userId) return reply.code(403).send({ error: "Authentication required" });
+
+    const body    = request.body && typeof request.body === "object" ? request.body : {};
+    const agentId = body.agentId != null ? String(body.agentId).trim() : "";
+    const title   = body.title   != null ? String(body.title).trim()   : null;
+
+    if (!agentId) return reply.code(400).send({ error: "agentId is required" });
+
+    const agent = await prisma.agent.findFirst({
+      where: { id: agentId, organizationId: request.organizationId, deletedAt: null },
+    });
+    if (!agent) return reply.code(404).send({ error: "Agent not found" });
+
+    const conv = await createConversation(agentId, request.userId, request.organizationId, title);
+    return reply.code(201).send(conv);
+  });
+
+  // ── GET /agents/conversations/detail/:id ──────────────────────────────────
+  // Fetch full conversation (including messages array) by ID.
+  // IMPORTANT: this must be defined BEFORE /agents/conversations/:agentId
+  fastify.get("/agents/conversations/detail/:id", { preHandler: [authMiddleware] }, async (request, reply) => {
+    if (!request.userId) return reply.code(403).send({ error: "Authentication required" });
+
+    const { id } = request.params;
+    const conv = await getConversation(id, request.organizationId);
+    if (!conv) return reply.code(404).send({ error: "Conversation not found" });
+    return conv;
+  });
+
+  // ── GET /agents/conversations/:agentId ───────────────────────────────────
+  // List conversations for an agent (metadata only, no message bodies).
+  fastify.get("/agents/conversations/:agentId", { preHandler: [authMiddleware] }, async (request, reply) => {
+    if (!request.userId) return reply.code(403).send({ error: "Authentication required" });
+
+    const { agentId } = request.params;
+    const agent = await prisma.agent.findFirst({
+      where: { id: agentId, organizationId: request.organizationId, deletedAt: null },
+    });
+    if (!agent) return reply.code(404).send({ error: "Agent not found" });
+
+    const list = await listConversations(agentId, request.organizationId);
+    return { conversations: list };
+  });
+
+  // ── POST /agents/chat/v2 ─────────────────────────────────────────────────
+  // DB-persisted single-turn chat (non-streaming).
+  fastify.post("/agents/chat/v2", { preHandler: [authMiddleware] }, async (request, reply) => {
+    if (!request.userId) return reply.code(403).send({ error: "Authentication required" });
+
+    const body           = request.body && typeof request.body === "object" ? request.body : {};
+    const conversationId = body.conversationId != null ? String(body.conversationId).trim() : "";
+    const message        = body.message        != null ? String(body.message).trim()        : "";
+    const model          = body.model          != null ? String(body.model).trim()          : null;
+    const systemPrompt   = body.systemPrompt   != null ? String(body.systemPrompt)          : null;
+    const temperature    = body.temperature    != null ? Number(body.temperature)            : null;
+    const maxTokens      = body.maxTokens      != null ? Number(body.maxTokens)              : null;
+
+    if (!conversationId) return reply.code(400).send({ error: "conversationId is required" });
+    if (!message)        return reply.code(400).send({ error: "message is required" });
+
+    try {
+      const result = await agentChatV2({
+        conversationId,
+        message,
+        organizationId: request.organizationId,
+        systemPrompt: systemPrompt || null,
+        model:        model        || null,
+        temperature:  temperature  != null && !isNaN(temperature) ? temperature : undefined,
+        maxTokens:    maxTokens    != null && !isNaN(maxTokens)   ? maxTokens   : undefined,
+      });
+      return reply.code(200).send(result);
+    } catch (err) {
+      request.log.error({ err }, "agentChatV2 failed");
+      return reply.code(502).send({ error: `LLM error: ${err.message}` });
+    }
+  });
+
+  // ── POST /agents/chat/stream ─────────────────────────────────────────────
+  // DB-persisted streaming chat — SSE (event: token / event: done / event: error).
+  const STREAM_TIMEOUT_MS = 60_000;
+  fastify.post("/agents/chat/stream", { preHandler: [authMiddleware] }, async (request, reply) => {
+    if (!request.userId) return reply.code(403).send({ error: "Authentication required" });
+
+    const body           = request.body && typeof request.body === "object" ? request.body : {};
+    const conversationId = body.conversationId != null ? String(body.conversationId).trim() : "";
+    const message        = body.message        != null ? String(body.message).trim()        : "";
+    const model          = body.model          != null ? String(body.model).trim()          : null;
+    const systemPrompt   = body.systemPrompt   != null ? String(body.systemPrompt)          : null;
+    const temperature    = body.temperature    != null ? Number(body.temperature)            : null;
+    const maxTokens      = body.maxTokens      != null ? Number(body.maxTokens)              : null;
+
+    if (!conversationId) return reply.code(400).send({ error: "conversationId is required" });
+    if (!message)        return reply.code(400).send({ error: "message is required" });
+
+    // Hijack response for SSE
+    reply.hijack();
+    const raw = reply.raw;
+
+    raw.writeHead(200, {
+      "Content-Type":                 "text/event-stream; charset=utf-8",
+      "Cache-Control":                "no-cache, no-transform",
+      "Connection":                   "keep-alive",
+      "X-Accel-Buffering":            "no",
+      "Access-Control-Allow-Origin":  request.headers.origin || "*",
+    });
+
+    let streamEnded = false;
+    const ollamaAbort = new AbortController();
+
+    function send(event, data) {
+      if (!streamEnded) {
+        try { raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* ignore write errors */ }
+      }
+    }
+
+    const timeoutId = setTimeout(() => {
+      if (!streamEnded) {
+        streamEnded = true;
+        ollamaAbort.abort();
+        send("error", { error: "Stream timeout (60s)" });
+        raw.end();
+      }
+    }, STREAM_TIMEOUT_MS);
+
+    request.raw.on("close", () => {
+      if (!streamEnded) {
+        streamEnded = true;
+        ollamaAbort.abort();
+        clearTimeout(timeoutId);
+      }
+    });
+
+    try {
+      const generator = streamAgentChat({
+        conversationId,
+        message,
+        organizationId: request.organizationId,
+        systemPrompt:  systemPrompt || null,
+        model:         model        || null,
+        temperature:   temperature  != null && !isNaN(temperature) ? temperature : undefined,
+        maxTokens:     maxTokens    != null && !isNaN(maxTokens)   ? maxTokens   : undefined,
+        signal:        ollamaAbort.signal,
+      });
+
+      for await (const chunk of generator) {
+        if (streamEnded) break;
+        if (chunk.done) {
+          send("done", chunk);
+        } else {
+          send("token", { token: chunk.token });
+        }
+      }
+    } catch (err) {
+      request.log.error({ err }, "agentChat/stream failed");
+      if (!streamEnded) send("error", { error: err.message });
+    } finally {
+      clearTimeout(timeoutId);
+      if (!streamEnded) {
+        streamEnded = true;
+        raw.end();
+      }
+    }
+  });
+
+  // ── DELETE /agents/conversations/:id ─────────────────────────────────────
+  // Clear (wipe messages) or fully delete a conversation.
+  fastify.delete("/agents/conversations/:id", { preHandler: [authMiddleware] }, async (request, reply) => {
+    if (!request.userId) return reply.code(403).send({ error: "Authentication required" });
+    const { id } = request.params;
+    await clearConversation(id, request.organizationId);
+    return reply.code(204).send();
   });
 };

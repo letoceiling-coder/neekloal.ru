@@ -4,7 +4,49 @@ import { queryKeys } from "../queryKeys";
 import { useAuthStore } from "../stores/authStore";
 import type { Agent, ChatReply, UpdateAgentInput } from "./types";
 
-// ── Agent Chat Playground types ───────────────────────────────────────────────
+// ── Agent Conversation V2 types ───────────────────────────────────────────────
+
+export interface AgentConversationMeta {
+  id:           string;
+  agentId:      string;
+  title:        string | null;
+  messageCount: number;
+  createdAt:    string;
+  updatedAt:    string;
+}
+
+export interface ConversationMessage {
+  role:    "user" | "assistant";
+  content: string;
+}
+
+export interface AgentConversationFull extends AgentConversationMeta {
+  messages: ConversationMessage[];
+}
+
+export interface CreateConversationRequest {
+  agentId: string;
+  title?:  string;
+}
+
+export interface AgentChatV2Request {
+  conversationId: string;
+  message:        string;
+  model?:         string;
+  systemPrompt?:  string;
+  temperature?:   number;
+  maxTokens?:     number;
+}
+
+export interface AgentChatV2Response {
+  reply:          string;
+  modelUsed:      string;
+  tokens:         { prompt: number; completion: number; total: number };
+  contextLength:  number;
+  conversationId: string;
+}
+
+// ── Agent Chat Playground types (V1) ─────────────────────────────────────────
 
 export interface AgentChatMessage {
   role: "user" | "assistant";
@@ -103,6 +145,55 @@ export function useAgentChatMutation() {
   return useMutation({
     mutationFn: (body: AgentChatRequest) =>
       apiClient.post<AgentChatResponse>("/agents/chat", body),
+  });
+}
+
+// ── Agent Conversation V2 hooks ───────────────────────────────────────────────
+
+export function useCreateConversation() {
+  return useMutation({
+    mutationFn: (body: CreateConversationRequest) =>
+      apiClient.post<AgentConversationFull>("/agents/conversations", body),
+  });
+}
+
+export function useConversations(agentId: string | undefined) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery({
+    queryKey: ["agent-conversations", agentId],
+    queryFn:  () =>
+      apiClient.get<{ conversations: AgentConversationMeta[] }>(`/agents/conversations/${agentId}`),
+    enabled:  Boolean(accessToken) && Boolean(agentId),
+    staleTime: 30_000,
+  });
+}
+
+export function useConversationDetail(conversationId: string | null) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery({
+    queryKey: ["agent-conversation-detail", conversationId],
+    queryFn:  () =>
+      apiClient.get<AgentConversationFull>(`/agents/conversations/detail/${conversationId}`),
+    enabled:  Boolean(accessToken) && Boolean(conversationId),
+    staleTime: 0, // always fresh
+  });
+}
+
+export function useDeleteConversation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiClient.delete(`/agents/conversations/${id}`),
+    onSuccess: (_data, id) => {
+      void queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
+      void queryClient.removeQueries({ queryKey: ["agent-conversation-detail", id] });
+    },
+  });
+}
+
+export function useAgentChatV2() {
+  return useMutation({
+    mutationFn: (body: AgentChatV2Request) =>
+      apiClient.post<AgentChatV2Response>("/agents/chat/v2", body),
   });
 }
 
