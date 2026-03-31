@@ -28,7 +28,10 @@ export const queryKeys = {
     summary: ["billing", "summary"] as const,
   },
   models: {
+    /** Raw API response { models: ModelInfo[] } — used by agents.ts useModels */
     all: ["models", "catalog"] as const,
+    /** Extracted string[] names — used by models.ts useModels */
+    names: ["models", "names"] as const,
   },
   admin: {
     gate: ["admin", "gate"] as const,
