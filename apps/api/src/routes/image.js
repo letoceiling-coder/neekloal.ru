@@ -157,21 +157,41 @@ module.exports = async function imageRoutes(fastify) {
 
     // ── STEP 5: Smart controlnet for referenceImage + brain type ─────────────
     let finalControlType = resolvedControlType;
+    let controlStrength  = null;
+
     if (referenceImageUrl && appliedMode !== "controlnet") {
       const btype = brainResult?.type;
       if (btype === "character") {
         appliedMode      = "controlnet";
         finalControlType = "pose";
-      } else if (btype === "product" || btype === "architecture") {
+        controlStrength  = 0.7;
+      } else if (btype === "product") {
         appliedMode      = "controlnet";
         finalControlType = "canny";
+        controlStrength  = 0.5;
+      } else if (btype === "architecture") {
+        appliedMode      = "controlnet";
+        finalControlType = "canny";
+        controlStrength  = 0.6;
       }
       if (appliedMode === "controlnet") {
         process.stdout.write(
           `[controlnet:auto] type=${btype} controlType=${finalControlType}\n`
         );
+        process.stdout.write(
+          `[controlnet:strength] type=${btype} controlType=${finalControlType} strength=${controlStrength}\n`
+        );
       }
     }
+
+    // ── STEP 5.5: Seed control ────────────────────────────────────────────────
+    let finalSeed = null;
+    if (appliedMode === "variation") {
+      finalSeed = Math.floor(Math.random() * 999999);
+    } else if (appliedMode === "text") {
+      finalSeed = Date.now() % 1000000;
+    }
+    process.stdout.write(`[seed] mode=${appliedMode} seed=${finalSeed}\n`);
 
     // Apply brain suggestions only if user didn't supply explicit values
     const finalStyle = style || (brainResult?.style ?? null);
@@ -222,11 +242,14 @@ module.exports = async function imageRoutes(fastify) {
       mode: appliedMode,
       variations: finalVariations,
       referenceImageUrl: referenceImageUrl || null,
-      strength: Math.min(Math.max(Number(strength) || 0.5, 0.1), 1.0),
+      strength: controlStrength !== null
+        ? controlStrength
+        : Math.min(Math.max(Number(strength) || 0.5, 0.1), 1.0),
       maskUrl: maskUrl || null,
       controlType: finalControlType,
       style: finalStyle,
       aspectRatio: finalAspectRatio,
+      seed: finalSeed,
     }, { jobId });
 
     try { await redis.set(userJobKey(request.userId), activeCount + 1, "EX", 300); } catch { /* ignore */ }
@@ -247,6 +270,9 @@ module.exports = async function imageRoutes(fastify) {
             directivesCount: (brainResult.directives?.must?.length ?? 0) + (brainResult.directives?.should?.length ?? 0),
             qualityCount: brainResult.directives?.quality?.length ?? 0,
             modeApplied: appliedMode,
+            controlType: finalControlType,
+            controlStrength,
+            seed: finalSeed,
             directives: {
               must:    brainResult.directives?.must    ?? [],
               should:  brainResult.directives?.should  ?? [],

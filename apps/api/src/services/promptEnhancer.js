@@ -6,6 +6,11 @@ const { selectModel }  = require("./modelRouter");
 const DEFAULT_NEGATIVE =
   "blurry, low quality, bad anatomy, extra limbs, extra objects, distorted, watermark, text, ugly, deformed, out of focus, overexposed, underexposed, duplicate";
 
+function limitArray(arr, max) {
+  if (!arr) return [];
+  return arr.slice(0, max);
+}
+
 /**
  * Extract JSON from an LLM response that may be wrapped in markdown code fences.
  */
@@ -96,8 +101,8 @@ function applyDirectives(llmPrompt, llmNegative, brain) {
 
   const { directives, type } = brain;
   const must    = directives?.must     ?? [];
-  const should  = directives?.should   ?? [];
-  const quality = directives?.quality  ?? [];
+  const should  = limitArray(directives?.should,  3);
+  const quality = limitArray(directives?.quality, 4);
   const negDirs = directives?.negative ?? [];
 
   // ── Append MUST directives (these CANNOT be omitted) ─────────────────────
@@ -107,13 +112,13 @@ function applyDirectives(llmPrompt, llmNegative, brain) {
     prompt = [prompt.trim(), ...mustToAdd].join(", ");
   }
 
-  // ── Append SHOULD directives (ALL — no slicing) ───────────────────────────
+  // ── Append SHOULD directives (capped at 3) ────────────────────────────────
   const shouldToAdd = should.filter((s) => !lp.includes(s.toLowerCase()));
   if (shouldToAdd.length) {
     prompt = [prompt.trim(), ...shouldToAdd].join(", ");
   }
 
-  // ── Append QUALITY directives ──────────────────────────────────────────────
+  // ── Append QUALITY directives (capped at 4) ───────────────────────────────
   const qualityToAdd = quality.filter((q) => !lp.includes(q.toLowerCase()));
   if (qualityToAdd.length) {
     prompt = [prompt.trim(), ...qualityToAdd].join(", ");
@@ -139,6 +144,9 @@ function applyDirectives(llmPrompt, llmNegative, brain) {
 
   process.stdout.write(
     `[enhancer:final] promptLength=${prompt.length} mustCount=${must.length} qualityCount=${quality.length}\n`
+  );
+  process.stdout.write(
+    `[enhancer:limit] must=${must.length} should=${should.length} quality=${quality.length} totalLength=${prompt.length}\n`
   );
 
   return { finalPrompt: prompt, finalNegative: negative };

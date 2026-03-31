@@ -308,7 +308,7 @@ function buildDirectives(type, prompt) {
     case "logo": {
       must.push("vector logo", "minimalist", "centered", "clean white background");
       should.push("high contrast", "flat design", "scalable");
-      quality.push("crisp edges", "vector quality", "professional branding");
+      quality.push("clean vector", "minimalist", "flat design");
       negative.push("photo", "realistic", "gradient", "texture", "face", "person", "complex background");
       break;
     }
@@ -322,7 +322,7 @@ function buildDirectives(type, prompt) {
     case "product": {
       must.push("product photography", "studio lighting", "clean background", "sharp focus");
       should.push("commercial quality", "shadow", "reflection");
-      quality.push("studio lighting", "photorealistic", "clean reflections");
+      quality.push("photorealistic", "studio lighting", "sharp focus");
       negative.push("person", "hand", "cluttered background", "grain");
       break;
     }
@@ -375,6 +375,33 @@ function buildDirectives(type, prompt) {
   );
 
   return { must, should, negative, quality };
+}
+
+// ── Style conflict resolver ───────────────────────────────────────────────────
+//
+// Устраняет конфликты между выбранным стилем и quality-директивами.
+// Вызывается из analyzePrompt после buildDirectives, где style уже известен.
+
+function resolveStyleConflicts(style, directives) {
+  if (!style) return directives;
+
+  // anime: полностью заменяет quality + убирает cinema-конфликты
+  if (style.includes("anime")) {
+    directives.quality = ["anime style", "clean lines", "vibrant colors"];
+  }
+
+  // logo-style: убираем depth of field (несовместимо с flat logo)
+  if (style.includes("logo") || style.includes("minimalist")) {
+    directives.quality = directives.quality.filter(
+      (q) => !q.includes("depth of field")
+    );
+  }
+
+  process.stdout.write(
+    `[brain:style-fix] style="${style.slice(0, 40)}" qualityAfter=${directives.quality.length}\n`
+  );
+
+  return directives;
 }
 
 // ── Core functions ─────────────────────────────────────────────────────────────
@@ -441,7 +468,7 @@ function analyzePrompt(prompt, context = {}) {
   const { w, h }      = suggestedSize;
   const suggestedMode       = detectMode(prompt, context);
   const enhancedPromptHints = ENHANCER_HINTS[type] ?? ENHANCER_HINTS.unknown;
-  const directives          = buildDirectives(type, prompt);
+  const directives          = resolveStyleConflicts(style, buildDirectives(type, prompt));
 
   process.stdout.write(
     `[brainV2] type=${type} (${typeLabel}) style="${style}" mode=${suggestedMode}\n`
