@@ -81,35 +81,69 @@ const PRESET_SIZES = [
   { label: "4:3",  w: 1024, h: 768  },
 ];
 
-// ── Client-side Brain (mirrors aiBrainV2.js — zero latency) ──────────────────
+// ── Client-side Brain (mirrors aiBrainV2.js — zero latency, priority-based) ──
 
-const CLIENT_TYPE_RULES: { type: string; label: string; style: string; keywords: string[] }[] = [
-  { type: "character", label: "Персонаж",   style: "cinematic portrait",
-    keywords: ["человек","woman","man","girl","boy","женщина","мужчина","девушка","парень","ребёнок","child","warrior","soldier","knight","wizard","hero","герой","персонаж","character","portrait","портрет","лицо","face","person","люди","people","princess","queen","king","witch","elf","ninja","samurai","astronaut"] },
-  { type: "animal",    label: "Животное",   style: "wildlife photography",
-    keywords: ["cat","dog","кот","собака","кошка","animal","wolf","волк","fox","лиса","bear","медведь","lion","тигр","tiger","bird","птица","horse","лошадь","dragon","дракон","rabbit","кролик","deer","fish","panda","панда"] },
-  { type: "landscape", label: "Пейзаж",     style: "epic landscape, golden hour",
-    keywords: ["landscape","пейзаж","mountain","гора","горы","forest","лес","ocean","море","sea","lake","озеро","river","река","desert","пустыня","sky","небо","sunset","закат","sunrise","рассвет","nature","природа","field","поле","valley","waterfall","beach","пляж","island","остров","snow","снег","jungle","cave","cliff","скала"] },
-  { type: "architecture", label: "Архитектура", style: "architectural photography",
-    keywords: ["building","здание","house","дом","castle","замок","tower","башня","bridge","мост","cathedral","church","храм","city","город","street","улица","interior","интерьер","architecture","архитектура","palace","дворец","ruins","ruins","skyscraper","небоскрёб","temple"] },
-  { type: "product",   label: "Продукт",    style: "studio product photography",
-    keywords: ["product","товар","bottle","бутылка","box","коробка","package","упаковка","perfume","духи","phone","телефон","айфон","iphone","laptop","ноутбук","watch","часы","shoes","обувь","bag","сумка","car","машина","gadget","device","устройство","jewelry","ring","кольцо","cup","кружка"] },
-  { type: "food",      label: "Еда",        style: "food photography",
-    keywords: ["food","еда","dish","блюдо","meal","pizza","пицца","burger","бургер","sushi","суши","cake","торт","coffee","кофе","tea","чай","fruit","фрукт","bread","хлеб","soup","суп","salad","салат","dessert","десерт","cocktail","wine","вино"] },
-  { type: "abstract",  label: "Абстракция", style: "digital art, vivid colors",
-    keywords: ["abstract","абстракция","pattern","узор","texture","текстура","fractal","фрактал","digital art","geometry","геометрия","mandala","мандала","neon","неон","space","cosmos","космос","nebula","galaxy","галактика"] },
+interface BrainDetection {
+  type: string; label: string; style: string; mode: string;
+}
+
+// Priority-ordered rules — first match wins (same logic as server aiBrainV2.js)
+const CLIENT_PRIORITY_RULES: {
+  type: string; label: string; style: string;
+  test: (p: string) => boolean;
+}[] = [
+  { type: "ui",           label: "UI / Интерфейс", style: "modern UI design, glassmorphism",
+    test: (p) => p.includes("ui ") || p.includes(" ui") || p.includes("интерфейс") || p.includes("дашборд") || p.includes("dashboard") || p.includes("сайт дизайн") },
+  { type: "logo",         label: "Логотип",         style: "minimalist logo, vector style",
+    test: (p) => p.includes("логотип") || p.includes("logo") || p.includes("эмблема") || p.includes("app icon") || p.includes("иконка приложения") },
+  { type: "banner",       label: "Баннер",           style: "modern marketing banner, bold typography",
+    test: (p) => p.includes("баннер") || p.includes("banner") || p.includes("обложка") || p.includes("постер") || p.includes("poster") || p.includes("реклама") || p.includes("флаер") },
+  { type: "character",    label: "Персонаж",         style: "cinematic portrait",
+    test: (p) => p.includes("персонаж") || p.includes("герой") || p.includes("character") || p.includes("portrait") || p.includes("портрет") || p.includes("в одежде") || p.includes("в сапогах") || p.includes("в шляпе") || p.includes("warrior") || p.includes("knight") || p.includes("wizard") || p.includes("ninja") || p.includes("samurai") || p.includes("woman") || p.includes("man ") || p.includes("girl") || p.includes("boy") || p.includes("женщина") || p.includes("мужчина") || p.includes("девушка") || p.includes("парень") || p.includes("человек") || p.includes("лицо") || p.includes("face") },
+  { type: "food",         label: "Еда",              style: "food photography, styled",
+    test: (p) => p.includes("еда") || p.includes("food") || p.includes("пицца") || p.includes("pizza") || p.includes("бургер") || p.includes("burger") || p.includes("суши") || p.includes("sushi") || p.includes("торт") || p.includes("cake") || p.includes("кофе") || p.includes("coffee") || p.includes("завтрак") || p.includes("обед") || p.includes("ужин") || p.includes("десерт") || p.includes("блюдо") },
+  { type: "architecture", label: "Архитектура",      style: "architectural photography",
+    test: (p) => p.includes("здание") || p.includes("building") || p.includes("замок") || p.includes("castle") || p.includes("город") || p.includes("city") || p.includes("интерьер") || p.includes("interior") || p.includes("архитектура") || p.includes("башня") || p.includes("мост") || p.includes("храм") },
+  { type: "product",      label: "Продукт",          style: "studio product photography",
+    test: (p) => p.includes("айфон") || p.includes("iphone") || p.includes("продукт") || p.includes("product") || p.includes("товар") || p.includes("бутылка") || p.includes("упаковка") || p.includes("духи") || p.includes("телефон") || p.includes("ноутбук") || p.includes("часы") || p.includes("машина") || p.includes("car") },
+  { type: "landscape",    label: "Пейзаж",           style: "epic landscape, golden hour",
+    test: (p) => p.includes("пейзаж") || p.includes("landscape") || p.includes("горы") || p.includes("гора") || p.includes("mountain") || p.includes("лес") || p.includes("forest") || p.includes("море") || p.includes("ocean") || p.includes("закат") || p.includes("sunset") || p.includes("природа") || p.includes("пляж") || p.includes("снег") },
+  { type: "animal",       label: "Животное",         style: "wildlife photography",
+    test: (p) => p.includes("кот") || p.includes("кошка") || p.includes("cat") || p.includes("собака") || p.includes("dog") || p.includes("волк") || p.includes("wolf") || p.includes("медведь") || p.includes("bear") || p.includes("тигр") || p.includes("tiger") || p.includes("птица") || p.includes("bird") || p.includes("лошадь") || p.includes("horse") || p.includes("дракон") || p.includes("dragon") || p.includes("животное") || p.includes("animal") },
+  { type: "abstract",     label: "Абстракция",       style: "digital art, vivid colors",
+    test: (p) => p.includes("абстракция") || p.includes("abstract") || p.includes("фрактал") || p.includes("fractal") || p.includes("неон") || p.includes("neon") || p.includes("космос") || p.includes("galaxy") || p.includes("мандала") || p.includes("mandala") },
 ];
 
-function clientDetectBrain(text: string): { type: string; label: string; style: string } | null {
+// Style override rules (same as server)
+const CLIENT_STYLE_OVERRIDES: { test: (p: string) => boolean; style: string }[] = [
+  { test: (p) => p.includes("аниме") || p.includes("anime"),                     style: "anime style" },
+  { test: (p) => p.includes("3d") || p.includes("трёхмерный"),                   style: "3D render" },
+  { test: (p) => p.includes("акварель") || p.includes("watercolor"),             style: "watercolor painting" },
+  { test: (p) => p.includes("реалистичный") || p.includes("photorealistic"),     style: "photorealistic" },
+  { test: (p) => p.includes("пиксар") || p.includes("pixar"),                    style: "Pixar 3D style" },
+  { test: (p) => p.includes("киберпанк") || p.includes("cyberpunk"),             style: "cyberpunk, neon lights" },
+  { test: (p) => p.includes("фэнтези") || p.includes("fantasy"),                style: "fantasy art, epic" },
+  { test: (p) => p.includes("минимал") || p.includes("minimal"),                style: "minimalist, clean" },
+  { test: (p) => p.includes("винтаж") || p.includes("vintage") || p.includes("ретро"), style: "vintage, retro" },
+];
+
+function clientDetectBrain(text: string): BrainDetection | null {
   if (!text || text.trim().length < 3) return null;
-  const lower = text.toLowerCase();
-  let best = { type: "unknown", label: "", style: "", score: 0 };
-  for (const rule of CLIENT_TYPE_RULES) {
-    let score = 0;
-    for (const kw of rule.keywords) { if (lower.includes(kw)) score++; }
-    if (score > best.score) best = { ...rule, score };
-  }
-  return best.score > 0 ? best : null;
+  const p = text.toLowerCase();
+
+  // Type (priority)
+  let matched = CLIENT_PRIORITY_RULES.find((r) => r.test(p));
+  if (!matched) return null;
+
+  // Style override
+  const styleOverride = CLIENT_STYLE_OVERRIDES.find((r) => r.test(p));
+  const style = styleOverride ? styleOverride.style : matched.style;
+
+  // Mode
+  const mode = (p.includes("варианты") || p.includes("несколько") || p.includes("variations"))
+    ? "Variation" : "Text";
+
+  return { type: matched.type, label: matched.label, style, mode };
 }
 
 const STAGE_STEPS: { stage: GenStage; label: string }[] = [
@@ -124,7 +158,7 @@ const MODE_ICON: Record<string, string> = {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-/** Live AI Brain chip shown under textarea while user types */
+/** Live AI Brain chip — shown under textarea while user types, zero API calls */
 function BrainChip({ prompt, smartMode }: { prompt: string; smartMode: boolean }) {
   if (!smartMode) return null;
   const brain = clientDetectBrain(prompt);
@@ -132,16 +166,32 @@ function BrainChip({ prompt, smartMode }: { prompt: string; smartMode: boolean }
 
   const TYPE_EMOJI: Record<string, string> = {
     character: "🧑", animal: "🐾", landscape: "🌄", architecture: "🏛",
-    product: "📦", food: "🍕", abstract: "✨",
+    product: "📦", food: "🍕", abstract: "✨", banner: "🎯",
+    logo: "💎", ui: "🖥",
   };
 
   return (
-    <div className="flex items-center gap-1.5 rounded-lg border border-violet-500/20 bg-violet-500/10 px-2.5 py-1.5 text-[11px] text-violet-400">
-      <span className="text-sm">{TYPE_EMOJI[brain.type] ?? "🧠"}</span>
-      <span>
-        <span className="font-medium">AI Brain:</span> {brain.label} ·{" "}
-        <span className="opacity-70">{brain.style}</span>
-      </span>
+    <div className="rounded-xl border border-violet-500/20 bg-violet-500/10 px-3 py-2 text-[11px]">
+      <div className="mb-1.5 flex items-center gap-1.5 text-violet-400 font-medium">
+        <span>🧠</span>
+        <span>AI Brain</span>
+      </div>
+      <div className="grid grid-cols-3 gap-x-2 gap-y-1">
+        <div>
+          <p className="text-neutral-600 mb-0.5">Тип</p>
+          <p className="text-violet-300 font-medium">
+            {TYPE_EMOJI[brain.type] ?? "🎨"} {brain.label}
+          </p>
+        </div>
+        <div>
+          <p className="text-neutral-600 mb-0.5">Стиль</p>
+          <p className="text-violet-300 font-medium truncate">{brain.style}</p>
+        </div>
+        <div>
+          <p className="text-neutral-600 mb-0.5">Режим</p>
+          <p className="text-violet-300 font-medium">{brain.mode}</p>
+        </div>
+      </div>
     </div>
   );
 }
