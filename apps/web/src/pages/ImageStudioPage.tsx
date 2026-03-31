@@ -46,6 +46,17 @@ interface PipelineMeta {
   autoRemoveBg: boolean;
 }
 
+interface ExecutionStep {
+  type: "brain" | "enhance" | "generate" | "postprocess";
+  action?: string;
+  mode?: string;
+  label: string;
+  status: "pending" | "running" | "done" | "queued" | "skipped" | "failed";
+  output?: Record<string, unknown> | null;
+  error?: string | null;
+  durationMs?: number;
+}
+
 interface ImageJob {
   id?: string;
   jobId: string;
@@ -64,6 +75,7 @@ interface ImageJob {
   createdAt: string;
   brain?: BrainMeta | null;
   pipeline?: PipelineMeta | null;
+  pipelineExecution?: ExecutionStep[] | null;
 }
 
 interface EnhanceInfo {
@@ -603,7 +615,7 @@ export function ImageStudioPage() {
       if (mode === "inpaint") body.maskUrl = maskImage?.refUrl;
 
       const res  = await fetch(`${API}/image/generate`, { method: "POST", headers, body: JSON.stringify(body) });
-      const data = await res.json() as { jobId?: string; error?: string; brain?: BrainMeta | null; pipeline?: PipelineMeta | null };
+      const data = await res.json() as { jobId?: string; error?: string; brain?: BrainMeta | null; pipeline?: PipelineMeta | null; pipelineExecution?: ExecutionStep[] | null };
 
       if (!res.ok) {
         setError("Ошибка генерации. Попробуйте изменить описание.");
@@ -622,8 +634,9 @@ export function ImageStudioPage() {
         width:         size.w,
         height:        size.h,
         createdAt:     new Date().toISOString(),
-        brain:         data.brain    ?? null,
-        pipeline:      data.pipeline ?? null,
+        brain:             data.brain             ?? null,
+        pipeline:          data.pipeline          ?? null,
+        pipelineExecution: data.pipelineExecution ?? null,
       });
     } catch {
       setError("Ошибка сети. Проверьте соединение.");
@@ -1107,13 +1120,33 @@ export function ImageStudioPage() {
                     step.type === "enhance"     ? "✨" :
                     step.type === "generate"    ? "🖼" :
                     step.type === "postprocess" ? "✂️" : "•";
+
+                  // Match with execution result
+                  const exec = activeJob.pipelineExecution?.[i];
+                  const statusDot =
+                    exec?.status === "done"    ? <span className="h-2 w-2 rounded-full bg-emerald-500 flex-shrink-0" title="done" /> :
+                    exec?.status === "queued"  ? <span className="h-2 w-2 rounded-full bg-yellow-400 flex-shrink-0" title="queued" /> :
+                    exec?.status === "pending" ? <span className="h-2 w-2 rounded-full bg-neutral-600 flex-shrink-0" title="pending" /> :
+                    exec?.status === "skipped" ? <span className="h-2 w-2 rounded-full bg-neutral-500 flex-shrink-0" title="skipped" /> :
+                    exec?.status === "failed"  ? <span className="h-2 w-2 rounded-full bg-red-500 flex-shrink-0" title="failed" /> :
+                    <span className="h-2 w-2 rounded-full bg-neutral-700 flex-shrink-0" />;
+
+                  const durationLabel = exec?.durationMs && exec.durationMs > 50
+                    ? <span className="ml-auto text-[10px] text-neutral-600">{exec.durationMs}ms</span>
+                    : null;
+
                   return (
                     <li key={i} className="flex items-center gap-2 text-[12px] text-neutral-400">
                       <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-white/5 text-[10px] font-bold text-neutral-500">
                         {i + 1}
                       </span>
+                      {statusDot}
                       <span>{icon}</span>
-                      <span>{step.label}</span>
+                      <span className="flex-1">{step.label}</span>
+                      {exec?.status === "failed" && exec.error && (
+                        <span className="text-[10px] text-red-400 truncate max-w-[120px]" title={exec.error}>⚠ {exec.error.slice(0, 30)}</span>
+                      )}
+                      {durationLabel}
                     </li>
                   );
                 })}

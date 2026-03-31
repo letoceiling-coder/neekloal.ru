@@ -7,8 +7,9 @@ const authMiddleware = require("../middleware/auth");
 const { getImageQueue } = require("../queues/imageQueue");
 const { getCacheConnection } = require("../lib/redis");
 const { enhancePrompt, DEFAULT_NEGATIVE } = require("../services/promptEnhancer");
-const { analyzePrompt }   = require("../services/aiBrainV2");
-const { buildPipeline }   = require("../services/aiOrchestrator");
+const { analyzePrompt }    = require("../services/aiBrainV2");
+const { buildPipeline }    = require("../services/aiOrchestrator");
+const { executePipeline }  = require("../services/pipelineExecutor");
 const prisma = require("../lib/prisma");
 
 const MAX_WIDTH = 2048;
@@ -143,70 +144,87 @@ module.exports = async function imageRoutes(fastify) {
       return reply.code(429).send({ error: "Идёт активная генерация. Подождите завершения." });
     }
 
-    let finalPrompt = prompt.trim();
+    let finalPrompt   = prompt.trim();
     let finalNegative = negativePrompt || null;
-    let enhanceResult = null;
-    let brainResult = null;
 
-    // ── AI Brain v2: analyze prompt + build directives ────────────────────────
-    if (useSmartEnhance) {
-      brainResult = analyzePrompt(finalPrompt, { enableVariations: resolvedMode === "variation" });
+    // ── Pre-resolve user system prompt (DB) — only if enhance will run ────────
+    let userSystemPrompt = null;
+    if (useSmartEnhance && !finalNegative) {
+      const userSettings = await prisma.userImageSettings.findUnique({
+        where: { userId: request.userId },
+      }).catch(() => null);
+      userSystemPrompt = userSettings?.useSystemPrompt ? (userSettings.imageSystemPrompt || null) : null;
     }
 
-    // ── STEP 4: Mode decision (pipeline-driven, user override respected) ───────
+    // ── Generate jobId early (executor needs it for the generate step) ────────
+    const jobId = uuidv4();
+
+    // ── EXECUTOR: run brain + enhance inside the pipeline ─────────────────────
+    const execContext = {
+      prompt:           finalPrompt,
+      negative:         null,
+      brain:            null,
+      enhanceResult:    null,
+      enhanced:         false,
+      style:            style || null,
+      aspectRatio:      aspectRatio || null,
+      systemPrompt:     userSystemPrompt,
+      enableVariations: resolvedMode === "variation",
+      hasReference:     !!referenceImageUrl,
+      hasMask:          !!maskUrl,
+      skipEnhance:      !!finalNegative,   // skip enhance if user provided negative
+      jobId,
+    };
+
+    const pipelineExecution = await executePipeline(pipeline, execContext);
+
+    // Extract mutable results from context
+    finalPrompt   = execContext.prompt;
+    finalNegative = execContext.negative || finalNegative;
+    const brainResult   = execContext.brain;
+    const enhanceResult = execContext.enhanceResult;
+
+    // ── Mode decision (pipeline-driven, user override respected) ─────────────
     let appliedMode      = resolvedMode;
     const userForcedMode = resolvedMode !== "text";
 
     if (!userForcedMode && pipelineGenStep && pipelineGenStep.mode !== "text") {
-      // Pipeline detected variation/reference/inpaint from prompt/flags
       appliedMode = pipelineGenStep.mode;
       process.stdout.write(`[pipeline:mode] text → ${appliedMode} (pipeline)\n`);
     } else if (!userForcedMode && brainResult?.suggestedMode === "variation") {
-      // Brain fallback (same keyword set, belt-and-suspenders)
       appliedMode = "variation";
       process.stdout.write(`[mode:auto] suggested=variation applied=variation\n`);
     } else {
       process.stdout.write(`[mode:auto] applied=${appliedMode}\n`);
     }
 
-    // Use pipeline count for variations when detected
+    // Variation count (pipeline count takes priority)
     const pipelineCount = (pipelineGenStep?.mode === "variation" && pipelineGenStep?.count)
-      ? pipelineGenStep.count
-      : null;
+      ? pipelineGenStep.count : null;
     const finalVariations = appliedMode === "variation"
       ? Math.min(Math.max(pipelineCount || Number(variations) || 4, 2), 8)
       : Math.min(Math.max(Number(variations) || 1, 1), 8);
 
-    // ── STEP 5: Smart controlnet for referenceImage + brain type ─────────────
+    // ── Smart controlnet for referenceImage + brain type ──────────────────────
     let finalControlType = resolvedControlType;
     let controlStrength  = null;
 
     if (referenceImageUrl && appliedMode !== "controlnet") {
       const btype = brainResult?.type;
       if (btype === "character") {
-        appliedMode      = "controlnet";
-        finalControlType = "pose";
-        controlStrength  = 0.7;
+        appliedMode = "controlnet"; finalControlType = "pose";  controlStrength = 0.7;
       } else if (btype === "product") {
-        appliedMode      = "controlnet";
-        finalControlType = "canny";
-        controlStrength  = 0.5;
+        appliedMode = "controlnet"; finalControlType = "canny"; controlStrength = 0.5;
       } else if (btype === "architecture") {
-        appliedMode      = "controlnet";
-        finalControlType = "canny";
-        controlStrength  = 0.6;
+        appliedMode = "controlnet"; finalControlType = "canny"; controlStrength = 0.6;
       }
       if (appliedMode === "controlnet") {
-        process.stdout.write(
-          `[controlnet:auto] type=${btype} controlType=${finalControlType}\n`
-        );
-        process.stdout.write(
-          `[controlnet:strength] type=${btype} controlType=${finalControlType} strength=${controlStrength}\n`
-        );
+        process.stdout.write(`[controlnet:auto] type=${btype} controlType=${finalControlType}\n`);
+        process.stdout.write(`[controlnet:strength] type=${btype} strength=${controlStrength}\n`);
       }
     }
 
-    // ── STEP 5.5: Seed control ────────────────────────────────────────────────
+    // ── Seed control ──────────────────────────────────────────────────────────
     let finalSeed = null;
     if (appliedMode === "variation") {
       finalSeed = Math.floor(Math.random() * 999999);
@@ -215,11 +233,10 @@ module.exports = async function imageRoutes(fastify) {
     }
     process.stdout.write(`[seed] mode=${appliedMode} seed=${finalSeed}\n`);
 
-    // Apply brain suggestions only if user didn't supply explicit values
-    const finalStyle = style || (brainResult?.style ?? null);
+    // ── Style / dimensions from brain ─────────────────────────────────────────
+    const finalStyle       = style       || (brainResult?.style          ?? null);
     const finalAspectRatio = aspectRatio || (brainResult?.aspectRatioLabel ?? null);
 
-    // Use brain-suggested dimensions if user left defaults and brain suggests different
     let finalW = w;
     let finalH = h;
     if (!style && !aspectRatio && brainResult?.suggestedSize) {
@@ -229,29 +246,6 @@ module.exports = async function imageRoutes(fastify) {
         finalH = bh;
       }
     }
-
-    if (!finalNegative && useSmartEnhance) {
-      const userSettings = await prisma.userImageSettings.findUnique({
-        where: { userId: request.userId },
-      }).catch(() => null);
-      const systemPrompt = userSettings?.useSystemPrompt ? (userSettings.imageSystemPrompt || null) : null;
-
-      const compositionHint = brainResult?.composition ?? null;
-      const promptHints     = brainResult?.enhancedPromptHints ?? null;
-      const enhancerSystemPrompt = [systemPrompt, compositionHint, promptHints].filter(Boolean).join("\n") || null;
-
-      // ── Pass brain (with directives) to enhancer ──────────────────────────
-      enhanceResult = await enhancePrompt(finalPrompt, {
-        style: finalStyle,
-        aspectRatio: finalAspectRatio,
-        systemPrompt: enhancerSystemPrompt,
-        brain: brainResult,   // ← directives flow here
-      });
-      finalPrompt = enhanceResult.enhancedPrompt;
-      finalNegative = enhanceResult.negativePrompt;
-    }
-
-    const jobId = uuidv4();
     const queue = getImageQueue();
 
     await queue.add("generate", {
@@ -316,6 +310,7 @@ module.exports = async function imageRoutes(fastify) {
         autoMode:     pipeline.meta.autoMode,
         autoRemoveBg: pipeline.meta.autoRemoveBg,
       },
+      pipelineExecution,
     });
   });
 
