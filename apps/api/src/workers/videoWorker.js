@@ -29,9 +29,12 @@ const PREVIEW_DIR  = process.env.VIDEO_PREVIEW_DIR  || "/var/www/site-al.ru/uplo
 const PREVIEW_BASE = process.env.VIDEO_PREVIEW_BASE || "https://site-al.ru/uploads/videos/previews";
 
 const VIDEO_CHECKPOINT  = process.env.VIDEO_CHECKPOINT   || "v1-5-pruned-emaonly.safetensors";
-const VIDEO_MOTION_MOD  = process.env.VIDEO_MOTION_MODEL || "v3_sd15_mm.ckpt";
+// AnimateDiff motion model — typical filename in ComfyUI/models/animatediff/
+const VIDEO_MOTION_MOD  = process.env.VIDEO_MOTION_MODEL || "mm_sd_v15_v2.ckpt";
 /** AnimateDiff Evolved beta schedule enum (must match node dropdown; e.g. autoselect) */
 const VIDEO_BETA_SCHEDULE = process.env.VIDEO_BETA_SCHEDULE || "autoselect";
+// context_length: frames processed per window (16 is standard; longer = more coherence but VRAM)
+const CONTEXT_LENGTH = Number(process.env.VIDEO_CONTEXT_LENGTH) || 16;
 
 /**
  * ControlNet Tile model for image2video: preserves composition of the reference frame.
@@ -41,12 +44,12 @@ const VIDEO_BETA_SCHEDULE = process.env.VIDEO_BETA_SCHEDULE || "autoselect";
 const VIDEO_CONTROLNET_TILE = process.env.VIDEO_CONTROLNET_TILE || "";
 
 // Animation sampling params (shared by both text2video pass-2 and image2video):
-// denoise 0.25 → only adds motion, coherent base dominates
-// cfg 5        → less creative deviation, fewer artifacts  
-// steps 20     → fast enough, sufficient quality
-const ANIM_DENOISE = 0.25;
-const ANIM_CFG     = 5.0;
-const ANIM_STEPS   = 20;
+// denoise 0.4 → enough change per frame to produce visible motion
+// cfg 6       → moderate guidance, natural-looking movement
+// steps 24    → sufficient quality, fast enough for GPU
+const ANIM_DENOISE = 0.4;
+const ANIM_CFG     = 6.0;
+const ANIM_STEPS   = 24;
 
 // Base image generation params (pass-1 txt2img):
 const BASE_STEPS   = 20;
@@ -57,6 +60,13 @@ const MAX_FRAMES   = 32;
 
 const DEFAULT_NEGATIVE =
   "blurry, low quality, bad anatomy, deformed, ugly, watermark, text, out of focus, static, noise, distortion, morphing, shape change, color shift";
+
+const MOTION_BOOST = "natural motion, smooth movement, realistic animation, subtle dynamic changes,";
+
+/** Prepend motion keywords so AnimateDiff conditioning steers toward actual movement. */
+function motionPrompt(prompt) {
+  return `${MOTION_BOOST} ${prompt}`;
+}
 
 // ── AnimateDiff workflow builders ────────────────────────────────────────────
 
@@ -87,14 +97,17 @@ const DEFAULT_NEGATIVE =
  *   "11" SaveImage (preview)
  */
 function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps }) {
+  const ctxLen = Math.min(frameCount, CONTEXT_LENGTH);
+  const animPrompt = motionPrompt(prompt);
   process.stdout.write(
-    `[video:txt2vid] 2-pass: base(denoise=1.0 cfg=${BASE_CFG} steps=${BASE_STEPS}) → anim(denoise=${ANIM_DENOISE} cfg=${ANIM_CFG} steps=${ANIM_STEPS}) frames=${frameCount}\n`,
+    `[video:txt2vid] 2-pass: base(cfg=${BASE_CFG} steps=${BASE_STEPS}) → anim(denoise=${ANIM_DENOISE} cfg=${ANIM_CFG} steps=${ANIM_STEPS} ctx=${ctxLen}) frames=${frameCount}\n`,
   );
   return {
     "1": {
       class_type: "CheckpointLoaderSimple",
       inputs: { ckpt_name: VIDEO_CHECKPOINT },
     },
+    // Pass-1 conditioning (base image — no motion boost needed)
     "2": {
       class_type: "CLIPTextEncode",
       inputs: { clip: ["1", 1], text: prompt },
@@ -102,6 +115,11 @@ function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frame
     "3": {
       class_type: "CLIPTextEncode",
       inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE },
+    },
+    // Pass-2 conditioning (animation — motion-boosted prompt)
+    "2b": {
+      class_type: "CLIPTextEncode",
+      inputs: { clip: ["1", 1], text: animPrompt },
     },
     // Pass-1: single base image from empty latent
     "4": {
@@ -131,16 +149,19 @@ function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frame
     "7": {
       class_type: "ADE_AnimateDiffLoaderWithContext",
       inputs: {
-        model:         ["1", 0],
-        model_name:    VIDEO_MOTION_MOD,
-        beta_schedule: VIDEO_BETA_SCHEDULE,
+        model:          ["1", 0],
+        model_name:     VIDEO_MOTION_MOD,
+        beta_schedule:  VIDEO_BETA_SCHEDULE,
+        context_length: ctxLen,
+        context_stride: 1,
+        context_overlap: Math.floor(ctxLen / 4),
       },
     },
     "8": {
       class_type: "KSampler",
       inputs: {
         model:         ["7", 0],
-        positive:      ["2", 0],
+        positive:      ["2b", 0],   // motion-boosted prompt
         negative:      ["3", 0],
         latent_image:  ["6", 0],
         seed:          Math.floor(Math.random() * 1e15),
@@ -186,16 +207,30 @@ function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frame
  * Result: original image preserved, only subtle motion is added.
  */
 function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps, referenceFilename }) {
-  const useTile = Boolean(VIDEO_CONTROLNET_TILE);
+  const useTile  = Boolean(VIDEO_CONTROLNET_TILE);
+  const ctxLen   = Math.min(frameCount, CONTEXT_LENGTH);
+  const animPrompt = motionPrompt(prompt);
 
   process.stdout.write(
-    `[video:img2vid] denoise=${ANIM_DENOISE} cfg=${ANIM_CFG} steps=${ANIM_STEPS} controlnet_tile=${useTile ? VIDEO_CONTROLNET_TILE : "disabled"}\n`,
+    `[video:img2vid] denoise=${ANIM_DENOISE} cfg=${ANIM_CFG} steps=${ANIM_STEPS} ctx=${ctxLen} controlnet=${useTile ? VIDEO_CONTROLNET_TILE : "disabled"}\n`,
   );
 
   const preservationNegative = [
     negativePrompt || "",
-    "distortion, morphing, shape change, color shift, blur, artifacts, new objects, background change",
+    "distortion, morphing, shape change, color shift, blur, artifacts, new objects, background change, static",
   ].filter(Boolean).join(", ");
+
+  const adeNode = {
+    class_type: "ADE_AnimateDiffLoaderWithContext",
+    inputs: {
+      model:           ["1", 0],
+      model_name:      VIDEO_MOTION_MOD,
+      beta_schedule:   VIDEO_BETA_SCHEDULE,
+      context_length:  ctxLen,
+      context_stride:  1,
+      context_overlap: Math.floor(ctxLen / 4),
+    },
+  };
 
   // ── base nodes (shared) ───────────────────────────────────────────────────
   const base = {
@@ -203,9 +238,10 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
       class_type: "CheckpointLoaderSimple",
       inputs: { ckpt_name: VIDEO_CHECKPOINT },
     },
+    // motion-boosted positive conditioning for animation pass
     "2": {
       class_type: "CLIPTextEncode",
-      inputs: { clip: ["1", 1], text: prompt },
+      inputs: { clip: ["1", 1], text: animPrompt },
     },
     "3": {
       class_type: "CLIPTextEncode",
@@ -230,38 +266,27 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
   };
 
   if (useTile) {
-    // ── WITH ControlNet Tile ──────────────────────────────────────────────────
-    // Tile controlnet receives the scaled reference image as hint → locks structure
-    // on every frame while AnimateDiff adds temporal motion.
     return {
       ...base,
       "8": {
         class_type: "ControlNetLoader",
         inputs: { control_net_name: VIDEO_CONTROLNET_TILE },
       },
-      // Apply tile controlnet to the positive conditioning (strength 0.6 = structural guide, not rigid lock)
       "9": {
         class_type: "ControlNetApply",
         inputs: {
-          conditioning:    ["2", 0],
-          control_net:     ["8", 0],
-          image:           ["5", 0],
-          strength:        0.6,
+          conditioning: ["2", 0],
+          control_net:  ["8", 0],
+          image:        ["5", 0],
+          strength:     0.6,
         },
       },
-      "10": {
-        class_type: "ADE_AnimateDiffLoaderWithContext",
-        inputs: {
-          model:         ["1", 0],
-          model_name:    VIDEO_MOTION_MOD,
-          beta_schedule: VIDEO_BETA_SCHEDULE,
-        },
-      },
+      "10": adeNode,
       "11": {
         class_type: "KSampler",
         inputs: {
           model:         ["10", 0],
-          positive:      ["9", 0],   // controlnet-augmented conditioning
+          positive:      ["9", 0],
           negative:      ["3", 0],
           latent_image:  ["7", 0],
           seed:          Math.floor(Math.random() * 1e15),
@@ -279,13 +304,9 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
       "13": {
         class_type: "VHS_VideoCombine",
         inputs: {
-          images:          ["12", 0],
-          frame_rate:      fps,
-          loop_count:      0,
-          filename_prefix: "img2vid_",
-          format:          "video/h264-mp4",
-          pingpong:        false,
-          save_output:     true,
+          images: ["12", 0], frame_rate: fps, loop_count: 0,
+          filename_prefix: "img2vid_", format: "video/h264-mp4",
+          pingpong: false, save_output: true,
         },
       },
       "14": {
@@ -295,18 +316,10 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
     };
   }
 
-  // ── WITHOUT ControlNet (fallback) ─────────────────────────────────────────
-  // Still much better than before: denoise 0.35 vs old 0.7
+  // ── WITHOUT ControlNet (default) ──────────────────────────────────────────
   return {
     ...base,
-    "8": {
-      class_type: "ADE_AnimateDiffLoaderWithContext",
-      inputs: {
-        model:         ["1", 0],
-        model_name:    VIDEO_MOTION_MOD,
-        beta_schedule: VIDEO_BETA_SCHEDULE,
-      },
-    },
+    "8": adeNode,
     "9": {
       class_type: "KSampler",
       inputs: {
@@ -329,13 +342,9 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
     "11": {
       class_type: "VHS_VideoCombine",
       inputs: {
-        images:          ["10", 0],
-        frame_rate:      fps,
-        loop_count:      0,
-        filename_prefix: "img2vid_",
-        format:          "video/h264-mp4",
-        pingpong:        false,
-        save_output:     true,
+        images: ["10", 0], frame_rate: fps, loop_count: 0,
+        filename_prefix: "img2vid_", format: "video/h264-mp4",
+        pingpong: false, save_output: true,
       },
     },
     "12": {
