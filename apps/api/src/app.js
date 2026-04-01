@@ -6,7 +6,7 @@ const cors = require("@fastify/cors");
 const { startWidgetFollowUpSweep } = require("./jobs/startWidgetFollowUp");
 
 async function build() {
-  const app = fastify({ logger: true });
+  const app = fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 });
   await app.register(cors, {
     origin: true,
     allowedHeaders: ["Content-Type", "Authorization", "X-Api-Key", "X-Widget-Client"],
