@@ -13,6 +13,16 @@ const PYTHON_BIN    = process.env.PYTHON_BIN        || "python3";
 const SCRIPT_PATH   = path.join(__dirname, "../scripts/rembg_worker.py");
 const REMBG_TIMEOUT = Number(process.env.REMBG_TIMEOUT_MS) || 90_000;
 
+/**
+ * Download a remote image via native fetch (no axios dependency).
+ * Returns a Buffer with the image bytes.
+ */
+async function downloadImage(imageUrl) {
+  const res = await fetch(imageUrl, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`Download failed (${res.status}): ${imageUrl}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
 /** Call the Python rembg worker as a subprocess. */
 function runRembg(inputPath, outputPath) {
   return new Promise((resolve, reject) => {
@@ -45,23 +55,40 @@ function runRembg(inputPath, outputPath) {
 }
 
 /** Core handler shared between JSON and multipart routes. */
-async function processImage(inputBuffer, originalName, reply) {
+async function processImage(inputBuffer, originalName) {
   const id         = uuidv4();
   const tempInput  = path.join(os.tmpdir(), `rembg_in_${id}.png`);
   const tempOutput = path.join(os.tmpdir(), `rembg_out_${id}.png`);
 
   try {
+    // Write input to temp file
     fs.writeFileSync(tempInput, inputBuffer);
-    process.stdout.write(`[removeBg] processing ${originalName} (id=${id})\n`);
+    process.stdout.write(`[removeBg] input written: ${tempInput} (${inputBuffer.length} bytes)\n`);
 
+    if (!fs.existsSync(tempInput)) {
+      throw new Error(`[removeBg] temp input file not found after write: ${tempInput}`);
+    }
+
+    process.stdout.write(`[removeBg] processing ${originalName} (id=${id})\n`);
     await runRembg(tempInput, tempOutput);
 
+    if (!fs.existsSync(tempOutput)) {
+      throw new Error(`[removeBg] rembg produced no output file: ${tempOutput}`);
+    }
+
+    // Ensure output directory exists
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+
     const savedName = `rembg_${id}.png`;
     const finalPath = path.join(OUTPUT_DIR, savedName);
     fs.copyFileSync(tempOutput, finalPath);
+
+    if (!fs.existsSync(finalPath)) {
+      throw new Error(`[removeBg] file not found after copy: ${finalPath}`);
+    }
+
     const publicUrl = `${PUBLIC_BASE}/${savedName}`;
-    process.stdout.write(`[removeBg] saved → ${finalPath}\n`);
+    process.stdout.write(`[removeBg] SAVED IMAGE: ${finalPath} → ${publicUrl}\n`);
 
     return { url: publicUrl, transparent: true, originalName, id };
   } finally {
@@ -86,18 +113,35 @@ module.exports = async function removeBgRoutes(fastify) {
     const { imageUrl } = request.body;
     try {
       process.stdout.write(`[removeBg] downloading ${imageUrl}\n`);
-      const axios = require("axios");
-      const res   = await axios.get(imageUrl, { responseType: "arraybuffer", timeout: 20_000 });
-      const originalName = path.basename(new URL(imageUrl).pathname) || "image.jpg";
 
-      const result = await processImage(Buffer.from(res.data), originalName, reply);
+      const originalName = path.basename(new URL(imageUrl).pathname) || "image.jpg";
+      const buffer = await downloadImage(imageUrl);
+      process.stdout.write(`[removeBg] downloaded ${buffer.length} bytes — ${originalName}\n`);
+
+      // If imageUrl points to a local path, verify the file exists before processing
+      if (imageUrl.includes("/uploads/")) {
+        const localPath = path.join(
+          "/var/www/site-al.ru",
+          new URL(imageUrl).pathname,
+        );
+        if (!fs.existsSync(localPath)) {
+          process.stderr.write(`[removeBg] source file not found on disk: ${localPath}\n`);
+          return reply.code(404).send({ error: "FILE_NOT_FOUND", path: localPath });
+        }
+        process.stdout.write(`[removeBg] source file verified: ${localPath}\n`);
+      }
+
+      const result = await processImage(buffer, originalName);
       return reply.send(result);
     } catch (err) {
       process.stderr.write(`[removeBg] json route error: ${err.message}\n`);
-      if (err.message.includes("timed out")) {
+      if (err.code === "ERR_OPERATION_TIMEOUT" || err.message.includes("timed out")) {
         return reply.code(504).send({ error: "Обработка заняла слишком долго." });
       }
-      return reply.code(500).send({ error: "Не удалось удалить фон." });
+      if (err.message.includes("FILE_NOT_FOUND")) {
+        return reply.code(404).send({ error: "Изображение не найдено." });
+      }
+      return reply.code(500).send({ error: "Не удалось удалить фон.", detail: err.message });
     }
   });
 
