@@ -23,7 +23,7 @@ import {
 } from "../api/avito";
 import type { Agent } from "../api/types";
 
-const WEBHOOK_BASE = "https://site-al.ru/api/avito/webhook";
+const WEBHOOK_BASE = "https://site-al.ru/api/incoming";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

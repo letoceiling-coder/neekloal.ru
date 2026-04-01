@@ -91,8 +91,8 @@ module.exports = async function avitoModule(fastify) {
   // PUBLIC
   // ══════════════════════════════════════════════════════════════════════════
 
-  // ── POST /avito/webhook/:agentId ─────────────────────────────────────────
-  fastify.post("/avito/webhook/:agentId", async (request, reply) => {
+  // Shared handler — used by both /avito/webhook/:agentId and /incoming/:agentId
+  async function handleWebhook(request, reply) {
     const agentId = String(request.params.agentId ?? "").trim();
     const event   = request.body;
 
@@ -164,7 +164,15 @@ module.exports = async function avitoModule(fastify) {
         process.stderr.write(`[avito:webhook] async error eventId=${eventId}: ${err.message}\n`);
       }
     });
-  });
+  }
+
+  // ── POST /avito/webhook/:agentId ─────────────────────────────────────────
+  // Legacy URL — kept for backward compatibility (existing Avito console configs)
+  fastify.post("/avito/webhook/:agentId", handleWebhook);
+
+  // ── POST /incoming/:agentId ──────────────────────────────────────────────
+  // Stealth alias — same logic, no "avito" keyword in URL (avoids external blocking)
+  fastify.post("/incoming/:agentId", handleWebhook);
 
   // ══════════════════════════════════════════════════════════════════════════
   // AVITO ACCOUNTS CRUD

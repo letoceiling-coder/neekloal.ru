@@ -175,7 +175,7 @@ export function AgentDetailPage() {
             <div className="rounded-md border border-blue-200 bg-white px-2.5 py-1.5">
               <p className="text-[10px] font-medium text-blue-700 mb-0.5">🔗 Webhook URL</p>
               <code className="block break-all text-[10px] text-blue-600">
-                https://site-al.ru/api/avito/webhook/{agent.id}
+                https://site-al.ru/api/incoming/{agent.id}
               </code>
             </div>
           </div>
@@ -184,7 +184,7 @@ export function AgentDetailPage() {
           <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2.5">
             <p className="text-[11px] font-medium text-blue-700 mb-0.5">🔗 Avito Webhook URL</p>
             <code className="block break-all text-[10px] text-blue-600">
-              https://site-al.ru/api/avito/webhook/{agent.id}
+              https://site-al.ru/api/incoming/{agent.id}
             </code>
             <p className="mt-1 text-[10px] text-blue-400">
               Укажите этот URL в кабинете разработчика Avito
