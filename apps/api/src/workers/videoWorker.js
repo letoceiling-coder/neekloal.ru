@@ -29,8 +29,8 @@ const PREVIEW_DIR  = process.env.VIDEO_PREVIEW_DIR  || "/var/www/site-al.ru/uplo
 const PREVIEW_BASE = process.env.VIDEO_PREVIEW_BASE || "https://site-al.ru/uploads/videos/previews";
 
 const VIDEO_CHECKPOINT  = process.env.VIDEO_CHECKPOINT   || "v1-5-pruned-emaonly.safetensors";
-// AnimateDiff motion model — typical filename in ComfyUI/models/animatediff/
-const VIDEO_MOTION_MOD  = process.env.VIDEO_MOTION_MODEL || "mm_sd_v15_v2.ckpt";
+// AnimateDiff motion model — must match a file in ComfyUI/models/animatediff/
+const VIDEO_MOTION_MOD  = process.env.VIDEO_MOTION_MODEL || "v3_sd15_mm.ckpt";
 /** AnimateDiff Evolved beta schedule enum (must match node dropdown; e.g. autoselect) */
 const VIDEO_BETA_SCHEDULE = process.env.VIDEO_BETA_SCHEDULE || "autoselect";
 // context_length: frames processed per window (16 is standard; longer = more coherence but VRAM)
@@ -68,6 +68,69 @@ function motionPrompt(prompt) {
   return `${MOTION_BOOST} ${prompt}`;
 }
 
+// ── Motion model resolver ────────────────────────────────────────────────────
+
+/** Cached result — resolved once per process lifetime. */
+let _resolvedMotionModel = null;
+
+/**
+ * Query ComfyUI for the installed AnimateDiff motion models.
+ * Returns the configured VIDEO_MOTION_MOD if it is present in the list,
+ * otherwise returns the first available model (fallback).
+ * Result is cached so we only hit ComfyUI once.
+ */
+async function resolveMotionModel() {
+  if (_resolvedMotionModel) return _resolvedMotionModel;
+
+  const preferred = [
+    VIDEO_MOTION_MOD,
+    "v3_sd15_mm.ckpt",
+    "mm_sd_v15_v2.ckpt",
+    "mm_sd_v14.ckpt",
+  ];
+
+  try {
+    const res = await fetch(
+      `${COMFYUI_VIDEO_URL}/object_info/ADE_AnimateDiffLoaderWithContext`,
+      { headers: comfyAuthHeaders(), signal: AbortSignal.timeout(8_000) },
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const info = await res.json();
+
+    // The node exposes its model_name input with an enum of installed models
+    const available =
+      info?.ADE_AnimateDiffLoaderWithContext?.input?.required?.model_name?.[0] ?? [];
+
+    process.stdout.write(
+      `[videoWorker] ComfyUI animatediff models: ${JSON.stringify(available)}\n`,
+    );
+
+    if (!Array.isArray(available) || available.length === 0) {
+      process.stdout.write(`[videoWorker] Could not fetch model list, using ${VIDEO_MOTION_MOD}\n`);
+      _resolvedMotionModel = VIDEO_MOTION_MOD;
+      return _resolvedMotionModel;
+    }
+
+    // Pick first match from preference list
+    for (const candidate of preferred) {
+      if (available.includes(candidate)) {
+        process.stdout.write(`[videoWorker] motion model resolved: ${candidate}\n`);
+        _resolvedMotionModel = candidate;
+        return _resolvedMotionModel;
+      }
+    }
+
+    // Fallback to whatever is first installed
+    _resolvedMotionModel = available[0];
+    process.stdout.write(`[videoWorker] motion model fallback to first available: ${_resolvedMotionModel}\n`);
+  } catch (e) {
+    process.stderr.write(`[videoWorker] resolveMotionModel failed (non-fatal): ${e.message}\n`);
+    _resolvedMotionModel = VIDEO_MOTION_MOD;
+  }
+
+  return _resolvedMotionModel;
+}
+
 // ── AnimateDiff workflow builders ────────────────────────────────────────────
 
 /**
@@ -96,11 +159,11 @@ function motionPrompt(prompt) {
  *   "10" VHS_VideoCombine
  *   "11" SaveImage (preview)
  */
-function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps }) {
+function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps, motionModel }) {
   const ctxLen = Math.min(frameCount, CONTEXT_LENGTH);
   const animPrompt = motionPrompt(prompt);
   process.stdout.write(
-    `[video:txt2vid] 2-pass: base(cfg=${BASE_CFG} steps=${BASE_STEPS}) → anim(denoise=${ANIM_DENOISE} cfg=${ANIM_CFG} steps=${ANIM_STEPS} ctx=${ctxLen}) frames=${frameCount}\n`,
+    `[video:txt2vid] 2-pass: base(cfg=${BASE_CFG} steps=${BASE_STEPS}) → anim(denoise=${ANIM_DENOISE} cfg=${ANIM_CFG} steps=${ANIM_STEPS} ctx=${ctxLen}) frames=${frameCount} model=${motionModel}\n`,
   );
   return {
     "1": {
@@ -149,11 +212,11 @@ function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frame
     "7": {
       class_type: "ADE_AnimateDiffLoaderWithContext",
       inputs: {
-        model:          ["1", 0],
-        model_name:     VIDEO_MOTION_MOD,
-        beta_schedule:  VIDEO_BETA_SCHEDULE,
-        context_length: ctxLen,
-        context_stride: 1,
+        model:           ["1", 0],
+        model_name:      motionModel,
+        beta_schedule:   VIDEO_BETA_SCHEDULE,
+        context_length:  ctxLen,
+        context_stride:  1,
         context_overlap: Math.floor(ctxLen / 4),
       },
     },
@@ -206,13 +269,13 @@ function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frame
  *
  * Result: original image preserved, only subtle motion is added.
  */
-function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps, referenceFilename }) {
+function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps, referenceFilename, motionModel }) {
   const useTile  = Boolean(VIDEO_CONTROLNET_TILE);
   const ctxLen   = Math.min(frameCount, CONTEXT_LENGTH);
   const animPrompt = motionPrompt(prompt);
 
   process.stdout.write(
-    `[video:img2vid] denoise=${ANIM_DENOISE} cfg=${ANIM_CFG} steps=${ANIM_STEPS} ctx=${ctxLen} controlnet=${useTile ? VIDEO_CONTROLNET_TILE : "disabled"}\n`,
+    `[video:img2vid] denoise=${ANIM_DENOISE} cfg=${ANIM_CFG} steps=${ANIM_STEPS} ctx=${ctxLen} model=${motionModel} controlnet=${useTile ? VIDEO_CONTROLNET_TILE : "disabled"}\n`,
   );
 
   const preservationNegative = [
@@ -224,7 +287,7 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
     class_type: "ADE_AnimateDiffLoaderWithContext",
     inputs: {
       model:           ["1", 0],
-      model_name:      VIDEO_MOTION_MOD,
+      model_name:      motionModel,
       beta_schedule:   VIDEO_BETA_SCHEDULE,
       context_length:  ctxLen,
       context_stride:  1,
@@ -543,6 +606,10 @@ async function processVideoJob(job) {
   process.stdout.write(`[video:render] started — mode=${mode}\n`);
   job.log(`[video:render] started`);
 
+  // Resolve which motion model is actually installed in ComfyUI (cached after first call)
+  const motionModel = await resolveMotionModel();
+  process.stdout.write(`[video:render] using motion model: ${motionModel}\n`);
+
   let workflow;
 
   if (mode === "image2video") {
@@ -552,10 +619,10 @@ async function processVideoJob(job) {
     const refFn   = await uploadToComfyUI(refBuf, `ref_${finalJobId}.png`);
     workflow = buildImageToVideoWorkflow({
       prompt, negativePrompt, width, height, frameCount, fps: finalFps,
-      referenceFilename: refFn,
+      referenceFilename: refFn, motionModel,
     });
   } else {
-    workflow = buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps: finalFps });
+    workflow = buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps: finalFps, motionModel });
   }
 
   await job.updateProgress(10);
