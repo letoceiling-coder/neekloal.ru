@@ -35,18 +35,25 @@ const VIDEO_BETA_SCHEDULE = process.env.VIDEO_BETA_SCHEDULE || "autoselect";
 
 /**
  * ControlNet Tile model for image2video: preserves composition of the reference frame.
- * Set to empty string to disable ControlNet and use plain img2img.
+ * Defaults to "" (disabled) — safe mode. Set VIDEO_CONTROLNET_TILE env to enable.
  * Typical filename: "control_v11f1e_sd15_tile.pth"
  */
-const VIDEO_CONTROLNET_TILE = process.env.VIDEO_CONTROLNET_TILE || "control_v11f1e_sd15_tile.pth";
+const VIDEO_CONTROLNET_TILE = process.env.VIDEO_CONTROLNET_TILE || "";
 
-// Preserve-animation defaults (image2video mode):
-// denoise 0.35 → only adds motion, original structure stays intact
-// cfg 5.5    → less deviation from conditioning, fewer artifacts
-// steps 25   → enough for smooth frames without over-processing
-const IMG2VID_DENOISE = 0.35;
-const IMG2VID_CFG     = 5.5;
-const IMG2VID_STEPS   = 25;
+// Animation sampling params (shared by both text2video pass-2 and image2video):
+// denoise 0.25 → only adds motion, coherent base dominates
+// cfg 5        → less creative deviation, fewer artifacts  
+// steps 20     → fast enough, sufficient quality
+const ANIM_DENOISE = 0.25;
+const ANIM_CFG     = 5.0;
+const ANIM_STEPS   = 20;
+
+// Base image generation params (pass-1 txt2img):
+const BASE_STEPS   = 20;
+const BASE_CFG     = 7.0;
+
+// Hard frame cap — AnimateDiff degrades badly above ~32 frames
+const MAX_FRAMES   = 32;
 
 const DEFAULT_NEGATIVE =
   "blurry, low quality, bad anatomy, deformed, ugly, watermark, text, out of focus, static, noise, distortion, morphing, shape change, color shift";
@@ -54,9 +61,35 @@ const DEFAULT_NEGATIVE =
 // ── AnimateDiff workflow builders ────────────────────────────────────────────
 
 /**
- * text → video: empty latent → AnimateDiff → VHS_VideoCombine
+ * text → video: 2-PASS pipeline.
+ *
+ * PASS 1 — txt2img (KSampler, denoise=1.0, cfg=7, steps=20):
+ *   Generates a single coherent base image from the prompt.
+ *   Uses the standard checkpoint without AnimateDiff (no motion model loaded yet).
+ *
+ * PASS 2 — img2anim (AnimateDiff KSampler, denoise=0.25, cfg=5, steps=20):
+ *   Takes the base image latent, repeats it N times (frameCount),
+ *   then AnimateDiff adds temporal motion while preserving structure.
+ *
+ * Result: no noise, stable objects, real coherent animation.
+ *
+ * Node graph:
+ *   "1" CheckpointLoaderSimple
+ *   "2" CLIPTextEncode (pos)
+ *   "3" CLIPTextEncode (neg)
+ *   "4" EmptyLatentImage (batch_size=1) — for pass-1 only
+ *   "5" KSampler (pass-1: denoise=1.0) → base latent
+ *   "6" RepeatLatentBatch (amount=frameCount)
+ *   "7" ADE_AnimateDiffLoaderWithContext
+ *   "8" KSampler (pass-2: denoise=0.25)
+ *   "9" VAEDecode
+ *   "10" VHS_VideoCombine
+ *   "11" SaveImage (preview)
  */
 function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps }) {
+  process.stdout.write(
+    `[video:txt2vid] 2-pass: base(denoise=1.0 cfg=${BASE_CFG} steps=${BASE_STEPS}) → anim(denoise=${ANIM_DENOISE} cfg=${ANIM_CFG} steps=${ANIM_STEPS}) frames=${frameCount}\n`,
+  );
   return {
     "1": {
       class_type: "CheckpointLoaderSimple",
@@ -70,41 +103,62 @@ function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frame
       class_type: "CLIPTextEncode",
       inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE },
     },
+    // Pass-1: single base image from empty latent
     "4": {
       class_type: "EmptyLatentImage",
-      inputs: { width, height, batch_size: frameCount },
+      inputs: { width, height, batch_size: 1 },
     },
     "5": {
+      class_type: "KSampler",
+      inputs: {
+        model:         ["1", 0],
+        positive:      ["2", 0],
+        negative:      ["3", 0],
+        latent_image:  ["4", 0],
+        seed:          Math.floor(Math.random() * 1e15),
+        steps:         BASE_STEPS,
+        cfg:           BASE_CFG,
+        sampler_name:  "euler_ancestral",
+        scheduler:     "karras",
+        denoise:       1.0,
+      },
+    },
+    // Pass-2: repeat base latent → AnimateDiff adds motion
+    "6": {
+      class_type: "RepeatLatentBatch",
+      inputs: { samples: ["5", 0], amount: frameCount },
+    },
+    "7": {
       class_type: "ADE_AnimateDiffLoaderWithContext",
       inputs: {
-        model:       ["1", 0],
-        model_name:  VIDEO_MOTION_MOD,
+        model:         ["1", 0],
+        model_name:    VIDEO_MOTION_MOD,
         beta_schedule: VIDEO_BETA_SCHEDULE,
       },
     },
-    "6": {
+    "8": {
       class_type: "KSampler",
       inputs: {
-        model:          ["5", 0],
-        positive:       ["2", 0],
-        negative:       ["3", 0],
-        latent_image:   ["4", 0],
-        seed:           Math.floor(Math.random() * 1e15),
-        steps:          20,
-        cfg:            7.0,
-        sampler_name:   "euler",
-        scheduler:      "normal",
-        denoise:        1.0,
+        model:         ["7", 0],
+        positive:      ["2", 0],
+        negative:      ["3", 0],
+        latent_image:  ["6", 0],
+        seed:          Math.floor(Math.random() * 1e15),
+        steps:         ANIM_STEPS,
+        cfg:           ANIM_CFG,
+        sampler_name:  "euler_ancestral",
+        scheduler:     "karras",
+        denoise:       ANIM_DENOISE,
       },
     },
-    "7": {
+    "9": {
       class_type: "VAEDecode",
-      inputs: { samples: ["6", 0], vae: ["1", 2] },
+      inputs: { samples: ["8", 0], vae: ["1", 2] },
     },
-    "8": {
+    "10": {
       class_type: "VHS_VideoCombine",
       inputs: {
-        images:          ["7", 0],
+        images:          ["9", 0],
         frame_rate:      fps,
         loop_count:      0,
         filename_prefix: "vid_",
@@ -113,9 +167,9 @@ function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frame
         save_output:     true,
       },
     },
-    "9": {
+    "11": {
       class_type: "SaveImage",
-      inputs: { filename_prefix: "frame_", images: ["7", 0] },
+      inputs: { filename_prefix: "frame_", images: ["9", 0] },
     },
   };
 }
@@ -135,7 +189,7 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
   const useTile = Boolean(VIDEO_CONTROLNET_TILE);
 
   process.stdout.write(
-    `[video:img2vid] denoise=${IMG2VID_DENOISE} cfg=${IMG2VID_CFG} steps=${IMG2VID_STEPS} controlnet_tile=${useTile ? VIDEO_CONTROLNET_TILE : "disabled"}\n`,
+    `[video:img2vid] denoise=${ANIM_DENOISE} cfg=${ANIM_CFG} steps=${ANIM_STEPS} controlnet_tile=${useTile ? VIDEO_CONTROLNET_TILE : "disabled"}\n`,
   );
 
   const preservationNegative = [
@@ -211,11 +265,11 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
           negative:      ["3", 0],
           latent_image:  ["7", 0],
           seed:          Math.floor(Math.random() * 1e15),
-          steps:         IMG2VID_STEPS,
-          cfg:           IMG2VID_CFG,
+          steps:         ANIM_STEPS,
+          cfg:           ANIM_CFG,
           sampler_name:  "euler_ancestral",
           scheduler:     "karras",
-          denoise:       IMG2VID_DENOISE,
+          denoise:       ANIM_DENOISE,
         },
       },
       "12": {
@@ -261,11 +315,11 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
         negative:      ["3", 0],
         latent_image:  ["7", 0],
         seed:          Math.floor(Math.random() * 1e15),
-        steps:         IMG2VID_STEPS,
-        cfg:           IMG2VID_CFG,
+        steps:         ANIM_STEPS,
+        cfg:           ANIM_CFG,
         sampler_name:  "euler_ancestral",
         scheduler:     "karras",
-        denoise:       IMG2VID_DENOISE,
+        denoise:       ANIM_DENOISE,
       },
     },
     "10": {
@@ -443,9 +497,19 @@ async function processVideoJob(job) {
   } = job.data;
 
   const finalJobId = jobId || job.id;
-  const frameCount = Math.round(Math.min(Math.max(fps * duration, 8), 48));
 
-  process.stdout.write(`[video:job] job=${job.id} mode=${mode} frames=${frameCount} fps=${fps}\n`);
+  // Cap frames at MAX_FRAMES — AnimateDiff degrades badly above 32 frames.
+  // If duration * fps > MAX_FRAMES, reduce fps automatically.
+  let finalFps = fps;
+  let frameCount = Math.round(fps * duration);
+  if (frameCount > MAX_FRAMES) {
+    finalFps = Math.max(4, Math.floor(MAX_FRAMES / duration));
+    frameCount  = Math.round(finalFps * duration);
+    process.stdout.write(`[video:job] fps reduced ${fps}→${finalFps} to stay within MAX_FRAMES=${MAX_FRAMES}\n`);
+  }
+  frameCount = Math.max(8, Math.min(MAX_FRAMES, frameCount));
+
+  process.stdout.write(`[video:job] job=${job.id} mode=${mode} frames=${frameCount} fps=${finalFps} duration=${duration}\n`);
   job.log(`[video:job] mode=${mode} frameCount=${frameCount} fps=${fps}`);
   await job.updateProgress(5);
 
@@ -478,11 +542,11 @@ async function processVideoJob(job) {
     const refBuf  = await downloadBuffer(imageUrl);
     const refFn   = await uploadToComfyUI(refBuf, `ref_${finalJobId}.png`);
     workflow = buildImageToVideoWorkflow({
-      prompt, negativePrompt, width, height, frameCount, fps,
+      prompt, negativePrompt, width, height, frameCount, fps: finalFps,
       referenceFilename: refFn,
     });
   } else {
-    workflow = buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps });
+    workflow = buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps: finalFps });
   }
 
   await job.updateProgress(10);
@@ -537,7 +601,7 @@ async function processVideoJob(job) {
   }
 
   // ── Update DB ─────────────────────────────────────────────────────────────
-  const actualDuration = frameCount / fps;
+  const actualDuration = frameCount / finalFps;
   try {
     await prisma.generatedVideo.updateMany({
       where: { jobId: finalJobId },
@@ -566,7 +630,7 @@ async function processVideoJob(job) {
     localPath,
     duration: actualDuration,
     frameCount,
-    fps,
+    fps: finalFps,
     mode,
   };
 }
