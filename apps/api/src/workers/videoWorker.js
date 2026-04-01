@@ -33,8 +33,23 @@ const VIDEO_MOTION_MOD  = process.env.VIDEO_MOTION_MODEL || "v3_sd15_mm.ckpt";
 /** AnimateDiff Evolved beta schedule enum (must match node dropdown; e.g. autoselect) */
 const VIDEO_BETA_SCHEDULE = process.env.VIDEO_BETA_SCHEDULE || "autoselect";
 
+/**
+ * ControlNet Tile model for image2video: preserves composition of the reference frame.
+ * Set to empty string to disable ControlNet and use plain img2img.
+ * Typical filename: "control_v11f1e_sd15_tile.pth"
+ */
+const VIDEO_CONTROLNET_TILE = process.env.VIDEO_CONTROLNET_TILE || "control_v11f1e_sd15_tile.pth";
+
+// Preserve-animation defaults (image2video mode):
+// denoise 0.35 → only adds motion, original structure stays intact
+// cfg 5.5    → less deviation from conditioning, fewer artifacts
+// steps 25   → enough for smooth frames without over-processing
+const IMG2VID_DENOISE = 0.35;
+const IMG2VID_CFG     = 5.5;
+const IMG2VID_STEPS   = 25;
+
 const DEFAULT_NEGATIVE =
-  "blurry, low quality, bad anatomy, deformed, ugly, watermark, text, out of focus, static, noise";
+  "blurry, low quality, bad anatomy, deformed, ugly, watermark, text, out of focus, static, noise, distortion, morphing, shape change, color shift";
 
 // ── AnimateDiff workflow builders ────────────────────────────────────────────
 
@@ -106,12 +121,30 @@ function buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frame
 }
 
 /**
- * image → video: reference image encoded to latent → AnimateDiff → VHS_VideoCombine
- * Uses partial denoising (denoise < 1.0) to keep subject from reference.
+ * image → video: reference image → AnimateDiff with locked composition.
+ *
+ * Strategy:
+ *  1. Low denoise (0.35) — KSampler only adds motion noise, original pixels dominate.
+ *  2. ControlNet Tile (when VIDEO_CONTROLNET_TILE is set) — tiles the reference image
+ *     as a structural guide per-frame, locking fine details and composition.
+ *  3. cfg 5.5 / steps 25 — less creative deviation, smoother frames.
+ *
+ * Result: original image preserved, only subtle motion is added.
  */
-function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps, referenceFilename, strength }) {
-  const denoise = Math.min(Math.max(Number(strength) || 0.7, 0.4), 0.95);
-  return {
+function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps, referenceFilename }) {
+  const useTile = Boolean(VIDEO_CONTROLNET_TILE);
+
+  process.stdout.write(
+    `[video:img2vid] denoise=${IMG2VID_DENOISE} cfg=${IMG2VID_CFG} steps=${IMG2VID_STEPS} controlnet_tile=${useTile ? VIDEO_CONTROLNET_TILE : "disabled"}\n`,
+  );
+
+  const preservationNegative = [
+    negativePrompt || "",
+    "distortion, morphing, shape change, color shift, blur, artifacts, new objects, background change",
+  ].filter(Boolean).join(", ");
+
+  // ── base nodes (shared) ───────────────────────────────────────────────────
+  const base = {
     "1": {
       class_type: "CheckpointLoaderSimple",
       inputs: { ckpt_name: VIDEO_CHECKPOINT },
@@ -122,7 +155,7 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
     },
     "3": {
       class_type: "CLIPTextEncode",
-      inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE },
+      inputs: { clip: ["1", 1], text: preservationNegative || DEFAULT_NEGATIVE },
     },
     "4": {
       class_type: "LoadImage",
@@ -140,6 +173,78 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
       class_type: "RepeatLatentBatch",
       inputs: { samples: ["6", 0], amount: frameCount },
     },
+  };
+
+  if (useTile) {
+    // ── WITH ControlNet Tile ──────────────────────────────────────────────────
+    // Tile controlnet receives the scaled reference image as hint → locks structure
+    // on every frame while AnimateDiff adds temporal motion.
+    return {
+      ...base,
+      "8": {
+        class_type: "ControlNetLoader",
+        inputs: { control_net_name: VIDEO_CONTROLNET_TILE },
+      },
+      // Apply tile controlnet to the positive conditioning (strength 0.6 = structural guide, not rigid lock)
+      "9": {
+        class_type: "ControlNetApply",
+        inputs: {
+          conditioning:    ["2", 0],
+          control_net:     ["8", 0],
+          image:           ["5", 0],
+          strength:        0.6,
+        },
+      },
+      "10": {
+        class_type: "ADE_AnimateDiffLoaderWithContext",
+        inputs: {
+          model:         ["1", 0],
+          model_name:    VIDEO_MOTION_MOD,
+          beta_schedule: VIDEO_BETA_SCHEDULE,
+        },
+      },
+      "11": {
+        class_type: "KSampler",
+        inputs: {
+          model:         ["10", 0],
+          positive:      ["9", 0],   // controlnet-augmented conditioning
+          negative:      ["3", 0],
+          latent_image:  ["7", 0],
+          seed:          Math.floor(Math.random() * 1e15),
+          steps:         IMG2VID_STEPS,
+          cfg:           IMG2VID_CFG,
+          sampler_name:  "euler_ancestral",
+          scheduler:     "karras",
+          denoise:       IMG2VID_DENOISE,
+        },
+      },
+      "12": {
+        class_type: "VAEDecode",
+        inputs: { samples: ["11", 0], vae: ["1", 2] },
+      },
+      "13": {
+        class_type: "VHS_VideoCombine",
+        inputs: {
+          images:          ["12", 0],
+          frame_rate:      fps,
+          loop_count:      0,
+          filename_prefix: "img2vid_",
+          format:          "video/h264-mp4",
+          pingpong:        false,
+          save_output:     true,
+        },
+      },
+      "14": {
+        class_type: "SaveImage",
+        inputs: { filename_prefix: "frame_", images: ["12", 0] },
+      },
+    };
+  }
+
+  // ── WITHOUT ControlNet (fallback) ─────────────────────────────────────────
+  // Still much better than before: denoise 0.35 vs old 0.7
+  return {
+    ...base,
     "8": {
       class_type: "ADE_AnimateDiffLoaderWithContext",
       inputs: {
@@ -156,11 +261,11 @@ function buildImageToVideoWorkflow({ prompt, negativePrompt, width, height, fram
         negative:      ["3", 0],
         latent_image:  ["7", 0],
         seed:          Math.floor(Math.random() * 1e15),
-        steps:         20,
-        cfg:           7.0,
-        sampler_name:  "euler",
-        scheduler:     "normal",
-        denoise,
+        steps:         IMG2VID_STEPS,
+        cfg:           IMG2VID_CFG,
+        sampler_name:  "euler_ancestral",
+        scheduler:     "karras",
+        denoise:       IMG2VID_DENOISE,
       },
     },
     "10": {
@@ -369,12 +474,12 @@ async function processVideoJob(job) {
 
   if (mode === "image2video") {
     if (!imageUrl) throw new Error("imageUrl is required for image2video mode");
-    process.stdout.write(`[video:render] image2video — downloading reference...\n`);
+    process.stdout.write(`[video:render] image2video — downloading reference from: ${imageUrl}\n`);
     const refBuf  = await downloadBuffer(imageUrl);
     const refFn   = await uploadToComfyUI(refBuf, `ref_${finalJobId}.png`);
     workflow = buildImageToVideoWorkflow({
       prompt, negativePrompt, width, height, frameCount, fps,
-      referenceFilename: refFn, strength,
+      referenceFilename: refFn,
     });
   } else {
     workflow = buildTextToVideoWorkflow({ prompt, negativePrompt, width, height, frameCount, fps });

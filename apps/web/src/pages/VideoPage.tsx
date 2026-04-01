@@ -29,7 +29,7 @@ const MODE_OPTIONS: { id: UiMode; label: string }[] = [
 ];
 
 function modePrefix(mode: UiMode) {
-  if (mode === "photo") return "image-to-video animation, smooth camera motion,";
+  if (mode === "photo") return "subtle realistic animation, preserve original image, no distortion, no new objects, gentle motion only,";
   if (mode === "ad") return "commercial product video, clean branding style,";
   if (mode === "cinema") return "cinematic movie scene, dramatic lighting,";
   return "high quality video generation,";
