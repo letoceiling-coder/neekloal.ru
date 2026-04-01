@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Film, ImagePlus, Sparkles, X } from "lucide-react";
+import { Clock, Download, Film, ImagePlus, Loader2, RefreshCw, Sparkles, X } from "lucide-react";
 import { Button, Card, CardContent, CardHeader, Input } from "../components/ui";
 import { getVideoStatus, uploadVideoImage, useGenerateVideo, useVideoQueue } from "../api/video";
 import { ApiError } from "../lib/apiClient";
@@ -52,6 +52,126 @@ function statusBadgeClass(status: JobStatus) {
 function clampProgress(value: number | undefined) {
   if (typeof value !== "number" || Number.isNaN(value)) return 0;
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function JobCard({
+  job,
+  onRepeat,
+  onUsePrompt,
+}: {
+  job: VideoJobItem;
+  onRepeat: (job: VideoJobItem) => void;
+  onUsePrompt: (job: VideoJobItem) => void;
+}) {
+  const isActive = job.status === "queued" || job.status === "processing";
+
+  return (
+    <Card className="overflow-hidden transition-all duration-300 hover:shadow-md">
+      <CardContent className="space-y-0 p-0">
+        {/* ── Header row ── */}
+        <div className="flex items-start gap-3 p-4">
+          {job.refPreview ? (
+            <img
+              src={job.refPreview}
+              alt=""
+              className="h-14 w-14 flex-shrink-0 rounded-lg border border-neutral-200 object-cover"
+            />
+          ) : (
+            <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-lg border border-neutral-100 bg-neutral-50">
+              <Film className="h-5 w-5 text-neutral-300" />
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="line-clamp-2 text-sm font-medium text-neutral-800">{job.prompt}</p>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${statusBadgeClass(job.status)}`}>
+                {job.status === "processing" ? (
+                  <span className="inline-flex items-center gap-1">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {statusLabel(job.status)}
+                  </span>
+                ) : statusLabel(job.status)}
+              </span>
+              {job.status === "queued" && job.position != null ? (
+                <span className="text-xs text-neutral-400">позиция #{job.position}</span>
+              ) : null}
+              {isActive && job.eta != null ? (
+                <span className="inline-flex items-center gap-1 text-xs text-neutral-400">
+                  <Clock className="h-3 w-3" />
+                  ~{job.eta} сек
+                </span>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Progress bar (only when active) ── */}
+        {isActive ? (
+          <div className="px-4 pb-4">
+            <div className="mb-1.5 flex items-center justify-between text-xs text-neutral-400">
+              <span>{job.status === "processing" ? "Генерация..." : "Ожидание..."}</span>
+              <span>{job.progress}%</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-neutral-100">
+              <div
+                className={[
+                  "h-1.5 rounded-full transition-all duration-700 ease-out",
+                  job.status === "processing"
+                    ? "bg-gradient-to-r from-blue-500 to-blue-400"
+                    : "bg-gradient-to-r from-amber-400 to-amber-300",
+                ].join(" ")}
+                style={{ width: job.progress > 0 ? `${job.progress}%` : "8%" }}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {/* ── Error ── */}
+        {job.status === "failed" && job.error ? (
+          <div className="border-t border-red-100 bg-red-50 px-4 py-3 text-xs text-red-700">
+            {job.error}
+          </div>
+        ) : null}
+
+        {/* ── Completed: video + actions ── */}
+        {job.status === "completed" && job.url ? (
+          <div className="border-t border-neutral-100">
+            <video
+              controls
+              src={job.url}
+              className="w-full bg-black"
+              style={{ maxHeight: 320 }}
+            />
+            <div className="flex flex-wrap gap-2 p-3">
+              <a
+                href={job.url}
+                download
+                className="inline-flex items-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-800"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Скачать
+              </a>
+              <button
+                type="button"
+                onClick={() => onRepeat(job)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Повторить
+              </button>
+              <button
+                type="button"
+                onClick={() => onUsePrompt(job)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50"
+              >
+                Использовать снова
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function VideoPage() {
@@ -400,90 +520,16 @@ export default function VideoPage() {
         </CardContent>
       </Card>
 
+      {/* ── JOBS LIST ── */}
       <div className="space-y-3">
         {sortedJobs.length === 0 ? (
-          <div className="rounded-xl border-2 border-dashed border-neutral-200 p-8 text-center text-sm text-neutral-500">
-            Создайте своё первое видео 🚀
+          <div className="rounded-xl border-2 border-dashed border-neutral-200 p-12 text-center">
+            <Film className="mx-auto mb-3 h-10 w-10 text-neutral-300" />
+            <p className="text-sm font-medium text-neutral-500">Создайте своё первое видео 🚀</p>
+            <p className="mt-1 text-xs text-neutral-400">Заполните форму выше и нажмите «Создать видео»</p>
           </div>
         ) : (
-          sortedJobs.map((job) => (
-            <Card key={job.id} className="transition-all duration-300 hover:shadow-md">
-              <CardContent className="space-y-3">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="flex items-start gap-3">
-                    {job.refPreview ? (
-                      <img
-                        src={job.refPreview}
-                        alt="ref"
-                        className="h-12 w-12 flex-shrink-0 rounded-lg border border-neutral-200 object-cover"
-                      />
-                    ) : null}
-                    <p className="line-clamp-2 text-sm font-medium text-neutral-800">{job.prompt}</p>
-                  </div>
-                  <span className={`rounded-full border px-2 py-1 text-xs font-medium ${statusBadgeClass(job.status)}`}>
-                    {statusLabel(job.status)}
-                  </span>
-                </div>
-
-                <div className="grid gap-2 text-xs text-neutral-600 sm:grid-cols-3">
-                  <span>ETA: {job.eta ?? "—"} сек</span>
-                  <span>Позиция: {job.position ?? "—"}</span>
-                  <span>Прогресс: {job.progress}%</span>
-                </div>
-
-                <div>
-                  <div className="mb-1 flex items-center justify-between text-xs text-neutral-500">
-                    <span>Генерация... {job.progress}%</span>
-                    <span>{job.progress}%</span>
-                  </div>
-                  <div className="h-2.5 rounded-full bg-neutral-200">
-                    <div
-                      className="h-2.5 rounded-full bg-gradient-to-r from-neutral-800 to-neutral-500 transition-all duration-700 ease-out"
-                      style={{ width: `${job.progress}%` }}
-                    />
-                  </div>
-                </div>
-
-                {job.error ? <p className="text-sm text-red-600">{job.error}</p> : null}
-
-                {job.status === "completed" && job.url ? (
-                  <div className="space-y-2">
-                    <video
-                      controls
-                      src={job.url}
-                      className="w-full rounded-lg border border-neutral-200 bg-black"
-                    />
-                    <div className="grid gap-2 sm:grid-cols-3">
-                      <a
-                        href={job.url}
-                        download
-                        className="inline-flex items-center justify-center rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800"
-                      >
-                        Скачать
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPrompt(job.prompt);
-                          setMode(job.mode);
-                        }}
-                        className="rounded-md border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
-                      >
-                        Повторить
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPrompt(job.prompt)}
-                        className="rounded-md border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
-                      >
-                        Использовать снова
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
-          ))
+          sortedJobs.map((job) => <JobCard key={job.id} job={job} onRepeat={(j) => { setPrompt(j.prompt); setMode(j.mode); }} onUsePrompt={(j) => setPrompt(j.prompt)} />)
         )}
       </div>
     </div>
