@@ -142,6 +142,72 @@ function buildControlNetWorkflow(prompt, negativePrompt, width, height, referenc
   };
 }
 
+/**
+ * Edit workflow — image-to-image editing that PRESERVES the source image.
+ * Uses LoadImage → VAEEncode (not EmptyLatent) so the result modifies the input
+ * rather than generating a completely new image.
+ *
+ * denoise=0.4 : keeps ~60% of the original, applies requested changes only
+ * cfg=6       : balanced guidance
+ * steps=25    : enough detail without over-processing
+ *
+ * Optional mask: if maskFilename is provided, only masked regions are edited
+ * (SetLatentNoiseMask); unmasked areas are fully preserved.
+ */
+function buildEditWorkflow(prompt, negativePrompt, width, height, strength, referenceFilename, maskFilename = null) {
+  const denoise = Math.min(Math.max(Number(strength) || 0.4, 0.1), 0.95);
+
+  const base = {
+    "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" } },
+    "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: prompt } },
+    "3": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE } },
+    "4": { class_type: "LoadImage", inputs: { image: referenceFilename, upload: "image" } },
+    "5": {
+      class_type: "ImageScale",
+      inputs: { image: ["4", 0], width, height, upscale_method: "lanczos", crop: "disabled" },
+    },
+    "6": { class_type: "VAEEncode", inputs: { pixels: ["5", 0], vae: ["1", 2] } },
+  };
+
+  // With mask: edit only masked region, preserve the rest
+  if (maskFilename) {
+    return {
+      ...base,
+      "7":  { class_type: "LoadImageMask", inputs: { image: maskFilename, channel: "red", upload: "image" } },
+      "8":  { class_type: "SetLatentNoiseMask", inputs: { samples: ["6", 0], mask: ["7", 0] } },
+      "9":  {
+        class_type: "KSampler",
+        inputs: {
+          cfg: 6, denoise, steps: 25,
+          latent_image: ["8", 0], model: ["1", 0],
+          negative: ["3", 0], positive: ["2", 0],
+          sampler_name: "euler_ancestral", scheduler: "karras",
+          seed: Math.floor(Math.random() * 1e15),
+        },
+      },
+      "10": { class_type: "VAEDecode", inputs: { samples: ["9", 0], vae: ["1", 2] } },
+      "11": { class_type: "SaveImage", inputs: { filename_prefix: "edit_masked_", images: ["10", 0] } },
+    };
+  }
+
+  // Without mask: edit whole image with low denoise to preserve structure
+  return {
+    ...base,
+    "7": {
+      class_type: "KSampler",
+      inputs: {
+        cfg: 6, denoise, steps: 25,
+        latent_image: ["6", 0], model: ["1", 0],
+        negative: ["3", 0], positive: ["2", 0],
+        sampler_name: "euler_ancestral", scheduler: "karras",
+        seed: Math.floor(Math.random() * 1e15),
+      },
+    },
+    "8": { class_type: "VAEDecode", inputs: { samples: ["7", 0], vae: ["1", 2] } },
+    "9": { class_type: "SaveImage", inputs: { filename_prefix: "edit_", images: ["8", 0] } },
+  };
+}
+
 function buildInpaintWorkflow(prompt, negativePrompt, width, height, referenceFilename, maskFilename) {
   return {
     "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" } },
@@ -388,6 +454,30 @@ const worker = new Worker(
       const promptId = await submitWorkflow(workflow);
       filenames = await waitForComfyOutput(promptId);
       job.log(`[imageWorker] controlnet done, files=${filenames.join(",")}`);
+
+    } else if (mode === "edit") {
+      // Image-to-image edit: preserves source image, applies only requested changes.
+      // Uses VAEEncode (not EmptyLatent) + low denoise=0.4 to keep the original structure.
+      if (!referenceImageUrl) throw new Error("referenceImageUrl required for edit mode");
+      process.stdout.write(`[imageWorker] edit mode, strength=${strength}, hasMask=${!!maskUrl}\n`);
+
+      const refBuf  = await downloadBuffer(referenceImageUrl);
+      const refFn   = await uploadToComfyUI(refBuf, `edit_${finalJobId}.png`);
+
+      let maskFn = null;
+      if (maskUrl) {
+        const maskBuf = await downloadBuffer(maskUrl);
+        maskFn = await uploadToComfyUI(maskBuf, `mask_${finalJobId}.png`);
+        process.stdout.write(`[imageWorker] edit mask uploaded: ${maskFn}\n`);
+      }
+
+      const workflow = buildEditWorkflow(prompt, neg, width, height, strength, refFn, maskFn);
+      process.stdout.write(
+        `[imageWorker] submitting edit workflow (denoise=${Math.min(Math.max(Number(strength) || 0.4, 0.1), 0.95)}, mask=${!!maskFn})...\n`
+      );
+      const promptId = await submitWorkflow(workflow);
+      filenames = await waitForComfyOutput(promptId);
+      job.log(`[imageWorker] edit done, files=${filenames.join(",")}`);
 
     } else {
       process.stdout.write(`[imageWorker] text mode, sending workflow\n`);

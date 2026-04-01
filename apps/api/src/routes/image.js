@@ -22,7 +22,7 @@ const REFS_DIR = process.env.IMAGE_REFS_DIR || "/var/www/site-al.ru/uploads/refs
 const REFS_PUBLIC = process.env.IMAGE_REFS_PUBLIC || "https://site-al.ru/uploads/refs";
 const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
 
-const VALID_MODES = ["text", "variation", "reference", "inpaint", "controlnet"];
+const VALID_MODES = ["text", "variation", "reference", "inpaint", "controlnet", "edit"];
 
 function userJobKey(userId) { return `image:active:${userId}`; }
 
@@ -118,6 +118,9 @@ module.exports = async function imageRoutes(fastify) {
     }
     if (resolvedMode === "controlnet" && !referenceImageUrl) {
       return reply.code(400).send({ error: "referenceImageUrl required for controlnet mode" });
+    }
+    if (resolvedMode === "edit" && !referenceImageUrl) {
+      return reply.code(400).send({ error: "referenceImageUrl required for edit mode" });
     }
     const resolvedControlType = ["canny", "pose"].includes(controlType) ? controlType : "canny";
 
