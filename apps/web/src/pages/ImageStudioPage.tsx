@@ -6,7 +6,7 @@ import { Link } from "react-router-dom";
 import {
   Sparkles, Loader2, Download, Trash2, RotateCcw, Eye,
   ChevronDown, ChevronUp, Upload, X, Scissors, Settings2,
-  ImageIcon, ZoomIn, Clock,
+  ImageIcon, ZoomIn, Clock, Paintbrush, Eraser,
 } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
 
@@ -16,7 +16,7 @@ const API = import.meta.env.VITE_API_URL ?? "/api";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type QuickOption = "variations" | "reference" | "inpaint" | "controlnet" | "removeBg";
+type QuickOption = "variations" | "reference" | "edit" | "inpaint" | "controlnet" | "removeBg";
 
 interface BrainMeta {
   type?: string;
@@ -111,11 +111,12 @@ const STYLE_CARDS = [
 ];
 
 const QUICK_OPTIONS: { id: QuickOption; label: string; emoji: string; desc: string }[] = [
-  { id: "variations",  label: "Вариации",   emoji: "🎯", desc: "Несколько версий" },
-  { id: "reference",   label: "По образцу", emoji: "🖼",  desc: "Изображение-основа" },
-  { id: "inpaint",     label: "Редактирование", emoji: "✏️", desc: "Изменить область" },
-  { id: "controlnet",  label: "ControlNet", emoji: "🧬", desc: "Контроль формы/позы" },
-  { id: "removeBg",    label: "Убрать фон", emoji: "✂️", desc: "Прозрачный PNG" },
+  { id: "variations",  label: "Вариации",    emoji: "🎯", desc: "Несколько версий" },
+  { id: "reference",   label: "По образцу",  emoji: "🖼",  desc: "Изображение-основа" },
+  { id: "edit",        label: "Редактировать", emoji: "🖌️", desc: "Кисть · только маска меняется" },
+  { id: "inpaint",     label: "Inpaint",     emoji: "✏️", desc: "Полная замена области" },
+  { id: "controlnet",  label: "ControlNet",  emoji: "🧬", desc: "Контроль формы/позы" },
+  { id: "removeBg",    label: "Убрать фон",  emoji: "✂️", desc: "Прозрачный PNG" },
 ];
 
 const PRESET_SIZES = [
@@ -197,7 +198,7 @@ const STAGE_STEPS: { stage: GenStage; label: string }[] = [
 ];
 
 const MODE_ICON: Record<string, string> = {
-  text: "🧠", variation: "🎯", reference: "🖼", inpaint: "✏️", controlnet: "🧬",
+  text: "🧠", variation: "🎯", reference: "🖼", edit: "🖌️", inpaint: "✏️", controlnet: "🧬",
 };
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -364,6 +365,228 @@ function HistoryCard({
   );
 }
 
+// ── MaskPainterModal ──────────────────────────────────────────────────────────
+
+/**
+ * Full-screen canvas brush tool.
+ * Draws an orange mask overlay on top of the reference image.
+ * On apply: converts drawn areas to white-on-black B&W PNG (ComfyUI mask format).
+ */
+function MaskPainterModal({
+  imageUrl,
+  targetW,
+  targetH,
+  onApply,
+  onClose,
+}: {
+  imageUrl: string;
+  targetW: number;
+  targetH: number;
+  onApply: (blob: Blob) => void;
+  onClose: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [brushSize, setBrushSize] = useState(40);
+  const [tool, setTool] = useState<"brush" | "eraser">("brush");
+  const painting = useRef(false);
+  const lastPos = useRef<{ x: number; y: number } | null>(null);
+
+  // Black background on mount
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }, []);
+
+  function getPos(e: React.PointerEvent<HTMLCanvasElement>) {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  }
+
+  function doPaint(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!painting.current) return;
+    const canvas = canvasRef.current!;
+    const ctx = canvas.getContext("2d")!;
+    const pos = getPos(e);
+
+    ctx.lineWidth = brushSize;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    if (tool === "eraser") {
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.strokeStyle = "rgba(0,0,0,1)";
+      ctx.fillStyle = "rgba(0,0,0,1)";
+    } else {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.strokeStyle = "rgba(255, 100, 20, 0.9)";
+      ctx.fillStyle = "rgba(255, 100, 20, 0.9)";
+    }
+
+    if (lastPos.current) {
+      ctx.beginPath();
+      ctx.moveTo(lastPos.current.x, lastPos.current.y);
+      ctx.lineTo(pos.x, pos.y);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, brushSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    lastPos.current = pos;
+  }
+
+  function handleClear() {
+    const canvas = canvasRef.current!;
+    const ctx = canvas.getContext("2d")!;
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  function handleApply() {
+    const canvas = canvasRef.current!;
+
+    // Convert colored strokes → white-on-black B&W (ComfyUI mask format)
+    const off = document.createElement("canvas");
+    off.width = canvas.width;
+    off.height = canvas.height;
+    const offCtx = off.getContext("2d")!;
+    offCtx.fillStyle = "black";
+    offCtx.fillRect(0, 0, off.width, off.height);
+
+    const src = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height);
+    const dst = offCtx.createImageData(off.width, off.height);
+    for (let i = 0; i < src.data.length; i += 4) {
+      // Any non-black pixel with meaningful alpha = masked area
+      const isMarked = src.data[i + 3] > 30 && (src.data[i] > 30 || src.data[i + 1] > 5 || src.data[i + 2] > 5);
+      const v = isMarked ? 255 : 0;
+      dst.data[i]     = v;
+      dst.data[i + 1] = v;
+      dst.data[i + 2] = v;
+      dst.data[i + 3] = 255;
+    }
+    offCtx.putImageData(dst, 0, 0);
+
+    off.toBlob((blob) => { if (blob) onApply(blob); }, "image/png");
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-black/95 p-3 gap-3">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-neutral-900 px-3 py-2">
+        <span className="text-xs font-semibold text-neutral-200 mr-2">
+          🖌️ Закрасьте область для изменения
+        </span>
+
+        <button
+          type="button"
+          onClick={() => setTool("brush")}
+          className={cn(
+            "flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition",
+            tool === "brush"
+              ? "border-orange-500/60 bg-orange-500/20 text-orange-300"
+              : "border-transparent bg-white/5 text-neutral-400 hover:bg-white/10"
+          )}
+        >
+          <Paintbrush className="h-3.5 w-3.5" /> Кисть
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setTool("eraser")}
+          className={cn(
+            "flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition",
+            tool === "eraser"
+              ? "border-blue-500/60 bg-blue-500/20 text-blue-300"
+              : "border-transparent bg-white/5 text-neutral-400 hover:bg-white/10"
+          )}
+        >
+          <Eraser className="h-3.5 w-3.5" /> Ластик
+        </button>
+
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-neutral-500">Размер</span>
+          <input
+            type="range" min={8} max={150} step={4}
+            value={brushSize}
+            onChange={(e) => setBrushSize(Number(e.target.value))}
+            className="w-24 accent-orange-500"
+          />
+          <span className="w-7 text-right text-[11px] text-neutral-400">{brushSize}px</span>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleClear}
+          className="flex items-center gap-1.5 rounded-lg border border-transparent bg-white/5 px-2.5 py-1 text-xs font-medium text-neutral-400 transition hover:bg-red-500/20 hover:text-red-400"
+        >
+          <RotateCcw className="h-3.5 w-3.5" /> Очистить
+        </button>
+
+        <div className="ml-auto flex gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-neutral-400 transition hover:bg-white/5"
+          >
+            <X className="h-3.5 w-3.5" /> Отмена
+          </button>
+          <button
+            type="button"
+            onClick={handleApply}
+            className="flex items-center gap-1.5 rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-orange-400"
+          >
+            ✓ Применить маску
+          </button>
+        </div>
+      </div>
+
+      {/* Canvas area */}
+      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+        <div
+          className="relative overflow-hidden rounded-xl"
+          style={{ aspectRatio: `${targetW}/${targetH}`, maxHeight: "100%", maxWidth: "100%" }}
+        >
+          <img
+            src={imageUrl}
+            alt="reference"
+            className="h-full w-full object-cover"
+            draggable={false}
+          />
+          <canvas
+            ref={canvasRef}
+            width={targetW}
+            height={targetH}
+            className="absolute inset-0 h-full w-full cursor-crosshair"
+            style={{ opacity: 0.55, mixBlendMode: "hard-light" }}
+            onPointerDown={(e) => {
+              painting.current = true;
+              lastPos.current = null;
+              doPaint(e);
+              e.currentTarget.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={doPaint}
+            onPointerUp={() => { painting.current = false; lastPos.current = null; }}
+            onPointerLeave={() => { painting.current = false; lastPos.current = null; }}
+          />
+        </div>
+      </div>
+
+      <p className="text-center text-[11px] text-neutral-600">
+        Оранжевая область → изменится · Остальное сохранится · Ластик убирает маску
+      </p>
+    </div>
+  );
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 export function ImageStudioPage() {
@@ -395,6 +618,9 @@ export function ImageStudioPage() {
   const [maskImage, setMaskImage]   = useState<RefImage | null>(null);
   const [refUploading, setRefUploading] = useState(false);
   const [maskUploading, setMaskUploading] = useState(false);
+
+  // Mask painter
+  const [showMaskPainter, setShowMaskPainter] = useState(false);
 
   // Generation
   const [genStage, setGenStage]     = useState<GenStage>("idle");
@@ -503,9 +729,9 @@ export function ImageStudioPage() {
     setActiveOptions((prev) => {
       const next = new Set(prev);
       if (next.has(opt)) next.delete(opt); else next.add(opt);
-      // Mutex: only one image-source option at a time for reference/inpaint/controlnet
+      // Mutex: only one image-source option at a time
       if (opt !== "removeBg" && opt !== "variations") {
-        for (const o of ["reference", "inpaint", "controlnet"] as QuickOption[]) {
+        for (const o of ["reference", "edit", "inpaint", "controlnet"] as QuickOption[]) {
           if (o !== opt) next.delete(o);
         }
       }
@@ -516,9 +742,24 @@ export function ImageStudioPage() {
   function resolveMode(): string {
     if (activeOptions.has("variations"))  return "variation";
     if (activeOptions.has("controlnet") && refImage) return "controlnet";
+    if (activeOptions.has("edit") && refImage) return "edit";
     if (activeOptions.has("inpaint") && refImage && maskImage) return "inpaint";
     if (activeOptions.has("reference") && refImage) return "reference";
     return "text";
+  }
+
+  async function handleMaskApply(blob: Blob) {
+    setShowMaskPainter(false);
+    setMaskUploading(true);
+    try {
+      const file = new File([blob], "mask.png", { type: "image/png" });
+      const refUrl = await uploadRefFile(file);
+      setMaskImage({ previewUrl: URL.createObjectURL(blob), refUrl });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка загрузки маски");
+    } finally {
+      setMaskUploading(false);
+    }
   }
 
   // ── API ──────────────────────────────────────────────────────────────────────
@@ -679,11 +920,11 @@ export function ImageStudioPage() {
       if (finalNeg)  body.negativePrompt = finalNeg;
       if (style)     body.style = style;
       if (mode === "controlnet") body.controlType = controlType;
-      if (mode === "reference" || mode === "inpaint") {
+      if (mode === "reference" || mode === "inpaint" || mode === "edit") {
         body.referenceImageUrl = refImage?.refUrl;
         body.strength = strength;
       }
-      if (mode === "inpaint") body.maskUrl = maskImage?.refUrl;
+      if (mode === "inpaint" || mode === "edit") body.maskUrl = maskImage?.refUrl;
 
       const res  = await fetch(`${API}/image/generate`, { method: "POST", headers, body: JSON.stringify(body) });
       const data = await res.json() as {
@@ -919,6 +1160,86 @@ export function ImageStudioPage() {
                       {n}
                     </button>
                   ))}
+                </div>
+              )}
+
+              {/* ── Edit mode: ref image + canvas mask painter ──────────────── */}
+              {activeOptions.has("edit") && (
+                <div className="rounded-xl border border-orange-500/20 bg-orange-500/5 p-3">
+                  <p className="mb-2 text-[11px] font-semibold text-orange-400">🖌️ Редактирование кистью</p>
+
+                  {/* 1. Ref image upload */}
+                  <p className="mb-1.5 text-[10px] text-neutral-500">1. Загрузите исходное изображение</p>
+                  <button
+                    type="button"
+                    onClick={() => refInputRef.current?.click()}
+                    className={cn(
+                      "flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed py-2.5 text-xs transition",
+                      refImage
+                        ? "border-orange-500/40 bg-orange-500/10 text-orange-400"
+                        : "border-white/10 text-neutral-500 hover:border-orange-500/30 hover:text-neutral-300"
+                    )}
+                  >
+                    {refUploading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : refImage ? (
+                      <>
+                        <img src={refImage.previewUrl} alt="" className="h-7 w-7 rounded object-cover" />
+                        <span className="text-orange-300">Изображение загружено ✓</span>
+                      </>
+                    ) : (
+                      <><Upload className="h-4 w-4" /> Загрузить изображение</>
+                    )}
+                  </button>
+
+                  {/* 2. Draw mask */}
+                  {refImage && (
+                    <>
+                      <p className="mb-1.5 mt-2.5 text-[10px] text-neutral-500">2. Нарисуйте маску (область изменения)</p>
+                      <button
+                        type="button"
+                        onClick={() => setShowMaskPainter(true)}
+                        className={cn(
+                          "flex w-full items-center justify-center gap-2 rounded-lg border py-2.5 text-xs font-medium transition",
+                          maskImage
+                            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20"
+                            : "border-orange-500/40 bg-orange-500/15 text-orange-300 hover:bg-orange-500/25"
+                        )}
+                      >
+                        {maskUploading ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : maskImage ? (
+                          <>
+                            <img src={maskImage.previewUrl} alt="" className="h-6 w-6 rounded object-cover opacity-80" />
+                            <span>Маска нарисована ✓ · Перерисовать</span>
+                          </>
+                        ) : (
+                          <><Paintbrush className="h-4 w-4" /> Открыть редактор кисти</>
+                        )}
+                      </button>
+
+                      {/* Strength slider */}
+                      <div className="mt-2">
+                        <div className="flex items-center justify-between text-[10px] text-neutral-500 mb-1">
+                          <span>Сила изменения</span>
+                          <span>{Math.round(strength * 100)}%</span>
+                        </div>
+                        <input type="range" min="0.15" max="0.75" step="0.05" value={strength}
+                          onChange={(e) => setStrength(Number(e.target.value))}
+                          className="w-full accent-orange-500"
+                        />
+                        <div className="flex justify-between text-[9px] text-neutral-600 mt-0.5">
+                          <span>Мягко</span><span>Сильно</span>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {!refImage && (
+                    <p className="mt-2 text-center text-[10px] text-neutral-600">
+                      Сначала загрузите изображение
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -1383,6 +1704,17 @@ export function ImageStudioPage() {
           </div>
         </aside>
       </div>
+
+      {/* ══ MASK PAINTER ══════════════════════════════════════════════════════ */}
+      {showMaskPainter && refImage && (
+        <MaskPainterModal
+          imageUrl={refImage.previewUrl}
+          targetW={size.w}
+          targetH={size.h}
+          onApply={handleMaskApply}
+          onClose={() => setShowMaskPainter(false)}
+        />
+      )}
 
       {/* ══ LIGHTBOX ══════════════════════════════════════════════════════════ */}
       {lightbox && (
