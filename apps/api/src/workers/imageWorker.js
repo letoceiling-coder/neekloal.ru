@@ -3,7 +3,6 @@
 require("dotenv").config();
 
 const { Worker } = require("bullmq");
-const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 const { v4: uuidv4 } = require("uuid");
@@ -188,19 +187,28 @@ async function uploadToComfyUI(imageBuffer, filename) {
 }
 
 async function downloadBuffer(url) {
-  const res = await axios.get(url, { responseType: "arraybuffer", timeout: 20_000 });
-  return Buffer.from(res.data);
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`Download failed (${res.status}): ${url}`);
+  return Buffer.from(await res.arrayBuffer());
 }
 
 async function submitWorkflow(workflow) {
-  let queueData;
+  let res;
   try {
-    const res = await axios.post(`${COMFYUI_URL}/prompt`, { prompt: workflow }, { timeout: 15_000 });
-    queueData = res.data;
+    res = await fetch(`${COMFYUI_URL}/prompt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: workflow }),
+      signal: AbortSignal.timeout(15_000),
+    });
   } catch (e) {
-    const detail = e.response?.data ? JSON.stringify(e.response.data).slice(0, 300) : e.message;
-    throw new Error(`ComfyUI /prompt rejected: ${detail}`);
+    throw new Error(`ComfyUI /prompt unreachable: ${e.message}`);
   }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`ComfyUI /prompt rejected (${res.status}): ${text.slice(0, 300)}`);
+  }
+  const queueData = await res.json();
   const promptId = queueData.prompt_id;
   if (!promptId) throw new Error(`ComfyUI did not return prompt_id. Response: ${JSON.stringify(queueData).slice(0, 200)}`);
   process.stdout.write(`[imageWorker] ComfyUI accepted job, promptId=${promptId}\n`);
@@ -214,8 +222,9 @@ async function waitForComfyOutput(promptId, timeoutMs = 180_000) {
 
     let history;
     try {
-      const res = await axios.get(`${COMFYUI_URL}/history/${promptId}`, { timeout: 8000 });
-      history = res.data;
+      const res = await fetch(`${COMFYUI_URL}/history/${promptId}`, { signal: AbortSignal.timeout(8_000) });
+      if (!res.ok) { continue; }
+      history = await res.json();
     } catch (e) {
       process.stderr.write(`[imageWorker] poll error: ${e.message}\n`);
       continue;
@@ -251,14 +260,15 @@ async function waitForComfyOutput(promptId, timeoutMs = 180_000) {
 
 async function saveImageFile(filename, jobId, index = 0) {
   const url = `${COMFYUI_URL}/view?filename=${encodeURIComponent(filename)}&type=output`;
-  const res = await axios.get(url, { responseType: "arraybuffer", timeout: 30_000 });
+  const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`Failed to download image ${filename} (${res.status})`);
 
   const ext = path.extname(filename) || ".png";
   const savedName = index === 0 ? `${jobId}${ext}` : `${jobId}_${index}${ext}`;
   const localPath = path.join(OUTPUT_DIR, savedName);
 
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-  fs.writeFileSync(localPath, Buffer.from(res.data));
+  fs.writeFileSync(localPath, Buffer.from(await res.arrayBuffer()));
 
   return { localPath, publicUrl: `${PUBLIC_BASE}/${savedName}` };
 }
@@ -325,9 +335,9 @@ const worker = new Worker(
     job.log(`[imageWorker] starting job=${job.id} mode=${mode} prompt="${prompt.slice(0, 60)}"`);
     process.stdout.write(`[imageWorker] job ${job.id} mode=${mode}\n`);
 
-    await axios.get(`${COMFYUI_URL}/system_stats`, { timeout: 8000 }).catch(() => {
-      throw new Error(`ComfyUI unreachable at ${COMFYUI_URL}`);
-    });
+    await fetch(`${COMFYUI_URL}/system_stats`, { signal: AbortSignal.timeout(8_000) }).then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    }).catch((e) => { throw new Error(`ComfyUI unreachable at ${COMFYUI_URL}: ${e.message}`); });
 
     const finalJobId = jobId || job.id;
     const neg = negativePrompt || DEFAULT_NEGATIVE;
