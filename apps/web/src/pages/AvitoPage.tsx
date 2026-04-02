@@ -1,10 +1,11 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Store, CheckCircle2, XCircle, Copy, RefreshCw, Loader2,
   MessageSquare, ClipboardList, ChevronDown, Zap, Users,
   Clock, ShieldCheck, Plus, Trash2, Pencil, Eye, EyeOff,
-  ToggleLeft, ToggleRight, Link2,
+  ToggleLeft, ToggleRight, Link2, Send, KeyRound, RefreshCcw,
+  Terminal, AlertTriangle,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "../components/ui";
 import { apiClient } from "../lib/apiClient";
@@ -17,9 +18,17 @@ import {
   usePatchAvitoAgent,
   useAvitoConversations,
   useAvitoAudit,
+  useAvitoSync,
+  useAvitoTokenCheck,
+  useAvitoDialogs,
+  useAvitoTestSend,
   type AvitoAccount,
   type AvitoConversation,
   type AvitoAuditLog,
+  type AvitoSyncResult,
+  type AvitoTokenCheckResult,
+  type AvitoDialogsResult,
+  type AvitoTestSendResult,
 } from "../api/avito";
 import type { Agent } from "../api/types";
 
@@ -388,6 +397,44 @@ function AgentRow({
   );
 }
 
+// ── DiagRow / ErrorRow ────────────────────────────────────────────────────────
+
+function DiagRow({ icon, label, data }: { icon: React.ReactNode; label: string; data: unknown }) {
+  const [expanded, setExpanded] = useState(false);
+  const text = JSON.stringify(data, null, 2);
+
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-white p-3 space-y-1">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-2 text-left"
+      >
+        {icon}
+        <span className="flex-1 text-xs font-medium text-neutral-700">{label}</span>
+        <ChevronDown className={["h-3.5 w-3.5 text-neutral-400 transition-transform", expanded ? "rotate-180" : ""].join(" ")} />
+      </button>
+      {expanded && (
+        <pre className="mt-2 max-h-60 overflow-auto rounded-md bg-neutral-900 p-3 text-[10px] leading-relaxed text-emerald-400">
+          {text}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function ErrorRow({ label, message }: { label: string; message: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500" />
+      <div>
+        <p className="text-xs font-medium text-red-700">{label}: ошибка</p>
+        <p className="text-[11px] text-red-600 mt-0.5 break-all">{message}</p>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export function AvitoPage() {
@@ -408,11 +455,18 @@ export function AvitoPage() {
   const patchAccount  = usePatchAvitoAccount();
   const deleteAccount = useDeleteAvitoAccount();
 
+  // Diagnostic mutations
+  const syncMutation       = useAvitoSync();
+  const tokenCheckMutation = useAvitoTokenCheck();
+  const dialogsMutation    = useAvitoDialogs();
+  const testSendMutation   = useAvitoTestSend();
+
   // UI state
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingId,      setEditingId]      = useState<string | null>(null);
   const [copiedId,       setCopiedId]       = useState<string | null>(null);
   const [expandedAudit,  setExpandedAudit]  = useState<string | null>(null);
+  const [testChatId,     setTestChatId]     = useState("");
 
   // Derived status
   const activeAccounts = accounts?.filter((a) => a.isActive && a.hasToken) ?? [];
@@ -524,6 +578,130 @@ export function AvitoPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ── Diagnostic / Sync ────────────────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Terminal className="h-4 w-4 text-neutral-500" />
+            <h2 className="text-sm font-semibold text-neutral-800">Диагностика и синхронизация</h2>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+
+          {/* Action buttons */}
+          <div className="flex flex-wrap gap-2">
+
+            {/* Sync chats */}
+            <button
+              onClick={() => syncMutation.mutate()}
+              disabled={syncMutation.isPending}
+              className="flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+            >
+              {syncMutation.isPending
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <RefreshCcw className="h-3.5 w-3.5" />}
+              Синхронизировать чаты
+            </button>
+
+            {/* Get dialogs */}
+            <button
+              onClick={() => dialogsMutation.mutate()}
+              disabled={dialogsMutation.isPending}
+              className="flex items-center gap-1.5 rounded-md border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-50"
+            >
+              {dialogsMutation.isPending
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <MessageSquare className="h-3.5 w-3.5" />}
+              Получить диалоги
+            </button>
+
+            {/* Token check */}
+            <button
+              onClick={() => tokenCheckMutation.mutate()}
+              disabled={tokenCheckMutation.isPending}
+              className="flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+            >
+              {tokenCheckMutation.isPending
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <KeyRound className="h-3.5 w-3.5" />}
+              Проверить токен
+            </button>
+          </div>
+
+          {/* Token check result */}
+          {tokenCheckMutation.data && (
+            <DiagRow
+              icon={tokenCheckMutation.data.ok
+                ? <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                : <XCircle className="h-4 w-4 text-red-400" />}
+              label="Токен"
+              data={tokenCheckMutation.data as AvitoTokenCheckResult}
+            />
+          )}
+          {tokenCheckMutation.error && (
+            <ErrorRow label="Токен" message={(tokenCheckMutation.error as Error).message} />
+          )}
+
+          {/* Sync result */}
+          {syncMutation.data && (
+            <DiagRow
+              icon={<RefreshCcw className="h-4 w-4 text-blue-500" />}
+              label="Синхронизация"
+              data={syncMutation.data as AvitoSyncResult}
+            />
+          )}
+          {syncMutation.error && (
+            <ErrorRow label="Синхронизация" message={(syncMutation.error as Error).message} />
+          )}
+
+          {/* Dialogs result */}
+          {dialogsMutation.data && (
+            <DiagRow
+              icon={<MessageSquare className="h-4 w-4 text-violet-500" />}
+              label="Диалоги"
+              data={dialogsMutation.data as AvitoDialogsResult}
+            />
+          )}
+          {dialogsMutation.error && (
+            <ErrorRow label="Диалоги" message={(dialogsMutation.error as Error).message} />
+          )}
+
+          {/* Test send */}
+          <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 space-y-2">
+            <p className="text-xs font-medium text-neutral-600">Тест отправки сообщения</p>
+            <div className="flex gap-2">
+              <input
+                value={testChatId}
+                onChange={(e) => setTestChatId(e.target.value)}
+                placeholder="chatId (u2i_...)"
+                className="flex-1 rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-xs placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none"
+              />
+              <button
+                onClick={() => testSendMutation.mutate({ chatId: testChatId })}
+                disabled={testSendMutation.isPending || !testChatId.trim()}
+                className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {testSendMutation.isPending
+                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  : <Send className="h-3.5 w-3.5" />}
+                Отправить
+              </button>
+            </div>
+            {testSendMutation.data && (
+              <DiagRow
+                icon={<CheckCircle2 className="h-4 w-4 text-emerald-500" />}
+                label="Отправка"
+                data={testSendMutation.data as AvitoTestSendResult}
+              />
+            )}
+            {testSendMutation.error && (
+              <ErrorRow label="Отправка" message={(testSendMutation.error as Error).message} />
+            )}
+          </div>
+
+        </CardContent>
+      </Card>
 
       {/* ── Avito Accounts ────────────────────────────────────────────────── */}
       <Card>

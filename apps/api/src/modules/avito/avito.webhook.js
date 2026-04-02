@@ -5,6 +5,7 @@
  *
  * Routes registered:
  *   POST   /avito/webhook/:agentId      Public (Avito → us)
+ *   POST   /incoming/:agentId           Alias (stealth)
  *   GET    /avito/accounts              List org's Avito accounts
  *   POST   /avito/accounts              Create Avito account
  *   PATCH  /avito/accounts/:id          Update Avito account
@@ -14,16 +15,34 @@
  *   GET    /avito/audit                 Audit log
  *   GET    /avito/chats                 Proxy: list chats (uses org's first active account)
  *   GET    /avito/chats/:chatId/messages
+ *   POST   /avito/sync                  Sync chats from Avito API
+ *   GET    /avito/dialogs               DB convs + live Avito chats
+ *   POST   /avito/test-send             Send a test message
+ *   GET    /avito/token-check           Validate token against Avito API
  *
  * Credentials priority: linked AvitoAccount (DB) → AVITO_TOKEN env (legacy).
  */
 
 const crypto         = require("crypto");
+const fs             = require("fs");
+const path           = require("path");
 const prisma         = require("../../lib/prisma");
 const authMiddleware = require("../../middleware/auth");
 const { createClient, getChats, getMessages } = require("../../services/avitoClient");
 const { getAvitoQueue, startAvitoWorker }      = require("./avito.queue");
 const { processAvitoJob }                       = require("./avito.processor");
+
+// ── Webhook file log ──────────────────────────────────────────────────────────
+
+const AVITO_LOG_DIR  = process.env.AVITO_LOG_DIR ?? "/var/www/site-al.ru/logs";
+const AVITO_LOG_FILE = path.join(AVITO_LOG_DIR, "avito.log");
+
+function appendAvitoLog(data) {
+  try {
+    if (!fs.existsSync(AVITO_LOG_DIR)) fs.mkdirSync(AVITO_LOG_DIR, { recursive: true });
+    fs.appendFileSync(AVITO_LOG_FILE, `[${new Date().toISOString()}] ${JSON.stringify(data)}\n`);
+  } catch { /* non-fatal */ }
+}
 
 // ── Signature validation ──────────────────────────────────────────────────────
 
@@ -95,6 +114,13 @@ module.exports = async function avitoModule(fastify) {
   async function handleWebhook(request, reply) {
     const agentId = String(request.params.agentId ?? "").trim();
     const event   = request.body;
+
+    // ── Full debug logging (always) ─────────────────────────────────────────
+    process.stdout.write(`=== AVITO WEBHOOK ===\n`);
+    process.stdout.write(`AGENT:   ${agentId}\n`);
+    process.stdout.write(`HEADERS: ${JSON.stringify(request.headers)}\n`);
+    process.stdout.write(`BODY:    ${JSON.stringify(event)}\n`);
+    appendAvitoLog({ type: "incoming", agentId, ip: request.ip, headers: request.headers, body: event });
 
     // Load agent's linked account for per-account signature check
     let dbSecret = null;
@@ -368,6 +394,145 @@ module.exports = async function avitoModule(fastify) {
       return { messages: data.messages ?? data };
     } catch (err) {
       return reply.code(502).send({ error: err.message });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // DIAGNOSTIC / SYNC ROUTES
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── POST /avito/sync ──────────────────────────────────────────────────────
+  // Fetch live chats from Avito API and return them (no DB write, diagnostic).
+  fastify.post("/avito/sync", { preHandler: [authMiddleware] }, async (request, reply) => {
+    try {
+      const acc = await prisma.avitoAccount.findFirst({
+        where:   { organizationId: request.organizationId, isActive: true },
+        orderBy: { createdAt: "asc" },
+      });
+      if (!acc) return reply.code(400).send({ error: "Нет активных Avito аккаунтов" });
+
+      const client = createClient({ token: acc.accessToken, accountId: acc.accountId });
+      const data   = await client.getChats();
+      const chats  = data.chats ?? data ?? [];
+
+      process.stdout.write(`[avito:sync] accountId=${acc.accountId} chats=${Array.isArray(chats) ? chats.length : "?"}\n`);
+      appendAvitoLog({ type: "sync", accountId: acc.accountId, chatsCount: Array.isArray(chats) ? chats.length : null });
+
+      return { ok: true, accountId: acc.accountId, chatsCount: Array.isArray(chats) ? chats.length : null, chats };
+    } catch (err) {
+      process.stderr.write(`[avito:sync] error: ${err.message}\n`);
+      appendAvitoLog({ type: "sync", ok: false, error: err.message });
+      return reply.code(502).send({ error: err.message });
+    }
+  });
+
+  // ── GET /avito/dialogs ────────────────────────────────────────────────────
+  // Returns DB conversations + live Avito chats side-by-side (diagnostic).
+  fastify.get("/avito/dialogs", { preHandler: [authMiddleware] }, async (request, reply) => {
+    try {
+      const [dbConvs, acc] = await Promise.all([
+        prisma.agentConversation.findMany({
+          where:   { organizationId: request.organizationId, source: "avito" },
+          orderBy: { updatedAt: "desc" },
+          take:    50,
+        }),
+        prisma.avitoAccount.findFirst({
+          where:   { organizationId: request.organizationId, isActive: true },
+          orderBy: { createdAt: "asc" },
+        }),
+      ]);
+
+      let avitoChats = null;
+      let apiError   = null;
+      if (acc) {
+        try {
+          const client = createClient({ token: acc.accessToken, accountId: acc.accountId });
+          const raw    = await client.getChats();
+          avitoChats   = raw.chats ?? raw;
+        } catch (err) {
+          apiError = err.message;
+          process.stderr.write(`[avito:dialogs] Avito API error: ${err.message}\n`);
+        }
+      }
+
+      return {
+        db: {
+          count: dbConvs.length,
+          conversations: dbConvs.map((r) => ({
+            id:             r.id,
+            agentId:        r.agentId,
+            chatId:         r.externalId,
+            externalUserId: r.externalUserId,
+            messageCount:   Array.isArray(r.messages) ? r.messages.length : 0,
+            updatedAt:      r.updatedAt,
+          })),
+        },
+        avito:    avitoChats ? { count: Array.isArray(avitoChats) ? avitoChats.length : null, chats: avitoChats } : null,
+        apiError: apiError ?? (acc ? null : "Нет активного аккаунта"),
+      };
+    } catch (err) {
+      return reply.code(500).send({ error: err.message });
+    }
+  });
+
+  // ── POST /avito/test-send ─────────────────────────────────────────────────
+  // Send a test message to a specific chatId via Avito API.
+  fastify.post("/avito/test-send", { preHandler: [authMiddleware] }, async (request, reply) => {
+    const body   = request.body && typeof request.body === "object" ? request.body : {};
+    const chatId = String(body.chatId ?? "").trim();
+    const text   = String(body.text ?? "Тест: сообщение от AI платформы ✅").trim();
+
+    if (!chatId) return reply.code(400).send({ error: "chatId is required" });
+
+    try {
+      const acc = await prisma.avitoAccount.findFirst({
+        where:   { organizationId: request.organizationId, isActive: true },
+        orderBy: { createdAt: "asc" },
+      });
+      if (!acc) return reply.code(400).send({ error: "Нет активных Avito аккаунтов" });
+
+      const client = createClient({ token: acc.accessToken, accountId: acc.accountId });
+      const result = await client.sendMessage(chatId, text);
+
+      process.stdout.write(`[avito:test-send] chatId=${chatId} ok\n`);
+      appendAvitoLog({ type: "test-send", chatId, text, result });
+
+      return { ok: true, chatId, text, result };
+    } catch (err) {
+      process.stderr.write(`[avito:test-send] error: ${err.message}\n`);
+      appendAvitoLog({ type: "test-send", ok: false, chatId, error: err.message });
+      return reply.code(502).send({ error: err.message });
+    }
+  });
+
+  // ── GET /avito/token-check ────────────────────────────────────────────────
+  // Validate the stored Avito token by making a real API call.
+  fastify.get("/avito/token-check", { preHandler: [authMiddleware] }, async (request, reply) => {
+    try {
+      const acc = await prisma.avitoAccount.findFirst({
+        where:   { organizationId: request.organizationId, isActive: true },
+        orderBy: { createdAt: "asc" },
+      });
+
+      if (!acc) {
+        return { ok: false, status: "no_account", message: "Нет активных аккаунтов — добавьте аккаунт" };
+      }
+      if (!acc.accessToken) {
+        return { ok: false, status: "no_token", message: "Токен не установлен в базе" };
+      }
+
+      const client     = createClient({ token: acc.accessToken, accountId: acc.accountId });
+      const data       = await client.getChats();
+      const chatsCount = Array.isArray(data.chats ?? data) ? (data.chats ?? data).length : null;
+
+      process.stdout.write(`[avito:token-check] OK accountId=${acc.accountId} chats=${chatsCount}\n`);
+      appendAvitoLog({ type: "token-check", accountId: acc.accountId, ok: true, chatsCount });
+
+      return { ok: true, status: "valid", accountId: acc.accountId, chatsCount, message: "Токен действителен ✅" };
+    } catch (err) {
+      process.stderr.write(`[avito:token-check] error: ${err.message}\n`);
+      appendAvitoLog({ type: "token-check", ok: false, error: err.message });
+      return { ok: false, status: "invalid", message: err.message };
     }
   });
 };

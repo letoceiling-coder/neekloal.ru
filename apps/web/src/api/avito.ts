@@ -181,3 +181,68 @@ export function useAvitoAudit() {
     staleTime: 15_000,
   });
 }
+
+// ── Diagnostic hooks ──────────────────────────────────────────────────────────
+
+export interface AvitoSyncResult {
+  ok:          boolean;
+  accountId:   string;
+  chatsCount:  number | null;
+  chats:       unknown[];
+}
+
+export interface AvitoTokenCheckResult {
+  ok:          boolean;
+  status:      string;
+  message:     string;
+  accountId?:  string;
+  chatsCount?: number | null;
+}
+
+export interface AvitoDialogsResult {
+  db: {
+    count:         number;
+    conversations: AvitoConversation[];
+  };
+  avito: {
+    count: number | null;
+    chats: unknown[];
+  } | null;
+  apiError: string | null;
+}
+
+export interface AvitoTestSendResult {
+  ok:     boolean;
+  chatId: string;
+  text:   string;
+  result: unknown;
+}
+
+export function useAvitoSync() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiClient.post<AvitoSyncResult>("/avito/sync"),
+    onSuccess:  () => void qc.invalidateQueries({ queryKey: AVITO_CONVERSATIONS_KEY }),
+  });
+}
+
+export function useAvitoTokenCheck() {
+  return useMutation({
+    mutationFn: () => apiClient.get<AvitoTokenCheckResult>("/avito/token-check"),
+  });
+}
+
+export function useAvitoDialogs() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiClient.get<AvitoDialogsResult>("/avito/dialogs"),
+    onSuccess:  () => void qc.invalidateQueries({ queryKey: AVITO_CONVERSATIONS_KEY }),
+  });
+}
+
+export function useAvitoTestSend() {
+  return useMutation({
+    mutationFn: (body: { chatId: string; text?: string }) =>
+      apiClient.post<AvitoTestSendResult>("/avito/test-send", body),
+  });
+}
