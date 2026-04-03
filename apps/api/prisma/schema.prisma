@@ -47,22 +47,23 @@ enum UserRole {
 // --- Core identity & tenancy ---
 
 model User {
-  id        String    @id @default(uuid()) @db.Uuid
-  email     String    @unique
-  role      UserRole  @default(user)
-  passwordHash          String?   @map("password_hash")
-  passwordResetToken    String?   @unique @map("password_reset_token")
-  passwordResetExpires  DateTime? @map("password_reset_expires")
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
-  deletedAt DateTime? @map("deleted_at")
+  id                   String    @id @default(uuid()) @db.Uuid
+  email                String    @unique
+  role                 UserRole  @default(user)
+  passwordHash         String?   @map("password_hash")
+  passwordResetToken   String?   @unique @map("password_reset_token")
+  passwordResetExpires DateTime? @map("password_reset_expires")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+  deletedAt            DateTime? @map("deleted_at")
 
   memberships              Membership[]
-  usages                     Usage[]
-  initiatedAgentExecutions   AgentExecution[] @relation("ExecutionInitiator")
-  leadStatusChanges          LeadStatusHistory[]
-  conversationsCreated       Conversation[]   @relation("ConversationCreatedBy")
-  adminAuditLogs             AdminAuditLog[] @relation("AdminAuditActor")
+  usages                   Usage[]
+  initiatedAgentExecutions AgentExecution[]    @relation("ExecutionInitiator")
+  leadStatusChanges        LeadStatusHistory[]
+  conversationsCreated     Conversation[]      @relation("ConversationCreatedBy")
+  adminAuditLogs           AdminAuditLog[]     @relation("AdminAuditActor")
+  telegramBots             TelegramBot[]
 
   @@map("users")
 }
@@ -103,23 +104,24 @@ model Plan {
 }
 
 model Organization {
-  id        String    @id @default(uuid()) @db.Uuid
-  name      String
-  slug      String    @unique
-  planId    String    @map("plan_id") @db.Uuid
-  plan      Plan      @relation(fields: [planId], references: [id], onDelete: Restrict)
-  requestsUsed Int    @default(0) @map("requests_used")
-  tokensUsed   Int    @default(0) @map("tokens_used")
-  resetAt      DateTime @map("reset_at")
-  isBlocked    Boolean  @default(false) @map("is_blocked")
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
-  deletedAt DateTime? @map("deleted_at")
+  id           String    @id @default(uuid()) @db.Uuid
+  name         String
+  slug         String    @unique
+  planId       String    @map("plan_id") @db.Uuid
+  plan         Plan      @relation(fields: [planId], references: [id], onDelete: Restrict)
+  requestsUsed Int       @default(0) @map("requests_used")
+  tokensUsed   Int       @default(0) @map("tokens_used")
+  resetAt      DateTime  @map("reset_at")
+  isBlocked    Boolean   @default(false) @map("is_blocked")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
 
   memberships       Membership[]
   apiKeys           ApiKey[]
   assistants        Assistant[]
   agents            Agent[]
+  telegramBots      TelegramBot[]
   tools             Tool[]
   leads             Lead[]
   leadStatusHistory LeadStatusHistory[]
@@ -137,15 +139,15 @@ model Organization {
 }
 
 model Membership {
-  id             String           @id @default(uuid()) @db.Uuid
-  userId         String           @map("user_id") @db.Uuid
-  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organizationId String           @map("organization_id") @db.Uuid
-  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id             String         @id @default(uuid()) @db.Uuid
+  userId         String         @map("user_id") @db.Uuid
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String         @map("organization_id") @db.Uuid
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   role           MembershipRole
-  createdAt      DateTime         @default(now()) @map("created_at")
-  updatedAt      DateTime         @updatedAt @map("updated_at")
-  deletedAt      DateTime?        @map("deleted_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  deletedAt      DateTime?      @map("deleted_at")
 
   @@unique([userId, organizationId])
   @@index([organizationId])
@@ -154,18 +156,18 @@ model Membership {
 }
 
 model ApiKey {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  assistantId    String?   @map("assistant_id") @db.Uuid
-  assistant      Assistant? @relation(fields: [assistantId], references: [id], onDelete: SetNull)
-  keyHash        String    @unique @map("key_hash")
+  assistantId    String?      @map("assistant_id") @db.Uuid
+  assistant      Assistant?   @relation(fields: [assistantId], references: [id], onDelete: SetNull)
+  keyHash        String       @unique @map("key_hash")
   name           String?
   /// Allowed origin hostnames (e.g. ["example.com","*.app.example.com"]). Empty = no restriction.
-  allowedDomains String[]  @map("allowed_domains")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-  deletedAt      DateTime? @map("deleted_at")
+  allowedDomains String[]     @map("allowed_domains")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  deletedAt      DateTime?    @map("deleted_at")
 
   usages Usage[]
 
@@ -177,20 +179,20 @@ model ApiKey {
 // --- AI resources (org-scoped) ---
 
 model Assistant {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   name           String
   model          String
-  systemPrompt   String    @map("system_prompt") @db.Text
+  systemPrompt   String       @map("system_prompt") @db.Text
   settings       Json?
   /// Per-assistant overrides: intents, funnel, memory, validation. Falls back to defaultAssistantConfig if null.
   config         Json?
   /// Bumped on breaking prompt/model/RAG changes; conversations may record which version they started under.
-  version        Int       @default(1)
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-  deletedAt      DateTime? @map("deleted_at")
+  version        Int          @default(1)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  deletedAt      DateTime?    @map("deleted_at")
 
   knowledges    Knowledge[]
   conversations Conversation[]
@@ -203,37 +205,37 @@ model Assistant {
 }
 
 model Agent {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  assistantId    String?   @map("assistant_id") @db.Uuid
-  assistant      Assistant? @relation(fields: [assistantId], references: [id], onDelete: SetNull)
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistantId    String?       @map("assistant_id") @db.Uuid
+  assistant      Assistant?    @relation(fields: [assistantId], references: [id], onDelete: SetNull)
   name           String
   type           String
-  mode           String    @default("v1") @map("mode")
+  mode           String        @default("v1") @map("mode")
   /// Default LLM model for this agent's playground (overrides CHAT_MODEL env)
   model          String?
   /// Legacy flag — kept for backward compat; use avitoMode for fine-grained control
-  autoReply      Boolean   @default(true) @map("auto_reply")
+  autoReply      Boolean       @default(true) @map("auto_reply")
   /// Avito channel mode: "autoreply" | "copilot" | "human" | "off"
   /// autoreply  — AI generates + sends automatically
   /// copilot    — AI generates, saves to DB for human review (not sent)
   /// human      — saves message only, no AI
   /// off        — ignores all incoming Avito messages
-  avitoMode      String    @default("autoreply") @map("avito_mode")
+  avitoMode      String        @default("autoreply") @map("avito_mode")
   /// FK to AvitoAccount — which Avito account handles this agent's chats
-  avitoAccountId String?   @map("avito_account_id") @db.Uuid
+  avitoAccountId String?       @map("avito_account_id") @db.Uuid
   avitoAccount   AvitoAccount? @relation(fields: [avitoAccountId], references: [id], onDelete: SetNull)
   trigger        String?
   flow           Json?
   memory         Json?
-  rules          String?   @db.Text
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-  deletedAt      DateTime? @map("deleted_at")
+  rules          String?       @db.Text
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  deletedAt      DateTime?     @map("deleted_at")
 
-  tools       Tool[]
-  executions  AgentExecution[]
+  tools         Tool[]
+  executions    AgentExecution[]
   conversations Conversation[]
 
   @@index([organizationId])
@@ -242,18 +244,18 @@ model Agent {
 }
 
 model Tool {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  agentId        String    @map("agent_id") @db.Uuid
-  agent          Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agentId        String       @map("agent_id") @db.Uuid
+  agent          Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
   /// Stable handle per agent for planner, UI, and audits (unique with agentId).
-  name           String    @default(cuid())
+  name           String       @default(cuid())
   type           String
   config         Json
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  deletedAt      DateTime?    @map("deleted_at")
 
   @@unique([agentId, name])
   @@index([organizationId])
@@ -288,17 +290,17 @@ model Lead {
 }
 
 model LeadStatusHistory {
-  id             String             @id @default(uuid()) @db.Uuid
-  organizationId String             @map("organization_id") @db.Uuid
-  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  leadId         String             @map("lead_id") @db.Uuid
-  lead           Lead               @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  fromStatus     LeadPipelineStatus? @map("from_status")
-  toStatus       LeadPipelineStatus  @map("to_status")
-  changedByUserId String            @map("changed_by_user_id") @db.Uuid
-  changedBy      User               @relation(fields: [changedByUserId], references: [id], onDelete: Restrict)
-  createdAt      DateTime           @default(now()) @map("created_at")
-  updatedAt      DateTime           @updatedAt @map("updated_at")
+  id              String              @id @default(uuid()) @db.Uuid
+  organizationId  String              @map("organization_id") @db.Uuid
+  organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  leadId          String              @map("lead_id") @db.Uuid
+  lead            Lead                @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  fromStatus      LeadPipelineStatus? @map("from_status")
+  toStatus        LeadPipelineStatus  @map("to_status")
+  changedByUserId String              @map("changed_by_user_id") @db.Uuid
+  changedBy       User                @relation(fields: [changedByUserId], references: [id], onDelete: Restrict)
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
 
   @@index([organizationId])
   @@index([leadId, createdAt])
@@ -306,30 +308,30 @@ model LeadStatusHistory {
 }
 
 model Conversation {
-  id             String                   @id @default(uuid()) @db.Uuid
-  organizationId String                   @map("organization_id") @db.Uuid
-  organization   Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  assistantId    String                   @map("assistant_id") @db.Uuid
-  assistant      Assistant                @relation(fields: [assistantId], references: [id], onDelete: Cascade)
-  leadId         String?                  @map("lead_id") @db.Uuid
-  lead           Lead?                    @relation(fields: [leadId], references: [id], onDelete: SetNull)
-  agentId        String?                  @map("agent_id") @db.Uuid
-  agent          Agent?                   @relation(fields: [agentId], references: [id], onDelete: SetNull)
-  status         ConversationThreadStatus
-  source         ConversationSource
-  createdByUserId String?                 @map("created_by_user_id") @db.Uuid
-  createdBy      User?                    @relation("ConversationCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  createdAt      DateTime                 @default(now()) @map("created_at")
-  updatedAt      DateTime                 @updatedAt @map("updated_at")
-  deletedAt      DateTime?                @map("deleted_at")
+  id                          String                   @id @default(uuid()) @db.Uuid
+  organizationId              String                   @map("organization_id") @db.Uuid
+  organization                Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistantId                 String                   @map("assistant_id") @db.Uuid
+  assistant                   Assistant                @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  leadId                      String?                  @map("lead_id") @db.Uuid
+  lead                        Lead?                    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  agentId                     String?                  @map("agent_id") @db.Uuid
+  agent                       Agent?                   @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  status                      ConversationThreadStatus
+  source                      ConversationSource
+  createdByUserId             String?                  @map("created_by_user_id") @db.Uuid
+  createdBy                   User?                    @relation("ConversationCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdAt                   DateTime                 @default(now()) @map("created_at")
+  updatedAt                   DateTime                 @updatedAt @map("updated_at")
+  deletedAt                   DateTime?                @map("deleted_at")
   /// Виджет: уже отправлено напоминание при молчании пользователя; сбрасывается при новом сообщении пользователя.
-  widgetSilenceFollowUpSentAt DateTime?   @map("widget_silence_follow_up_sent_at")
+  widgetSilenceFollowUpSentAt DateTime?                @map("widget_silence_follow_up_sent_at")
   /// Виджет: сколько авто follow-up отправлено за текущую «тишину» (сброс при сообщении пользователя). Макс. см. WIDGET_MAX_FOLLOWUPS_PER_CONVERSATION.
-  widgetFollowUpCount         Int         @default(0) @map("widget_follow_up_count")
+  widgetFollowUpCount         Int                      @default(0) @map("widget_follow_up_count")
   /// Sales hybrid FSM: greeting | qualification | offer | objection | close
-  salesStage                  String      @default("greeting") @map("sales_stage")
+  salesStage                  String                   @default("greeting") @map("sales_stage")
   /// Hybrid sales memory (e.g. { "budget": 30000, "projectType": "landing" }).
-  context                      Json?
+  context                     Json?
 
   messages Message[]
   usages   Usage[]
@@ -345,20 +347,20 @@ model Conversation {
 }
 
 model Message {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  conversationId String    @map("conversation_id") @db.Uuid
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  role           String
-  content        String    @db.Text
-  tokens         Int       @default(0)
-  executionId    String?   @map("execution_id") @db.Uuid
-  execution      AgentExecution? @relation("ExecutionOutput", fields: [executionId], references: [id], onDelete: SetNull)
+  id                  String           @id @default(uuid()) @db.Uuid
+  organizationId      String           @map("organization_id") @db.Uuid
+  organization        Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversationId      String           @map("conversation_id") @db.Uuid
+  conversation        Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role                String
+  content             String           @db.Text
+  tokens              Int              @default(0)
+  executionId         String?          @map("execution_id") @db.Uuid
+  execution           AgentExecution?  @relation("ExecutionOutput", fields: [executionId], references: [id], onDelete: SetNull)
   triggeredExecutions AgentExecution[] @relation("ExecutionTrigger")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-  deletedAt      DateTime? @map("deleted_at")
+  createdAt           DateTime         @default(now()) @map("created_at")
+  updatedAt           DateTime         @updatedAt @map("updated_at")
+  deletedAt           DateTime?        @map("deleted_at")
 
   @@index([organizationId])
   @@index([conversationId, createdAt])
@@ -369,29 +371,29 @@ model Message {
 // --- Agent runtime ---
 
 model AgentExecution {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  agentId        String    @map("agent_id") @db.Uuid
-  agent          Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  initiatedByUserId String @map("initiated_by_user_id") @db.Uuid
-  initiatedBy    User      @relation("ExecutionInitiator", fields: [initiatedByUserId], references: [id], onDelete: Restrict)
-  status         String
-  statusReason   String?   @map("status_reason")
-  input          String    @db.Text
-  output         String?   @db.Text
-  stepsCount     Int       @default(0) @map("steps_count")
-  toolCalls      Int       @default(0) @map("tool_calls")
-  durationMs     Int?      @map("duration_ms")
-  totalTokens    Int       @default(0) @map("total_tokens")
-  metrics        Json?
-  triggerMessageId String? @map("trigger_message_id") @db.Uuid
-  triggerMessage Message?  @relation("ExecutionTrigger", fields: [triggerMessageId], references: [id], onDelete: SetNull)
-  outputMessages Message[] @relation("ExecutionOutput")
-  steps          AgentStep[]
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-  deletedAt      DateTime? @map("deleted_at")
+  id                String       @id @default(uuid()) @db.Uuid
+  organizationId    String       @map("organization_id") @db.Uuid
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agentId           String       @map("agent_id") @db.Uuid
+  agent             Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  initiatedByUserId String       @map("initiated_by_user_id") @db.Uuid
+  initiatedBy       User         @relation("ExecutionInitiator", fields: [initiatedByUserId], references: [id], onDelete: Restrict)
+  status            String
+  statusReason      String?      @map("status_reason")
+  input             String       @db.Text
+  output            String?      @db.Text
+  stepsCount        Int          @default(0) @map("steps_count")
+  toolCalls         Int          @default(0) @map("tool_calls")
+  durationMs        Int?         @map("duration_ms")
+  totalTokens       Int          @default(0) @map("total_tokens")
+  metrics           Json?
+  triggerMessageId  String?      @map("trigger_message_id") @db.Uuid
+  triggerMessage    Message?     @relation("ExecutionTrigger", fields: [triggerMessageId], references: [id], onDelete: SetNull)
+  outputMessages    Message[]    @relation("ExecutionOutput")
+  steps             AgentStep[]
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+  deletedAt         DateTime?    @map("deleted_at")
 
   @@index([organizationId])
   @@index([agentId])
@@ -421,23 +423,23 @@ model AgentStep {
 // --- RAG ---
 
 model Knowledge {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  assistantId    String    @map("assistant_id") @db.Uuid
-  assistant      Assistant @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  assistantId    String       @map("assistant_id") @db.Uuid
+  assistant      Assistant    @relation(fields: [assistantId], references: [id], onDelete: Cascade)
   type           String
   /// Original file name or ingested URL for display.
-  sourceName     String?   @map("source_name")
+  sourceName     String?      @map("source_name")
   /// Intent label for hybrid sales routing.
-  intent         String?   @map("intent")
+  intent         String?      @map("intent")
   /// Ingest lifecycle: "processing" | "ready" | "failed"
-  status         String    @default("ready")
-  content        String    @db.Text
-  embeddingId    String?   @map("embedding_id")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-  deletedAt      DateTime? @map("deleted_at")
+  status         String       @default("ready")
+  content        String       @db.Text
+  embeddingId    String?      @map("embedding_id")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  deletedAt      DateTime?    @map("deleted_at")
 
   chunks KnowledgeChunk[]
 
@@ -447,18 +449,18 @@ model Knowledge {
 }
 
 model KnowledgeChunk {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  knowledgeId    String    @map("knowledge_id") @db.Uuid
-  knowledge      Knowledge @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
-  content        String    @db.Text
-  embeddingId    String?   @map("embedding_id")
-  embeddingModel String    @map("embedding_model")
-  embeddingDim   Int       @map("embedding_dim")
-  position       Int       @default(0)
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  knowledgeId    String       @map("knowledge_id") @db.Uuid
+  knowledge      Knowledge    @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
+  content        String       @db.Text
+  embeddingId    String?      @map("embedding_id")
+  embeddingModel String       @map("embedding_model")
+  embeddingDim   Int          @map("embedding_dim")
+  position       Int          @default(0)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
 
   @@index([organizationId])
   @@index([knowledgeId, position])
@@ -468,22 +470,22 @@ model KnowledgeChunk {
 // --- Metering ---
 
 model Usage {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  userId         String?   @map("user_id") @db.Uuid
-  user           User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
-  apiKeyId       String?   @map("api_key_id") @db.Uuid
-  apiKey         ApiKey?   @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
-  conversationId String?   @map("conversation_id") @db.Uuid
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String?       @map("user_id") @db.Uuid
+  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  apiKeyId       String?       @map("api_key_id") @db.Uuid
+  apiKey         ApiKey?       @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  conversationId String?       @map("conversation_id") @db.Uuid
   conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-  assistantId    String?   @map("assistant_id") @db.Uuid
-  assistant      Assistant? @relation(fields: [assistantId], references: [id], onDelete: SetNull)
+  assistantId    String?       @map("assistant_id") @db.Uuid
+  assistant      Assistant?    @relation(fields: [assistantId], references: [id], onDelete: SetNull)
   model          String
   tokens         Int
-  cost           Decimal?  @db.Decimal(12, 6)
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  cost           Decimal?      @db.Decimal(12, 6)
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
 
   @@index([organizationId])
   @@index([organizationId, createdAt])
@@ -496,22 +498,22 @@ model Usage {
 /// Avito account credentials per organisation (multi-tenant).
 /// Replaces AVITO_TOKEN / AVITO_ACCOUNT_ID env vars.
 model AvitoAccount {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   /// Human-readable label (e.g. "Магазин запчастей")
   name           String?
   /// Avito OAuth bearer token
-  accessToken    String    @map("access_token") @db.Text
+  accessToken    String       @map("access_token") @db.Text
   /// Numeric Avito account / user ID (used for anti-loop and API calls)
-  accountId      String    @map("account_id")
+  accountId      String       @map("account_id")
   /// Optional HMAC secret for webhook signature verification
-  webhookSecret  String?   @map("webhook_secret")
-  isActive       Boolean   @default(true) @map("is_active")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  webhookSecret  String?      @map("webhook_secret")
+  isActive       Boolean      @default(true) @map("is_active")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
 
-  agents         Agent[]
+  agents Agent[]
 
   @@index([organizationId])
   @@map("avito_accounts")
@@ -519,14 +521,14 @@ model AvitoAccount {
 
 /// Avito webhook: one row per received event — used for idempotency
 model AvitoWebhookEvent {
-  id          String    @id                              /// Avito event_id (or generated hash)
-  agentId     String    @map("agent_id")                /// not a FK — stored as plain string
-  type        String                                     /// "message" | other Avito event types
-  chatId      String?   @map("chat_id")
-  authorId    String?   @map("author_id")
-  payload     Json                                       /// raw event body
-  queuedAt    DateTime? @map("queued_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
+  id        String    @id /// Avito event_id (or generated hash)
+  agentId   String    @map("agent_id") /// not a FK — stored as plain string
+  type      String /// "message" | other Avito event types
+  chatId    String?   @map("chat_id")
+  authorId  String?   @map("author_id")
+  payload   Json /// raw event body
+  queuedAt  DateTime? @map("queued_at")
+  createdAt DateTime  @default(now()) @map("created_at")
 
   @@index([agentId, createdAt])
   @@index([chatId])
@@ -535,27 +537,27 @@ model AvitoWebhookEvent {
 
 /// Avito: per-message audit trail — classifier + routing + AI output
 model AvitoAuditLog {
-  id             String    @id @default(uuid()) @db.Uuid
-  agentId        String    @map("agent_id")                 /// plain string — no FK constraint
-  organizationId String    @map("organization_id")          /// plain string — no FK constraint
-  chatId         String    @map("chat_id")
-  authorId       String    @map("author_id")
-  conversationId String?   @map("conversation_id")          /// plain string — no FK constraint
-  eventId        String?   @map("event_id")
+  id             String   @id @default(uuid()) @db.Uuid
+  agentId        String   @map("agent_id") /// plain string — no FK constraint
+  organizationId String   @map("organization_id") /// plain string — no FK constraint
+  chatId         String   @map("chat_id")
+  authorId       String   @map("author_id")
+  conversationId String?  @map("conversation_id") /// plain string — no FK constraint
+  eventId        String?  @map("event_id")
   /// Raw incoming text
-  input          String    @db.Text
+  input          String   @db.Text
   /// AI-generated reply (null if mode=human/copilot not sent)
-  output         String?   @db.Text
+  output         String?  @db.Text
   /// Result of avito.classifier.js
   classification Json?
   /// Routing decision: "autoreply" | "copilot" | "human" | "skip"
   decision       String
-  modelUsed      String?   @map("model_used")
+  modelUsed      String?  @map("model_used")
   tokens         Int?
-  durationMs     Int?      @map("duration_ms")
-  success        Boolean   @default(true)
-  error          String?   @db.Text
-  createdAt      DateTime  @default(now()) @map("created_at")
+  durationMs     Int?     @map("duration_ms")
+  success        Boolean  @default(true)
+  error          String?  @db.Text
+  createdAt      DateTime @default(now()) @map("created_at")
 
   @@index([agentId, createdAt])
   @@index([chatId])
@@ -565,15 +567,15 @@ model AvitoAuditLog {
 
 /// Avito follow-up sequence — scheduled re-engagement messages per chat
 model AvitoFollowUp {
-  id           String   @id @default(uuid())
-  leadId       String   @map("lead_id")        /// AvitoLead.id (plain string — no FK to allow flexibility)
-  agentId      String   @map("agent_id")
-  chatId       String   @map("chat_id")
-  step         Int                              /// 1, 2 or 3
-  status       String   @default("pending")    /// pending | sent | cancelled
-  scheduledAt  DateTime @map("scheduled_at")
-  sentAt       DateTime? @map("sent_at")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id          String    @id @default(uuid())
+  leadId      String    @map("lead_id") /// AvitoLead.id (plain string — no FK to allow flexibility)
+  agentId     String    @map("agent_id")
+  chatId      String    @map("chat_id")
+  step        Int /// 1, 2 or 3
+  status      String    @default("pending") /// pending | sent | cancelled
+  scheduledAt DateTime  @map("scheduled_at")
+  sentAt      DateTime? @map("sent_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
 
   @@index([leadId])
   @@index([agentId, chatId, status])
@@ -583,25 +585,25 @@ model AvitoFollowUp {
 
 /// Avito sales FSM lead — tracks each unique Avito user through the sales funnel
 model AvitoLead {
-  id              String   @id @default(uuid())
-  agentId         String   @map("agent_id")
-  conversationId  String   @map("conversation_id")
-  chatId          String   @map("chat_id")
-  externalUserId  String?  @map("external_user_id")
+  id             String  @id @default(uuid())
+  agentId        String  @map("agent_id")
+  conversationId String  @map("conversation_id")
+  chatId         String  @map("chat_id")
+  externalUserId String? @map("external_user_id")
 
   /// FSM state: NEW | QUALIFYING | INTERESTED | HANDOFF | CLOSED | LOST
-  status          String   @default("NEW")
+  status String @default("NEW")
 
-  intent          String?
-  priority        String?
-  isHot           Boolean  @default(false) @map("is_hot")
+  intent   String?
+  priority String?
+  isHot    Boolean @default(false) @map("is_hot")
 
-  name            String?
-  phone           String?
-  budget          Int?
+  name   String?
+  phone  String?
+  budget Int?
 
-  lastMessageAt   DateTime @default(now()) @map("last_message_at")
-  createdAt       DateTime @default(now()) @map("created_at")
+  lastMessageAt DateTime @default(now()) @map("last_message_at")
+  createdAt     DateTime @default(now()) @map("created_at")
 
   @@unique([agentId, chatId])
   @@index([agentId, chatId])
@@ -620,7 +622,7 @@ model RateLimitState {
 /// One row per generated image (each variation is its own row)
 model GeneratedImage {
   id             String   @id @default(uuid()) @db.Uuid
-  jobId          String   @map("job_id")             /// BullMQ job / batch UUID
+  jobId          String   @map("job_id") /// BullMQ job / batch UUID
   userId         String   @map("user_id") @db.Uuid
   organizationId String   @map("organization_id") @db.Uuid
   url            String
@@ -645,11 +647,11 @@ model GeneratedImage {
 model PipelineExecution {
   id          String    @id @default(uuid()) @db.Uuid
   userId      String    @map("user_id") @db.Uuid
-  jobId       String?   @map("job_id")          /// primary BullMQ job id
-  jobIds      Json?     @map("job_ids")          /// all job ids (Json array, parallel variations)
-  steps       Json                               /// pipelineExecution array
-  status      String    @default("running")      /// running | completed | failed
-  createdAt   DateTime  @default(now())          @map("created_at")
+  jobId       String?   @map("job_id") /// primary BullMQ job id
+  jobIds      Json?     @map("job_ids") /// all job ids (Json array, parallel variations)
+  steps       Json /// pipelineExecution array
+  status      String    @default("running") /// running | completed | failed
+  createdAt   DateTime  @default(now()) @map("created_at")
   completedAt DateTime? @map("completed_at")
 
   @@index([jobId])
@@ -673,7 +675,7 @@ model AgentConversation {
   /// JSON array of {role, content} messages (user + assistant turns, no system)
   messages       Json     @default("[]")
   createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt      @map("updated_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   @@index([agentId])
   @@index([userId])
@@ -695,30 +697,77 @@ model UserImageSettings {
 
 /// One row per generated video job
 model GeneratedVideo {
-  id             String   @id @default(uuid()) @db.Uuid
-  jobId          String   @map("job_id")              /// BullMQ job id
-  userId         String   @map("user_id") @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  status         String   @default("pending")          /// pending | running | completed | failed
-  mode           String   @default("text")             /// text | image2video
-  prompt         String   @db.Text
-  negativePrompt String?  @map("negative_prompt") @db.Text
-  width          Int      @default(512)
-  height         Int      @default(512)
-  fps            Int      @default(8)
-  frameCount     Int      @default(16) @map("frame_count")
-  duration       Float    @default(2.0)                /// seconds (frameCount / fps)
-  url            String?                               /// public URL to .mp4
-  localPath      String?  @map("local_path")
-  previewUrl     String?  @map("preview_url")          /// first frame preview PNG
-  previewPath    String?  @map("preview_path")
-  referenceUrl   String?  @map("reference_url")        /// source image for image2video
-  errorMessage   String?  @map("error_message") @db.Text
-  createdAt      DateTime @default(now()) @map("created_at")
+  id             String    @id @default(uuid()) @db.Uuid
+  jobId          String    @map("job_id") /// BullMQ job id
+  userId         String    @map("user_id") @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  status         String    @default("pending") /// pending | running | completed | failed
+  mode           String    @default("text") /// text | image2video
+  prompt         String    @db.Text
+  negativePrompt String?   @map("negative_prompt") @db.Text
+  width          Int       @default(512)
+  height         Int       @default(512)
+  fps            Int       @default(8)
+  frameCount     Int       @default(16) @map("frame_count")
+  duration       Float     @default(2.0) /// seconds (frameCount / fps)
+  url            String? /// public URL to .mp4
+  localPath      String?   @map("local_path")
+  previewUrl     String?   @map("preview_url") /// first frame preview PNG
+  previewPath    String?   @map("preview_path")
+  referenceUrl   String?   @map("reference_url") /// source image for image2video
+  errorMessage   String?   @map("error_message") @db.Text
+  createdAt      DateTime  @default(now()) @map("created_at")
   completedAt    DateTime? @map("completed_at")
 
   @@index([organizationId, createdAt])
   @@index([jobId])
   @@index([userId, status])
   @@map("generated_videos")
+}
+
+/// Telegram bot linked to a SaaS user (one bot per user)
+model TelegramBot {
+  id             String       @id @default(uuid()) @db.Uuid
+  userId         String       @unique @map("user_id") @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  botToken       String       @map("bot_token")
+  botUsername    String?      @map("bot_username")
+  webhookUrl     String?      @map("webhook_url")
+  isActive       Boolean      @default(true) @map("is_active")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  chats TelegramChat[]
+
+  @@index([organizationId])
+  @@map("telegram_bots")
+}
+
+model TelegramUser {
+  id         String   @id @default(uuid()) @db.Uuid
+  telegramId String   @unique @map("telegram_id")
+  username   String?
+  firstName  String?  @map("first_name")
+  lastName   String?  @map("last_name")
+  userId     String?  @map("user_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("telegram_users")
+}
+
+/// One Telegram chat thread per bot + Telegram chat id (private/group)
+model TelegramChat {
+  id             String      @id @default(uuid()) @db.Uuid
+  botId          String      @map("bot_id") @db.Uuid
+  telegramChatId String      @map("telegram_chat_id")
+  bot            TelegramBot @relation(fields: [botId], references: [id], onDelete: Cascade)
+  userId         String      @map("user_id") @db.Uuid
+  agentId        String?     @map("agent_id") @db.Uuid
+  conversationId String?     @map("conversation_id") @db.Uuid
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  @@unique([botId, telegramChatId])
+  @@index([userId])
+  @@map("telegram_chats")
 }
