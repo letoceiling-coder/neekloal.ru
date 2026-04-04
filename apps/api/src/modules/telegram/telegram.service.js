@@ -29,6 +29,10 @@ const MODE_INLINE_REPLY_MARKUP = {
   ],
 };
 
+function modeFooterLine(mode) {
+  return `Текущий режим: ${mode === "image" ? "🎨 генерация" : "🧠 чат"}`;
+}
+
 /** Единый базовый system prompt для Telegram (локально для этого модуля). */
 const BASE_SYSTEM_PROMPT = `
 Ты — живой человек и профессиональный помощник.
@@ -110,6 +114,15 @@ async function translateToRussianViaOllama(text, model) {
   } catch {
     return t;
   }
+}
+
+async function enforceRussian(text, model) {
+  const s = typeof text === "string" ? text : "";
+  if (!/[A-Za-z]/.test(s)) {
+    return s;
+  }
+  console.log("[FORCE RUSSIAN TRANSLATE]");
+  return translateToRussianViaOllama(s, model);
 }
 
 function buildTelegramFinalSystemPrompt(agent) {
@@ -407,9 +420,13 @@ async function ollamaTelegramChat(bot, tgChat, text) {
 ${finalPrompt}
 
 ВАЖНО:
-— всегда отвечай ТОЛЬКО на русском языке
-— если мысль на английском → переведи
-— не вставляй английские фразы
+— думай на русском языке
+— формируй ответ сразу на русском
+— не используй английские конструкции
+— если возникает английская фраза — перепиши её на русский ДО отправки
+
+КРИТИЧНО:
+не «переводи», а изначально отвечай на русском — без смешения языков.
 `.trim();
 
   const history = Array.isArray(conv.messages) ? conv.messages : [];
@@ -423,6 +440,7 @@ ${finalPrompt}
     `[telegram:chat] conv=${conversationId} try_model=${model} ctx=${history.length}\n`
   );
 
+  let usedModel = model;
   let content;
   try {
     content = await ollamaTelegramOnce(model, fullMessages, 0.7, undefined);
@@ -430,15 +448,12 @@ ${finalPrompt}
     console.error("[LLM PRIMARY ERROR]", e?.message || e);
     console.log("[FALLBACK USED]");
     process.stdout.write(`[telegram:chat] switching to fallback model=${modelFallback}\n`);
-    let raw = await ollamaTelegramOnce(modelFallback, fullMessages, 0.7, undefined);
-    raw = typeof raw === "string" ? raw : "";
-    if (raw.includes("Here's") || raw.includes("Sure")) {
-      raw = await translateToRussianViaOllama(raw, modelFallback);
-    }
-    content = raw;
+    usedModel = modelFallback;
+    content = await ollamaTelegramOnce(modelFallback, fullMessages, 0.7, undefined);
   }
 
   let reply = stripEnglishTelegramArtifacts(typeof content === "string" ? content : "");
+  reply = await enforceRussian(reply, usedModel);
 
   const updatedMessages = [...history, { role: "user", content: text }, { role: "assistant", content: reply }];
   await prisma.agentConversation.update({
@@ -474,7 +489,9 @@ async function processTelegramUpdate(bot, update) {
     if (data === "mode_chat") {
       await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "chat" } });
       await telegramAnswerCallbackQuery(token, cq.id);
-      await telegramSendMessage(token, chatId, "🧠 Режим чата включен", {
+      console.log("[TELEGRAM MODE]: chat");
+      console.log("[TELEGRAM FLOW]: chat");
+      await telegramSendMessage(token, chatId, `🧠 Режим чата включен\n\n${modeFooterLine("chat")}`, {
         replyMarkup: MODE_INLINE_REPLY_MARKUP,
       });
       return { ok: true };
@@ -482,7 +499,9 @@ async function processTelegramUpdate(bot, update) {
     if (data === "mode_image") {
       await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "image" } });
       await telegramAnswerCallbackQuery(token, cq.id);
-      await telegramSendMessage(token, chatId, "🎨 Режим генерации включен", {
+      console.log("[TELEGRAM MODE]: image");
+      console.log("[TELEGRAM FLOW]: image");
+      await telegramSendMessage(token, chatId, `🎨 Режим генерации включен\n\n${modeFooterLine("image")}`, {
         replyMarkup: MODE_INLINE_REPLY_MARKUP,
       });
       return { ok: true };
@@ -502,7 +521,7 @@ async function processTelegramUpdate(bot, update) {
   if (msg.from) await ensureTelegramUser(msg.from);
 
   if (text.startsWith("/start")) {
-    await telegramSendMessage(token, chatId, "Привет! Выберите режим кнопками ниже — затем пишите сообщения.", {
+    await telegramSendMessage(token, chatId, `Привет! Выберите режим кнопками ниже — затем пишите сообщения.\n\n${modeFooterLine("chat")}`, {
       replyMarkup: MODE_INLINE_REPLY_MARKUP,
     });
     return { ok: true };
@@ -512,14 +531,18 @@ async function processTelegramUpdate(bot, update) {
 
   if (text === KB_ROW_PHOTO) {
     await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "image" } });
-    await telegramSendMessage(token, chatId, "🎨 Режим генерации включен", {
+    console.log("[TELEGRAM MODE]: image");
+    console.log("[TELEGRAM FLOW]: image");
+    await telegramSendMessage(token, chatId, `🎨 Режим генерации включен\n\n${modeFooterLine("image")}`, {
       replyMarkup: MODE_INLINE_REPLY_MARKUP,
     });
     return { ok: true };
   }
   if (text === KB_ROW_CHAT) {
     await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "chat" } });
-    await telegramSendMessage(token, chatId, "🧠 Режим чата включен", {
+    console.log("[TELEGRAM MODE]: chat");
+    console.log("[TELEGRAM FLOW]: chat");
+    await telegramSendMessage(token, chatId, `🧠 Режим чата включен\n\n${modeFooterLine("chat")}`, {
       replyMarkup: MODE_INLINE_REPLY_MARKUP,
     });
     return { ok: true };
@@ -532,9 +555,12 @@ async function processTelegramUpdate(bot, update) {
   const latest = await prisma.telegramChat.findUnique({ where: { id: tgChat.id } });
   const mode = (latest && latest.mode) || "chat";
 
+  console.log("[TELEGRAM MODE]:", mode);
+  console.log("[TELEGRAM FLOW]:", mode);
+
   if (mode === "image") {
     if (latest.uxHintImage < 2) {
-      await telegramSendMessage(token, chatId, "🎨 Сейчас режим генерации. Просто опиши картинку.", {
+      await telegramSendMessage(token, chatId, `🎨 Сейчас режим генерации. Просто опиши картинку.\n\n${modeFooterLine("image")}`, {
         replyMarkup: MODE_INLINE_REPLY_MARKUP,
       });
       await prisma.telegramChat.update({
@@ -542,18 +568,19 @@ async function processTelegramUpdate(bot, update) {
         data: { uxHintImage: { increment: 1 } },
       });
     }
-    console.log("[TELEGRAM FLOW]: IMAGE MODE");
-    await telegramSendMessage(token, chatId, "⏳ Генерирую изображение...");
+    await telegramSendMessage(token, chatId, `⏳ Генерирую изображение...\n\n${modeFooterLine("image")}`, {
+      replyMarkup: MODE_INLINE_REPLY_MARKUP,
+    });
     try {
       const out = await runImagePipeline({ bot, rawPrompt: text });
       console.log("[TELEGRAM IMAGE FLOW] prompt:", out.prompt);
       console.log("[TELEGRAM IMAGE FLOW] jobId:", out.jobId);
       console.log("[TELEGRAM IMAGE FLOW] result:", JSON.stringify({ url: out.url, hasUrls: Boolean(out.result?.urls) }));
-      await telegramSendPhoto(token, chatId, out.url, undefined, MODE_INLINE_REPLY_MARKUP);
+      await telegramSendPhoto(token, chatId, out.url, modeFooterLine("image"), MODE_INLINE_REPLY_MARKUP);
     } catch (err) {
       process.stderr.write(`[telegram] image pipeline: ${err.message}\n`);
       console.log("[TELEGRAM IMAGE FLOW] error:", err.message);
-      await telegramSendMessage(token, chatId, "❌ Ошибка генерации", {
+      await telegramSendMessage(token, chatId, `❌ Ошибка генерации\n\n${modeFooterLine("image")}`, {
         replyMarkup: MODE_INLINE_REPLY_MARKUP,
       });
     }
@@ -561,7 +588,7 @@ async function processTelegramUpdate(bot, update) {
   }
 
   if (latest.uxHintChat < 2) {
-    await telegramSendMessage(token, chatId, "🧠 Сейчас режим чата. Можешь писать что угодно.", {
+    await telegramSendMessage(token, chatId, `🧠 Сейчас режим чата. Можешь писать что угодно.\n\n${modeFooterLine("chat")}`, {
       replyMarkup: MODE_INLINE_REPLY_MARKUP,
     });
     await prisma.telegramChat.update({
@@ -570,15 +597,14 @@ async function processTelegramUpdate(bot, update) {
     });
   }
 
-  console.log("[TELEGRAM FLOW]: CHAT MODE");
   try {
     const replyText = await ollamaTelegramChat(bot, latest, text);
-    await telegramSendMessage(token, chatId, replyText || "…", {
+    await telegramSendMessage(token, chatId, `${replyText || "…"}\n\n${modeFooterLine("chat")}`, {
       replyMarkup: MODE_INLINE_REPLY_MARKUP,
     });
   } catch (err) {
     process.stderr.write(`[telegram] chat: ${err.message}\n`);
-    await telegramSendMessage(token, chatId, `Ошибка чата: ${err.message}`, {
+    await telegramSendMessage(token, chatId, `Ошибка чата: ${err.message}\n\n${modeFooterLine("chat")}`, {
       replyMarkup: MODE_INLINE_REPLY_MARKUP,
     });
   }
