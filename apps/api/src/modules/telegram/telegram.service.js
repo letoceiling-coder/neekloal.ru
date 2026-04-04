@@ -137,6 +137,67 @@ function stripEnglishTelegramArtifacts(response) {
   return response.replace(/Here is|Here's|Sure!/gi, "").trim();
 }
 
+/**
+ * Динамический sales-слой для chat mode (FSM).
+ * @param {string} state
+ * @param {Record<string, unknown>} leadData
+ */
+function buildSalesPrompt(state, leadData) {
+  void leadData;
+  if (state === "greeting") {
+    return `
+Ты дружелюбный менеджер.
+
+Цель:
+поздороваться и понять, чем помочь.
+
+Не продавай сразу.
+Задай 1 вопрос.
+`.trim();
+  }
+  if (state === "qualify") {
+    return `
+Твоя задача:
+понять потребность клиента.
+
+Задай уточняющие вопросы:
+— что нужно
+— для чего
+— сроки
+`.trim();
+  }
+  if (state === "offer") {
+    return `
+Предложи решение.
+
+Объясни:
+— что получит клиент
+— почему это ему подходит
+`.trim();
+  }
+  if (state === "close") {
+    return `
+Мягко доведи до действия:
+
+— оставить контакт
+— перейти дальше
+`.trim();
+  }
+  return buildSalesPrompt("greeting", leadData);
+}
+
+function computeNextSalesState(state, text, history) {
+  const t = typeof text === "string" ? text.trim() : "";
+  const userMsgCount = Array.isArray(history) ? history.filter((m) => m.role === "user").length : 0;
+  const hasQualifyData = t.length >= 22 || userMsgCount >= 2;
+
+  if (state === "greeting") return "qualify";
+  if (state === "qualify") return hasQualifyData ? "offer" : "qualify";
+  if (state === "offer") return "close";
+  if (state === "close") return "close";
+  return "qualify";
+}
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -415,9 +476,16 @@ async function ollamaTelegramChat(bot, tgChat, text) {
 
   console.log("[MODEL USED]:", model);
 
+  const state = tgChat.state || "greeting";
+  const history = Array.isArray(conv.messages) ? conv.messages : [];
+  const leadData = { lastUserText: text, userMsgCountBefore: history.filter((m) => m.role === "user").length };
+
   const finalPrompt = buildTelegramFinalSystemPrompt(agent);
+  const salesBlock = buildSalesPrompt(state, leadData);
   const systemPromptFinal = `
 ${finalPrompt}
+
+${salesBlock}
 
 ВАЖНО:
 — думай на русском языке
@@ -429,7 +497,6 @@ ${finalPrompt}
 не «переводи», а изначально отвечай на русском — без смешения языков.
 `.trim();
 
-  const history = Array.isArray(conv.messages) ? conv.messages : [];
   const fullMessages = [];
   if (systemPromptFinal.trim()) {
     fullMessages.push({ role: "system", content: systemPromptFinal.trim() });
@@ -461,9 +528,12 @@ ${finalPrompt}
     data: { messages: updatedMessages },
   });
 
+  const newState = computeNextSalesState(state, text, history);
+  console.log("[FSM STATE]:", state, "→", newState);
+
   await prisma.telegramChat.update({
     where: { id: tgChat.id },
-    data: { conversationId },
+    data: { conversationId, state: newState },
   });
 
   return reply;

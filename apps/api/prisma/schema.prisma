@@ -771,6 +771,8 @@ model TelegramChat {
   uxHintImage    Int         @default(0) @map("ux_hint_image")
   /// Shown "chat mode" UX banner count (max 2).
   uxHintChat     Int         @default(0) @map("ux_hint_chat")
+  /// Sales dialog FSM (chat mode only): greeting → qualify → offer → close
+  state          String      @default("greeting") @map("state")
   createdAt      DateTime    @default(now()) @map("created_at")
 
   @@unique([botId, telegramChatId])
