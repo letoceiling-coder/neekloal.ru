@@ -1,7 +1,8 @@
 "use strict";
 
 /**
- * Telegram integration: HTTP calls to Telegram API, DB, agent chat (agentRuntimeV2), image queue.
+ * Telegram integration: HTTP calls to Telegram API, DB, Ollama-only chat + BullMQ image queue.
+ * Text replies use direct Ollama /api/chat only (not the dashboard widget chat path).
  */
 
 const { v4: uuidv4 } = require("uuid");
@@ -20,7 +21,7 @@ const WEBHOOK_BASE =
 const KB_ROW_PHOTO = "🎨 Генерация фото";
 const KB_ROW_CHAT = "🧠 Чат";
 
-/** Единый базовый system prompt для Telegram (не трогает agentChatV2 глобально). */
+/** Единый базовый system prompt для Telegram (локально для этого модуля). */
 const BASE_SYSTEM_PROMPT = `
 Ты — живой человек и профессиональный помощник.
 
@@ -232,7 +233,7 @@ async function connectBot({ userId, organizationId, botToken }) {
 }
 
 /**
- * Image routing: подстроки «фото» / «сгенерируй» → отдельный pipeline (без agentChatV2).
+ * Image routing: подстроки «фото» / «сгенерируй» → отдельный pipeline.
  * Строки клавиатуры не считаем запросом картинки (иначе «Генерация фото» содержит «фото»).
  */
 function isImageIntent(text) {
@@ -244,7 +245,6 @@ function isImageIntent(text) {
 
 /**
  * enhancePrompt + BullMQ image-generation, ожидание через waitUntilFinished (QueueEvents).
- * Не вызывает agentChatV2.
  */
 async function runImagePipeline({ bot, rawPrompt }) {
   const queue = getImageQueue();
@@ -339,7 +339,7 @@ async function getOrCreateTelegramChat(bot, telegramChatIdStr) {
   });
 }
 
-async function runAgentChatForTelegram(bot, tgChat, text) {
+async function ollamaTelegramChat(bot, tgChat, text) {
   const agentId = tgChat.agentId;
   if (!agentId) {
     const e = new Error("Chat has no agent");
@@ -477,10 +477,11 @@ async function processTelegramUpdate(bot, update) {
     return { ok: true };
   }
 
+  console.log("[TELEGRAM FLOW]: DIRECT");
   const tgChat = await getOrCreateTelegramChat(bot, chatIdStr);
 
   try {
-    const replyText = await runAgentChatForTelegram(bot, tgChat, text);
+    const replyText = await ollamaTelegramChat(bot, tgChat, text);
     await telegramSendMessage(token, chatId, replyText || "…");
   } catch (err) {
     process.stderr.write(`[telegram] chat: ${err.message}\n`);
