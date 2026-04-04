@@ -9,7 +9,9 @@ const prisma = require("../../lib/prisma");
 const { agentChatV2, createConversation } = require("../../services/agentRuntimeV2");
 const { enhancePrompt, DEFAULT_NEGATIVE } = require("../../services/promptEnhancer");
 const { analyzePrompt } = require("../../services/aiBrainV2");
+const { QueueEvents } = require("bullmq");
 const { getImageQueue } = require("../../queues/imageQueue");
+const { getWorkerConnection } = require("../../lib/redis");
 
 const TG_API = "https://api.telegram.org";
 const WEBHOOK_BASE =
@@ -145,49 +147,36 @@ async function connectBot({ userId, organizationId, botToken }) {
   };
 }
 
-function shouldRunImagePipeline(text) {
+/**
+ * Image routing: подстроки «фото» / «сгенерируй» → отдельный pipeline (без agentChatV2).
+ * Строки клавиатуры не считаем запросом картинки (иначе «Генерация фото» содержит «фото»).
+ */
+function isImageIntent(text) {
   const t = String(text || "").trim();
-  if (t === KB_ROW_PHOTO) return false;
-  if (t === KB_ROW_CHAT) return false;
-  if (/сгенерируй/i.test(t)) return true;
-  if (/\bфото\b/i.test(t)) return true;
-  return false;
+  if (t === KB_ROW_PHOTO || t === KB_ROW_CHAT) return false;
+  const lower = t.toLowerCase();
+  return lower.includes("фото") || lower.includes("сгенерируй");
 }
 
-async function waitImageJobComplete(queue, jobId, timeoutMs = 180_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const job = await queue.getJob(jobId);
-    if (!job) {
-      await new Promise((r) => setTimeout(r, 500));
-      continue;
-    }
-    const state = await job.getState();
-    if (state === "completed") {
-      return job.returnvalue;
-    }
-    if (state === "failed") {
-      throw new Error(job.failedReason || "Image job failed");
-    }
-    await new Promise((r) => setTimeout(r, 2000));
-  }
-  throw new Error("Image generation timed out");
-}
-
+/**
+ * enhancePrompt + BullMQ image-generation, ожидание через waitUntilFinished (QueueEvents).
+ * Не вызывает agentChatV2.
+ */
 async function runImagePipeline({ bot, rawPrompt }) {
   const queue = getImageQueue();
   const jobId = uuidv4();
-  const brain = analyzePrompt(rawPrompt.trim());
-  const enh = await enhancePrompt(rawPrompt.trim(), { brain });
-  const prompt = enh.enhancedPrompt || rawPrompt.trim();
+  const trimmed = rawPrompt.trim();
+  const brain = analyzePrompt(trimmed);
+  const enh = await enhancePrompt(trimmed, { brain });
+  const improvedPrompt = enh.enhancedPrompt || trimmed;
   const negativePrompt = enh.negativePrompt || DEFAULT_NEGATIVE;
 
-  await queue.add(
+  const job = await queue.add(
     "generate",
     {
-      prompt,
+      prompt: improvedPrompt,
       negativePrompt,
-      originalPrompt: rawPrompt.trim(),
+      originalPrompt: trimmed,
       width: 1024,
       height: 1024,
       userId: bot.userId,
@@ -200,10 +189,23 @@ async function runImagePipeline({ bot, rawPrompt }) {
     { jobId }
   );
 
-  const result = await waitImageJobComplete(queue, jobId);
+  const connection = getWorkerConnection();
+  const queueEvents = new QueueEvents("image-generation", { connection });
+  let result;
+  try {
+    result = await job.waitUntilFinished(queueEvents, 180_000);
+  } finally {
+    await queueEvents.close();
+  }
+
   const url = result?.url || (Array.isArray(result?.urls) && result.urls[0]);
   if (!url) throw new Error("No image URL in job result");
-  return { url, prompt };
+  return {
+    url,
+    prompt: improvedPrompt,
+    jobId,
+    result,
+  };
 }
 
 async function ensureTelegramUser(from) {
@@ -335,18 +337,23 @@ async function processTelegramUpdate(bot, update) {
     return { ok: true, skipped: true };
   }
 
-  const tgChat = await getOrCreateTelegramChat(bot, chatIdStr);
-
-  if (shouldRunImagePipeline(text)) {
+  if (isImageIntent(text)) {
+    await telegramSendMessage(token, chatId, "⏳ Генерирую изображение...");
     try {
-      const { url, prompt: usedPrompt } = await runImagePipeline({ bot, rawPrompt: text });
-      await telegramSendPhoto(token, chatId, url, usedPrompt.slice(0, 900));
+      const out = await runImagePipeline({ bot, rawPrompt: text });
+      console.log("[TELEGRAM IMAGE FLOW] prompt:", out.prompt);
+      console.log("[TELEGRAM IMAGE FLOW] jobId:", out.jobId);
+      console.log("[TELEGRAM IMAGE FLOW] result:", JSON.stringify({ url: out.url, hasUrls: Boolean(out.result?.urls) }));
+      await telegramSendPhoto(token, chatId, out.url, String(out.prompt).slice(0, 900));
     } catch (err) {
       process.stderr.write(`[telegram] image pipeline: ${err.message}\n`);
-      await telegramSendMessage(token, chatId, `Не удалось сгенерировать изображение: ${err.message}`);
+      console.log("[TELEGRAM IMAGE FLOW] error:", err.message);
+      await telegramSendMessage(token, chatId, "❌ Ошибка генерации");
     }
     return { ok: true };
   }
+
+  const tgChat = await getOrCreateTelegramChat(bot, chatIdStr);
 
   try {
     const replyText = await runAgentChatForTelegram(bot, tgChat, text);
