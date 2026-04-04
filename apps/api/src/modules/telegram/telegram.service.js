@@ -148,6 +148,14 @@ async function telegramSendPhoto(token, chatId, photoUrl, caption) {
   });
 }
 
+async function telegramAnswerCallbackQuery(token, callbackQueryId, extra = {}) {
+  return tgRequest("POST", token, "/answerCallbackQuery", {
+    callback_query_id: callbackQueryId,
+    show_alert: Boolean(extra.showAlert),
+    text: extra.text != null ? String(extra.text) : undefined,
+  });
+}
+
 async function resolveDefaultAgentId(organizationId) {
   const a = await prisma.agent.findFirst({
     where: { organizationId, deletedAt: null },
@@ -230,17 +238,6 @@ async function connectBot({ userId, organizationId, botToken }) {
     botUsername,
     webhookUrl,
   };
-}
-
-/**
- * Image routing: подстроки «фото» / «сгенерируй» → отдельный pipeline.
- * Строки клавиатуры не считаем запросом картинки (иначе «Генерация фото» содержит «фото»).
- */
-function isImageIntent(text) {
-  const t = String(text || "").trim();
-  if (t === KB_ROW_PHOTO || t === KB_ROW_CHAT) return false;
-  const lower = t.toLowerCase();
-  return lower.includes("фото") || lower.includes("сгенерируй");
 }
 
 /**
@@ -372,11 +369,10 @@ async function ollamaTelegramChat(bot, tgChat, text) {
   }
 
   const ass = agent.assistant && !agent.assistant.deletedAt ? agent.assistant : null;
-  const modelPrimary = ass?.model || agent.model || "qwen2.5:14b";
+  const model = ass?.model || agent.model || "qwen2.5:14b";
   const modelFallback = "llama3:8b";
 
-  console.log("[MODEL USED]:", modelPrimary);
-  console.log("[FALLBACK USED]:", modelFallback);
+  console.log("[MODEL USED]:", model);
 
   const finalSystemPrompt = buildTelegramFinalSystemPrompt(agent);
   const history = Array.isArray(conv.messages) ? conv.messages : [];
@@ -387,12 +383,12 @@ async function ollamaTelegramChat(bot, tgChat, text) {
   fullMessages.push(...history, { role: "user", content: text });
 
   process.stdout.write(
-    `[telegram:chat] conv=${conversationId} try_model=${modelPrimary} ctx=${history.length}\n`
+    `[telegram:chat] conv=${conversationId} try_model=${model} ctx=${history.length}\n`
   );
 
   let content;
   try {
-    content = await ollamaTelegramOnce(modelPrimary, fullMessages, 0.7, undefined);
+    content = await ollamaTelegramOnce(model, fullMessages, 0.7, undefined);
   } catch (e) {
     console.error("[LLM PRIMARY ERROR]", e?.message || e);
     process.stdout.write(`[telegram:chat] switching to fallback model=${modelFallback}\n`);
@@ -420,6 +416,35 @@ async function ollamaTelegramChat(bot, tgChat, text) {
  */
 async function processTelegramUpdate(bot, update) {
   const token = bot.botToken;
+
+  if (update.callback_query) {
+    const cq = update.callback_query;
+    const msg = cq.message;
+    if (!msg || !msg.chat) return { ok: true, skipped: true };
+    const chatId = msg.chat.id;
+    const chatIdStr = String(chatId);
+    if (cq.from) await ensureTelegramUser(cq.from);
+
+    const tgChat = await getOrCreateTelegramChat(bot, chatIdStr);
+    const data = String(cq.data || "");
+
+    if (data === "mode_chat") {
+      await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "chat" } });
+      await telegramAnswerCallbackQuery(token, cq.id);
+      await telegramSendMessage(token, chatId, "🧠 Режим чата включен");
+      return { ok: true };
+    }
+    if (data === "mode_image") {
+      await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "image" } });
+      await telegramAnswerCallbackQuery(token, cq.id);
+      await telegramSendMessage(token, chatId, "🎨 Режим генерации включен");
+      return { ok: true };
+    }
+
+    await telegramAnswerCallbackQuery(token, cq.id);
+    return { ok: true };
+  }
+
   const msg = update.message || update.edited_message;
   if (!msg || !msg.chat) return { ok: true, skipped: true };
 
@@ -430,25 +455,27 @@ async function processTelegramUpdate(bot, update) {
   if (msg.from) await ensureTelegramUser(msg.from);
 
   if (text.startsWith("/start")) {
-    await telegramSendMessage(token, chatId, "Привет! Я подключён к вашему AI-кабинету. Выберите режим кнопками или пишите сообщения.", {
+    await telegramSendMessage(token, chatId, "Привет! Выберите режим кнопками ниже — затем пишите сообщения.", {
       replyMarkup: {
-        keyboard: [[{ text: KB_ROW_PHOTO }], [{ text: KB_ROW_CHAT }]],
-        resize_keyboard: true,
+        inline_keyboard: [
+          [{ text: "🎨 Генерация фото", callback_data: "mode_image" }],
+          [{ text: "🧠 Чат", callback_data: "mode_chat" }],
+        ],
       },
     });
     return { ok: true };
   }
 
+  const tgChat = await getOrCreateTelegramChat(bot, chatIdStr);
+
   if (text === KB_ROW_PHOTO) {
-    await telegramSendMessage(
-      token,
-      chatId,
-      "Режим генерации: опишите картинку в сообщении (можно со словами «фото» или «сгенерируй»)."
-    );
+    await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "image" } });
+    await telegramSendMessage(token, chatId, "🎨 Режим генерации включен");
     return { ok: true };
   }
   if (text === KB_ROW_CHAT) {
-    await telegramSendMessage(token, chatId, "Режим чата: пишите вопросы — ответит ваш агент с памятью диалога.");
+    await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "chat" } });
+    await telegramSendMessage(token, chatId, "🧠 Режим чата включен");
     return { ok: true };
   }
 
@@ -456,19 +483,18 @@ async function processTelegramUpdate(bot, update) {
     return { ok: true, skipped: true };
   }
 
-  if (isImageIntent(text)) {
+  const latest = await prisma.telegramChat.findUnique({ where: { id: tgChat.id } });
+  const mode = (latest && latest.mode) || "chat";
+
+  if (mode === "image") {
+    console.log("[TELEGRAM FLOW]: IMAGE MODE");
     await telegramSendMessage(token, chatId, "⏳ Генерирую изображение...");
     try {
       const out = await runImagePipeline({ bot, rawPrompt: text });
       console.log("[TELEGRAM IMAGE FLOW] prompt:", out.prompt);
       console.log("[TELEGRAM IMAGE FLOW] jobId:", out.jobId);
       console.log("[TELEGRAM IMAGE FLOW] result:", JSON.stringify({ url: out.url, hasUrls: Boolean(out.result?.urls) }));
-      await telegramSendPhoto(
-        token,
-        chatId,
-        out.url,
-        "Готово! Вот что получилось 👇"
-      );
+      await telegramSendPhoto(token, chatId, out.url);
     } catch (err) {
       process.stderr.write(`[telegram] image pipeline: ${err.message}\n`);
       console.log("[TELEGRAM IMAGE FLOW] error:", err.message);
@@ -477,11 +503,9 @@ async function processTelegramUpdate(bot, update) {
     return { ok: true };
   }
 
-  console.log("[TELEGRAM FLOW]: DIRECT");
-  const tgChat = await getOrCreateTelegramChat(bot, chatIdStr);
-
+  console.log("[TELEGRAM FLOW]: CHAT MODE");
   try {
-    const replyText = await ollamaTelegramChat(bot, tgChat, text);
+    const replyText = await ollamaTelegramChat(bot, latest, text);
     await telegramSendMessage(token, chatId, replyText || "…");
   } catch (err) {
     process.stderr.write(`[telegram] chat: ${err.message}\n`);
