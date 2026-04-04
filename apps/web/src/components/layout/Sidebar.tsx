@@ -9,6 +9,7 @@ import {
   Key,
   LayoutDashboard,
   MessageSquare,
+  Send,
   Settings,
   Store,
 } from "lucide-react";
@@ -30,6 +31,7 @@ export const sidebarNav: {
   { to: "/image-studio", label: "Image Studio", Icon: Image },
   { to: "/video",        label: "Video",        Icon: Film },
   { to: "/avito",        label: "Avito",        Icon: Store },
+  { to: "/telegram",     label: "Telegram Bot", Icon: Send },
   { to: "/analytics",   label: "Аналитика",    Icon: BarChart3 },
   { to: "/settings",    label: "Настройки",    Icon: Settings },
 ];

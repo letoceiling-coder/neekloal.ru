@@ -20,6 +20,7 @@ import { ResetPasswordPage } from "./pages/auth/ResetPasswordPage";
 import { ImageStudioPage } from "./pages/ImageStudioPage";
 import { ImageSettingsPage } from "./pages/ImageSettingsPage";
 import { AvitoPage } from "./pages/AvitoPage";
+import { TelegramPage } from "./pages/TelegramPage";
 import { AgentChatPage } from "./pages/AgentChatPage";
 import VideoPage from "./pages/VideoPage";
 import { AdminLeadsPage } from "./pages/admin/AdminLeadsPage";
@@ -64,6 +65,7 @@ export default function App() {
           <Route path="image-studio/settings" element={<ImageSettingsPage />} />
           <Route path="video" element={<VideoPage />} />
           <Route path="avito" element={<AvitoPage />} />
+          <Route path="telegram" element={<TelegramPage />} />
         </Route>
       </Route>
 
