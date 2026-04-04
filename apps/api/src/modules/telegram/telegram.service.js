@@ -21,6 +21,14 @@ const WEBHOOK_BASE =
 const KB_ROW_PHOTO = "🎨 Генерация фото";
 const KB_ROW_CHAT = "🧠 Чат";
 
+/** Inline mode switcher — прикрепляем к ответам бота. */
+const MODE_INLINE_REPLY_MARKUP = {
+  inline_keyboard: [
+    [{ text: "🎨 Генерация", callback_data: "mode_image" }],
+    [{ text: "🧠 Чат", callback_data: "mode_chat" }],
+  ],
+};
+
 /** Единый базовый system prompt для Telegram (локально для этого модуля). */
 const BASE_SYSTEM_PROMPT = `
 Ты — живой человек и профессиональный помощник.
@@ -85,6 +93,25 @@ async function ollamaTelegramOnce(model, fullMessages, temperature = 0.7, maxTok
   return data.message?.content ?? "";
 }
 
+async function translateToRussianViaOllama(text, model) {
+  const t = typeof text === "string" ? text.trim() : "";
+  if (!t) return "";
+  const messages = [
+    {
+      role: "system",
+      content:
+        "Переведи на русский язык. Сохрани смысл и тон. Ответь только переведённым текстом, без пояснений и без английских вставок.",
+    },
+    { role: "user", content: t },
+  ];
+  try {
+    const out = await ollamaTelegramOnce(model, messages, 0.2, 1024);
+    return typeof out === "string" && out.trim() ? out.trim() : t;
+  } catch {
+    return t;
+  }
+}
+
 function buildTelegramFinalSystemPrompt(agent) {
   const ass = agent.assistant && !agent.assistant.deletedAt ? agent.assistant : null;
   const custom = (ass?.systemPrompt?.trim() || agent.rules?.trim() || "");
@@ -140,11 +167,12 @@ async function telegramSendMessage(token, chatId, text, extra = {}) {
   });
 }
 
-async function telegramSendPhoto(token, chatId, photoUrl, caption) {
+async function telegramSendPhoto(token, chatId, photoUrl, caption, replyMarkup) {
   return tgRequest("POST", token, "/sendPhoto", {
     chat_id: chatId,
     photo: photoUrl,
     caption: caption || undefined,
+    reply_markup: replyMarkup || undefined,
   });
 }
 
@@ -374,11 +402,20 @@ async function ollamaTelegramChat(bot, tgChat, text) {
 
   console.log("[MODEL USED]:", model);
 
-  const finalSystemPrompt = buildTelegramFinalSystemPrompt(agent);
+  const finalPrompt = buildTelegramFinalSystemPrompt(agent);
+  const systemPromptFinal = `
+${finalPrompt}
+
+ВАЖНО:
+— всегда отвечай ТОЛЬКО на русском языке
+— если мысль на английском → переведи
+— не вставляй английские фразы
+`.trim();
+
   const history = Array.isArray(conv.messages) ? conv.messages : [];
   const fullMessages = [];
-  if (finalSystemPrompt.trim()) {
-    fullMessages.push({ role: "system", content: finalSystemPrompt.trim() });
+  if (systemPromptFinal.trim()) {
+    fullMessages.push({ role: "system", content: systemPromptFinal.trim() });
   }
   fullMessages.push(...history, { role: "user", content: text });
 
@@ -391,8 +428,14 @@ async function ollamaTelegramChat(bot, tgChat, text) {
     content = await ollamaTelegramOnce(model, fullMessages, 0.7, undefined);
   } catch (e) {
     console.error("[LLM PRIMARY ERROR]", e?.message || e);
+    console.log("[FALLBACK USED]");
     process.stdout.write(`[telegram:chat] switching to fallback model=${modelFallback}\n`);
-    content = await ollamaTelegramOnce(modelFallback, fullMessages, 0.7, undefined);
+    let raw = await ollamaTelegramOnce(modelFallback, fullMessages, 0.7, undefined);
+    raw = typeof raw === "string" ? raw : "";
+    if (raw.includes("Here's") || raw.includes("Sure")) {
+      raw = await translateToRussianViaOllama(raw, modelFallback);
+    }
+    content = raw;
   }
 
   let reply = stripEnglishTelegramArtifacts(typeof content === "string" ? content : "");
@@ -431,13 +474,17 @@ async function processTelegramUpdate(bot, update) {
     if (data === "mode_chat") {
       await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "chat" } });
       await telegramAnswerCallbackQuery(token, cq.id);
-      await telegramSendMessage(token, chatId, "🧠 Режим чата включен");
+      await telegramSendMessage(token, chatId, "🧠 Режим чата включен", {
+        replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      });
       return { ok: true };
     }
     if (data === "mode_image") {
       await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "image" } });
       await telegramAnswerCallbackQuery(token, cq.id);
-      await telegramSendMessage(token, chatId, "🎨 Режим генерации включен");
+      await telegramSendMessage(token, chatId, "🎨 Режим генерации включен", {
+        replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      });
       return { ok: true };
     }
 
@@ -456,12 +503,7 @@ async function processTelegramUpdate(bot, update) {
 
   if (text.startsWith("/start")) {
     await telegramSendMessage(token, chatId, "Привет! Выберите режим кнопками ниже — затем пишите сообщения.", {
-      replyMarkup: {
-        inline_keyboard: [
-          [{ text: "🎨 Генерация фото", callback_data: "mode_image" }],
-          [{ text: "🧠 Чат", callback_data: "mode_chat" }],
-        ],
-      },
+      replyMarkup: MODE_INLINE_REPLY_MARKUP,
     });
     return { ok: true };
   }
@@ -470,12 +512,16 @@ async function processTelegramUpdate(bot, update) {
 
   if (text === KB_ROW_PHOTO) {
     await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "image" } });
-    await telegramSendMessage(token, chatId, "🎨 Режим генерации включен");
+    await telegramSendMessage(token, chatId, "🎨 Режим генерации включен", {
+      replyMarkup: MODE_INLINE_REPLY_MARKUP,
+    });
     return { ok: true };
   }
   if (text === KB_ROW_CHAT) {
     await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "chat" } });
-    await telegramSendMessage(token, chatId, "🧠 Режим чата включен");
+    await telegramSendMessage(token, chatId, "🧠 Режим чата включен", {
+      replyMarkup: MODE_INLINE_REPLY_MARKUP,
+    });
     return { ok: true };
   }
 
@@ -487,6 +533,15 @@ async function processTelegramUpdate(bot, update) {
   const mode = (latest && latest.mode) || "chat";
 
   if (mode === "image") {
+    if (latest.uxHintImage < 2) {
+      await telegramSendMessage(token, chatId, "🎨 Сейчас режим генерации. Просто опиши картинку.", {
+        replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      });
+      await prisma.telegramChat.update({
+        where: { id: latest.id },
+        data: { uxHintImage: { increment: 1 } },
+      });
+    }
     console.log("[TELEGRAM FLOW]: IMAGE MODE");
     await telegramSendMessage(token, chatId, "⏳ Генерирую изображение...");
     try {
@@ -494,22 +549,38 @@ async function processTelegramUpdate(bot, update) {
       console.log("[TELEGRAM IMAGE FLOW] prompt:", out.prompt);
       console.log("[TELEGRAM IMAGE FLOW] jobId:", out.jobId);
       console.log("[TELEGRAM IMAGE FLOW] result:", JSON.stringify({ url: out.url, hasUrls: Boolean(out.result?.urls) }));
-      await telegramSendPhoto(token, chatId, out.url);
+      await telegramSendPhoto(token, chatId, out.url, undefined, MODE_INLINE_REPLY_MARKUP);
     } catch (err) {
       process.stderr.write(`[telegram] image pipeline: ${err.message}\n`);
       console.log("[TELEGRAM IMAGE FLOW] error:", err.message);
-      await telegramSendMessage(token, chatId, "❌ Ошибка генерации");
+      await telegramSendMessage(token, chatId, "❌ Ошибка генерации", {
+        replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      });
     }
     return { ok: true };
+  }
+
+  if (latest.uxHintChat < 2) {
+    await telegramSendMessage(token, chatId, "🧠 Сейчас режим чата. Можешь писать что угодно.", {
+      replyMarkup: MODE_INLINE_REPLY_MARKUP,
+    });
+    await prisma.telegramChat.update({
+      where: { id: latest.id },
+      data: { uxHintChat: { increment: 1 } },
+    });
   }
 
   console.log("[TELEGRAM FLOW]: CHAT MODE");
   try {
     const replyText = await ollamaTelegramChat(bot, latest, text);
-    await telegramSendMessage(token, chatId, replyText || "…");
+    await telegramSendMessage(token, chatId, replyText || "…", {
+      replyMarkup: MODE_INLINE_REPLY_MARKUP,
+    });
   } catch (err) {
     process.stderr.write(`[telegram] chat: ${err.message}\n`);
-    await telegramSendMessage(token, chatId, `Ошибка чата: ${err.message}`);
+    await telegramSendMessage(token, chatId, `Ошибка чата: ${err.message}`, {
+      replyMarkup: MODE_INLINE_REPLY_MARKUP,
+    });
   }
 
   return { ok: true };

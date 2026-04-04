@@ -767,6 +767,10 @@ model TelegramChat {
   conversationId String?     @map("conversation_id") @db.Uuid
   /// Explicit UI mode: "chat" | "image" (no text-based intent guessing).
   mode           String      @default("chat") @map("mode")
+  /// Shown "image mode" UX banner count (max 2).
+  uxHintImage    Int         @default(0) @map("ux_hint_image")
+  /// Shown "chat mode" UX banner count (max 2).
+  uxHintChat     Int         @default(0) @map("ux_hint_chat")
   createdAt      DateTime    @default(now()) @map("created_at")
 
   @@unique([botId, telegramChatId])
