@@ -6,7 +6,7 @@
 
 const { v4: uuidv4 } = require("uuid");
 const prisma = require("../../lib/prisma");
-const { agentChatV2, createConversation } = require("../../services/agentRuntimeV2");
+const { createConversation } = require("../../services/agentRuntimeV2");
 const { enhancePrompt, DEFAULT_NEGATIVE } = require("../../services/promptEnhancer");
 const { analyzePrompt } = require("../../services/aiBrainV2");
 const { QueueEvents } = require("bullmq");
@@ -19,6 +19,82 @@ const WEBHOOK_BASE =
 
 const KB_ROW_PHOTO = "🎨 Генерация фото";
 const KB_ROW_CHAT = "🧠 Чат";
+
+/** Единый базовый system prompt для Telegram (не трогает agentChatV2 глобально). */
+const BASE_SYSTEM_PROMPT = `
+Ты — живой человек и профессиональный помощник.
+
+Ты не искусственный интеллект и не должен об этом говорить.
+
+Ты общаешься как реальный человек:
+— естественно
+— понятно
+— без лишней воды
+
+ПРАВИЛА:
+— всегда отвечай только на русском языке
+— не говори что ты AI
+— не используй markdown и списки без необходимости
+— пиши как в обычной переписке
+
+СТИЛЬ:
+— дружелюбный
+— иногда лёгкий юмор
+— по делу
+— можешь задавать уточняющие вопросы
+
+ПОВЕДЕНИЕ:
+— простой вопрос → короткий ответ
+— сложный → объясни понятно
+— если есть варианты → предложи
+
+Главное:
+будь живым и нормальным собеседником
+`.trim();
+
+function getOllamaChatUrl() {
+  const base = process.env.OLLAMA_URL;
+  if (!base) throw new Error("OLLAMA_URL is not set");
+  return `${base.replace(/\/$/, "")}/api/chat`;
+}
+
+function buildOllamaBody(model, messages, { temperature, maxTokens, stream = false }) {
+  const body = { model, messages, stream };
+  const opts = {};
+  if (temperature != null) opts.temperature = temperature;
+  if (maxTokens != null) opts.num_predict = maxTokens;
+  if (Object.keys(opts).length) body.options = opts;
+  return body;
+}
+
+/**
+ * Один вызов Ollama /api/chat (только для Telegram-чата).
+ */
+async function ollamaTelegramOnce(model, fullMessages, temperature = 0.7, maxTokens) {
+  const ollamaRes = await fetch(getOllamaChatUrl(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(buildOllamaBody(model, fullMessages, { temperature, maxTokens, stream: false })),
+  });
+  if (!ollamaRes.ok) {
+    const err = await ollamaRes.text();
+    throw new Error(`Ollama /api/chat failed: ${ollamaRes.status} — ${err.slice(0, 300)}`);
+  }
+  const data = await ollamaRes.json();
+  return data.message?.content ?? "";
+}
+
+function buildTelegramFinalSystemPrompt(agent) {
+  const ass = agent.assistant && !agent.assistant.deletedAt ? agent.assistant : null;
+  const custom = (ass?.systemPrompt?.trim() || agent.rules?.trim() || "");
+  const extraBlock = custom ? `\n\nДополнительные инструкции:\n\n${custom}` : "";
+  return `${BASE_SYSTEM_PROMPT}${extraBlock}`;
+}
+
+function stripEnglishTelegramArtifacts(response) {
+  if (response == null || typeof response !== "string") return "";
+  return response.replace(/Here is|Here's|Sure!/gi, "").trim();
+}
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -83,7 +159,15 @@ async function resolveDefaultAgentId(organizationId) {
 async function loadAgent(agentId, organizationId) {
   return prisma.agent.findFirst({
     where: { id: agentId, organizationId, deletedAt: null },
-    select: { id: true, name: true, rules: true, model: true },
+    select: {
+      id: true,
+      name: true,
+      rules: true,
+      model: true,
+      assistant: {
+        select: { systemPrompt: true, model: true, deletedAt: true },
+      },
+    },
   });
 }
 
@@ -280,20 +364,55 @@ async function runAgentChatForTelegram(bot, tgChat, text) {
     });
   }
 
-  const result = await agentChatV2({
-    conversationId,
-    message: text,
-    organizationId: bot.organizationId,
-    systemPrompt: agent.rules?.trim() || null,
-    model: agent.model || undefined,
+  const conv = await prisma.agentConversation.findFirst({
+    where: { id: conversationId, organizationId: bot.organizationId },
+  });
+  if (!conv) {
+    throw new Error(`Conversation ${conversationId} not found`);
+  }
+
+  const ass = agent.assistant && !agent.assistant.deletedAt ? agent.assistant : null;
+  const modelPrimary = ass?.model || agent.model || "qwen2.5:14b";
+  const modelFallback = "llama3:8b";
+
+  console.log("[MODEL USED]:", modelPrimary);
+  console.log("[FALLBACK USED]:", modelFallback);
+
+  const finalSystemPrompt = buildTelegramFinalSystemPrompt(agent);
+  const history = Array.isArray(conv.messages) ? conv.messages : [];
+  const fullMessages = [];
+  if (finalSystemPrompt.trim()) {
+    fullMessages.push({ role: "system", content: finalSystemPrompt.trim() });
+  }
+  fullMessages.push(...history, { role: "user", content: text });
+
+  process.stdout.write(
+    `[telegram:chat] conv=${conversationId} try_model=${modelPrimary} ctx=${history.length}\n`
+  );
+
+  let content;
+  try {
+    content = await ollamaTelegramOnce(modelPrimary, fullMessages, 0.7, undefined);
+  } catch (e) {
+    console.error("[LLM PRIMARY ERROR]", e?.message || e);
+    process.stdout.write(`[telegram:chat] switching to fallback model=${modelFallback}\n`);
+    content = await ollamaTelegramOnce(modelFallback, fullMessages, 0.7, undefined);
+  }
+
+  let reply = stripEnglishTelegramArtifacts(typeof content === "string" ? content : "");
+
+  const updatedMessages = [...history, { role: "user", content: text }, { role: "assistant", content: reply }];
+  await prisma.agentConversation.update({
+    where: { id: conversationId },
+    data: { messages: updatedMessages },
   });
 
   await prisma.telegramChat.update({
     where: { id: tgChat.id },
-    data: { conversationId: result.conversationId },
+    data: { conversationId },
   });
 
-  return result.reply;
+  return reply;
 }
 
 /**
@@ -344,7 +463,12 @@ async function processTelegramUpdate(bot, update) {
       console.log("[TELEGRAM IMAGE FLOW] prompt:", out.prompt);
       console.log("[TELEGRAM IMAGE FLOW] jobId:", out.jobId);
       console.log("[TELEGRAM IMAGE FLOW] result:", JSON.stringify({ url: out.url, hasUrls: Boolean(out.result?.urls) }));
-      await telegramSendPhoto(token, chatId, out.url, String(out.prompt).slice(0, 900));
+      await telegramSendPhoto(
+        token,
+        chatId,
+        out.url,
+        "Готово! Вот что получилось 👇"
+      );
     } catch (err) {
       process.stderr.write(`[telegram] image pipeline: ${err.message}\n`);
       console.log("[TELEGRAM IMAGE FLOW] error:", err.message);
