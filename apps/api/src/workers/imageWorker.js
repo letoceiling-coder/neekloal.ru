@@ -8,6 +8,7 @@ const path = require("path");
 const { v4: uuidv4 } = require("uuid");
 const { getWorkerConnection } = require("../lib/redis");
 const prisma = require("../lib/prisma");
+const { enhanceProductProFile, buildCatalogProductPng } = require("../lib/productProPost");
 
 const COMFYUI_URL = process.env.COMFYUI_URL || "http://188.124.55.89:8188";
 const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
@@ -475,6 +476,54 @@ async function saveAllImages(filenames, jobData) {
   return results;
 }
 
+/**
+ * Persist a buffer already in final form (e.g. catalog pipeline) + DB row.
+ */
+async function saveBufferAsGenerated(buffer, jobData, finalJobId) {
+  const {
+    userId, organizationId,
+    prompt, originalPrompt, negativePrompt,
+    style, aspectRatio, mode,
+    width = 1024, height = 1024,
+  } = jobData;
+
+  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  const ext = ".png";
+  const savedName = `${finalJobId}${ext}`;
+  const localPath = path.join(OUTPUT_DIR, savedName);
+  fs.writeFileSync(localPath, buffer);
+  await enhanceProductProFile(localPath);
+
+  const publicUrl = `${PUBLIC_BASE}/${savedName}`;
+  let dbId = uuidv4();
+  try {
+    const record = await prisma.generatedImage.create({
+      data: {
+        id: dbId,
+        jobId: finalJobId,
+        userId,
+        organizationId,
+        url: publicUrl,
+        localPath,
+        mode: mode || "text",
+        prompt: prompt || "",
+        originalPrompt: originalPrompt || null,
+        negativePrompt: negativePrompt || null,
+        style: style || null,
+        aspectRatio: aspectRatio || null,
+        width: Number(width) || 1024,
+        height: Number(height) || 1024,
+        variantIndex: 0,
+      },
+    });
+    dbId = record.id;
+  } catch (e) {
+    process.stderr.write(`[imageWorker] DB save failed (buffer): ${e.message}\n`);
+  }
+
+  return { id: dbId, localPath, publicUrl };
+}
+
 // ── Worker ──────────────────────────────────────────────────────────────────
 
 const worker = new Worker(
@@ -486,7 +535,7 @@ const worker = new Worker(
       controlType = "canny", style, aspectRatio,
     } = job.data;
 
-    job.log(`[imageWorker] starting job=${job.id} mode=${mode} prompt="${prompt.slice(0, 60)}"`);
+    job.log(`[imageWorker] starting job=${job.id} mode=${mode} prompt="${String(prompt || "").slice(0, 60)}"`);
     process.stdout.write(`[imageWorker] job ${job.id} mode=${mode}\n`);
 
     await fetch(`${COMFYUI_URL}/system_stats`, { signal: AbortSignal.timeout(8_000) }).then((r) => {
@@ -527,7 +576,27 @@ const worker = new Worker(
       filenames = await waitForComfyOutput(promptId);
       job.log(`[imageWorker] reference done`);
 
-    } else if (mode === "product") {
+    } else if (mode === "product_pro_catalog") {
+      if (!referenceImageUrl) throw new Error("referenceImageUrl required for product_pro_catalog");
+      process.stdout.write(`[imageWorker] product_pro_catalog: rembg + white backdrop + sharpen\n`);
+      const buf = await downloadBuffer(referenceImageUrl);
+      const outBuf = await buildCatalogProductPng(buf);
+      const saved = await saveBufferAsGenerated(outBuf, { ...job.data, jobId: finalJobId }, finalJobId);
+      const urls = [saved.publicUrl];
+      const localPaths = [saved.localPath];
+      const dbIds = [saved.id];
+      return {
+        url: urls[0],
+        urls,
+        localPath: localPaths[0],
+        localPaths,
+        dbIds,
+        mode,
+        count: 1,
+      };
+    } else if (mode === "product" || mode === "product_pro_model") {
+      // Product Pro model slots: SDXL + IP-Adapter (same as product). Pose variation is via prompt hints;
+      // a unified SDXL+OpenPose ControlNet graph would need extra ComfyUI XL ControlNet wiring on the GPU host.
       if (!referenceImageUrl) throw new Error("referenceImageUrl required for product mode");
       const denoise = clampRefDenoise(strength);
       const ipW = clampIpAdapterWeight(job.data.ipAdapterWeight);
@@ -548,7 +617,7 @@ const worker = new Worker(
 
       logGenLine({
         event: "image_gen_start",
-        mode: "product",
+        mode: mode === "product_pro_model" ? "product_pro_model" : "product",
         jobId: String(finalJobId),
         referenceImageUrl: String(referenceImageUrl),
         denoise,
@@ -644,6 +713,12 @@ const worker = new Worker(
       ...job.data,
       jobId: finalJobId,
     });
+
+    if (mode === "product_pro_model") {
+      for (const s of saved) {
+        await enhanceProductProFile(s.localPath);
+      }
+    }
 
     job.log(`[imageWorker] saved ${saved.length} image(s)`);
 

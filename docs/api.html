@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>API Документация — AI Assistants</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #242736;
+      --border: #2e3248;
+      --accent: #6c63ff;
+      --accent2: #4ade80;
+      --accent3: #f59e0b;
+      --text: #e2e8f0;
+      --text-muted: #8892b0;
+      --red: #f87171;
+      --blue: #60a5fa;
+      --green: #4ade80;
+      --yellow: #fbbf24;
+      --radius: 10px;
+      --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 260px;
+      min-width: 260px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      padding: 28px 0 40px;
+      flex-shrink: 0;
+    }
+    .sidebar-logo {
+      padding: 0 24px 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .sidebar-logo span {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.3px;
+    }
+    .sidebar-logo small {
+      display: block;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+      font-family: var(--font-mono);
+    }
+    .nav-section {
+      padding: 0 16px 8px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-top: 20px;
+    }
+    .nav-link {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 24px;
+      font-size: 13.5px;
+      color: var(--text-muted);
+      text-decoration: none;
+      border-left: 2px solid transparent;
+      transition: all 0.15s;
+    }
+    .nav-link:hover { color: var(--text); background: var(--surface2); }
+    .nav-link.active { color: var(--accent); border-left-color: var(--accent); background: rgba(108,99,255,.08); }
+    .method-badge {
+      font-size: 10px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-left: auto;
+    }
+    .badge-post { background: rgba(108,99,255,.25); color: #a5b4fc; }
+    .badge-get  { background: rgba(74,222,128,.2);  color: #86efac; }
+
+    /* ── Main ── */
+    .main {
+      flex: 1;
+      max-width: 860px;
+      padding: 48px 56px 80px;
+      overflow-x: hidden;
+    }
+
+    /* ── Sections ── */
+    .section { margin-bottom: 64px; scroll-margin-top: 24px; }
+    h1 { font-size: 32px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 8px; }
+    h1 .version-chip {
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(108,99,255,.2);
+      color: #a5b4fc;
+      padding: 2px 10px;
+      border-radius: 20px;
+      vertical-align: middle;
+      margin-left: 10px;
+    }
+    .subtitle { font-size: 15px; color: var(--text-muted); margin-bottom: 32px; }
+    h2 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+      letter-spacing: -0.3px;
+    }
+    h3 { font-size: 15px; font-weight: 600; color: var(--text-muted); margin: 20px 0 10px; text-transform: uppercase; letter-spacing: 0.8px; font-size: 11px; }
+    p { color: var(--text-muted); font-size: 14.5px; margin-bottom: 12px; }
+    strong { color: var(--text); }
+
+    /* ── Endpoint card ── */
+    .endpoint-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 32px;
+      overflow: hidden;
+    }
+    .endpoint-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 16px 20px;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+    .method-tag {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+    .method-tag.post { background: rgba(108,99,255,.25); color: #a5b4fc; }
+    .path-tag {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      color: var(--text);
+    }
+    .path-tag .base { color: var(--text-muted); }
+    .endpoint-desc { padding: 16px 20px; border-bottom: 1px solid var(--border); }
+    .endpoint-desc p { margin: 0; }
+
+    /* ── Table ── */
+    table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-bottom: 8px; }
+    th {
+      text-align: left;
+      padding: 8px 12px;
+      background: var(--surface2);
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    td { padding: 10px 12px; border-top: 1px solid var(--border); vertical-align: top; }
+    td code {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      color: var(--accent);
+      background: rgba(108,99,255,.1);
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+    .type-chip {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--yellow);
+      background: rgba(251,191,36,.1);
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+    .required-chip {
+      font-size: 10px;
+      color: var(--red);
+      background: rgba(248,113,113,.12);
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+    .optional-chip {
+      font-size: 10px;
+      color: var(--text-muted);
+      background: rgba(136,146,176,.12);
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+    td p { margin: 0; color: var(--text-muted); }
+
+    /* ── Code block ── */
+    .code-block {
+      background: #0d0f16;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    .code-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+    .code-lang { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+    .copy-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+    .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .copy-btn.copied { border-color: var(--green); color: var(--green); }
+    pre {
+      padding: 16px 20px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+    /* Syntax highlight */
+    .kw   { color: #c792ea; }
+    .str  { color: #c3e88d; }
+    .num  { color: #f78c6c; }
+    .key  { color: #82aaff; }
+    .cmt  { color: #546e7a; font-style: italic; }
+    .url  { color: var(--accent2); }
+    .hdr  { color: var(--yellow); }
+    .op   { color: var(--text-muted); }
+
+    /* ── Status chips ── */
+    .status-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+    .status-chip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      border: 1px solid;
+    }
+    .status-chip .code-num { font-family: var(--font-mono); font-weight: 700; }
+    .status-200 { border-color: rgba(74,222,128,.3);  background: rgba(74,222,128,.06);  color: var(--green); }
+    .status-400 { border-color: rgba(251,191,36,.3);  background: rgba(251,191,36,.06);  color: var(--yellow); }
+    .status-401 { border-color: rgba(248,113,113,.3); background: rgba(248,113,113,.06); color: var(--red); }
+    .status-403 { border-color: rgba(248,113,113,.3); background: rgba(248,113,113,.06); color: var(--red); }
+    .status-404 { border-color: rgba(248,113,113,.3); background: rgba(248,113,113,.06); color: var(--red); }
+    .status-429 { border-color: rgba(251,191,36,.3);  background: rgba(251,191,36,.06);  color: var(--yellow); }
+    .status-502 { border-color: rgba(248,113,113,.3); background: rgba(248,113,113,.06); color: var(--red); }
+
+    /* ── Info boxes ── */
+    .info-box {
+      display: flex;
+      gap: 12px;
+      padding: 14px 18px;
+      border-radius: var(--radius);
+      border: 1px solid;
+      margin-bottom: 20px;
+      font-size: 13.5px;
+    }
+    .info-box .icon { flex-shrink: 0; font-size: 16px; }
+    .info-box p { margin: 0; }
+    .info-box.info  { border-color: rgba(96,165,250,.3);  background: rgba(96,165,250,.06);  color: var(--blue); }
+    .info-box.warn  { border-color: rgba(251,191,36,.3);  background: rgba(251,191,36,.06);  color: var(--yellow); }
+    .info-box.tip   { border-color: rgba(74,222,128,.3);  background: rgba(74,222,128,.06);  color: var(--green); }
+
+    /* ── Rate limit table ── */
+    .rate-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .rate-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      text-align: center;
+    }
+    .rate-card .val { font-size: 28px; font-weight: 800; color: var(--accent); font-family: var(--font-mono); }
+    .rate-card .label { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── SSE events ── */
+    .sse-events { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
+    .sse-event {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      padding: 12px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .sse-name { font-family: var(--font-mono); font-size: 13px; font-weight: 700; min-width: 60px; }
+    .sse-token { color: #c792ea; }
+    .sse-done  { color: var(--green); }
+    .sse-error { color: var(--red); }
+    .sse-event p { margin: 0; font-size: 13px; }
+
+    /* ── Tabs ── */
+    .tabs { display: flex; gap: 2px; margin-bottom: 0; border-bottom: 1px solid var(--border); }
+    .tab-btn {
+      padding: 8px 18px;
+      font-size: 13px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      .sidebar { display: none; }
+      .main { padding: 32px 24px 60px; }
+      .rate-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════ SIDEBAR ═══════════════════════ -->
+<nav class="sidebar">
+  <div class="sidebar-logo">
+    <span>AI Assistants API</span>
+    <small>v1  ·  REST + SSE</small>
+  </div>
+
+  <div class="nav-section">Обзор</div>
+  <a class="nav-link active" href="#overview">Введение</a>
+  <a class="nav-link" href="#auth">Аутентификация</a>
+  <a class="nav-link" href="#rate-limit">Лимиты запросов</a>
+  <a class="nav-link" href="#errors">Коды ошибок</a>
+
+  <div class="nav-section">Эндпоинты</div>
+  <a class="nav-link" href="#chat">
+    Чат (обычный)
+    <span class="method-badge badge-post">POST</span>
+  </a>
+  <a class="nav-link" href="#stream">
+    Чат (стриминг)
+    <span class="method-badge badge-post">POST</span>
+  </a>
+
+  <div class="nav-section">Примеры</div>
+  <a class="nav-link" href="#examples-curl">cURL</a>
+  <a class="nav-link" href="#examples-js">JavaScript</a>
+  <a class="nav-link" href="#examples-python">Python</a>
+
+  <div class="nav-section">Интеграция</div>
+  <a class="nav-link" href="#widget">Виджет</a>
+  <a class="nav-link" href="#domain-restrict">Ограничение доменов</a>
+</nav>
+
+<!-- ═══════════════════════ MAIN ═══════════════════════ -->
+<main class="main">
+
+  <!-- ── Overview ── -->
+  <section class="section" id="overview">
+    <h1>AI Assistants API <span class="version-chip">v1</span></h1>
+    <p class="subtitle">
+      REST API для интеграции AI-ассистентов в любые приложения — сайты, мобильные приложения, Telegram-боты, CRM-системы.
+    </p>
+
+    <div class="info-box info">
+      <span class="icon">ℹ️</span>
+      <p><strong>Base URL:</strong> все эндпоинты доступны по адресу <code>https://your-domain.ru/api/v1</code></p>
+    </div>
+
+    <h3>Возможности</h3>
+    <table>
+      <thead><tr><th>Функция</th><th>Описание</th></tr></thead>
+      <tbody>
+        <tr><td><code>POST /chat</code></td><td><p>Отправить сообщение ассистенту, получить полный ответ в JSON</p></td></tr>
+        <tr><td><code>POST /chat/stream</code></td><td><p>Потоковый ответ токен за токеном (SSE) — для живого UI</p></td></tr>
+        <tr><td>Контекст диалога</td><td><p>Передайте <code>conversationId</code> — ассистент помнит историю переписки</p></td></tr>
+        <tr><td>Выбор модели</td><td><p>Можно переопределить LLM-модель на уровне каждого запроса</p></td></tr>
+        <tr><td>API ключи</td><td><p>Изолированный доступ с опциональным ограничением по домену</p></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ── Auth ── -->
+  <section class="section" id="auth">
+    <h2>Аутентификация</h2>
+
+    <p>Каждый запрос должен содержать API ключ. Ключ передаётся одним из двух способов:</p>
+
+    <h3>Способ 1 — заголовок Authorization</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">HTTP Header</span>
+        <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+      </div>
+      <pre><span class="hdr">Authorization</span><span class="op">:</span> <span class="str">Bearer sk-live_xxxxxxxxxxxxxxxxxxxxxxxx</span></pre>
+    </div>
+
+    <h3>Способ 2 — заголовок X-Api-Key</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">HTTP Header</span>
+        <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+      </div>
+      <pre><span class="hdr">X-Api-Key</span><span class="op">:</span> <span class="str">sk-live_xxxxxxxxxxxxxxxxxxxxxxxx</span></pre>
+    </div>
+
+    <div class="info-box warn">
+      <span class="icon">⚠️</span>
+      <p>API ключи начинаются с префикса <strong>sk-</strong>. Не путайте с JWT-токенами дашборда — они предназначены только для внутреннего использования.</p>
+    </div>
+
+    <h3>Где получить ключ</h3>
+    <p>API ключи создаются в разделе <strong>Настройки → API ключи</strong> дашборда. При создании ключа можно указать:</p>
+    <ul style="color: var(--text-muted); font-size: 14px; padding-left: 20px; line-height: 2;">
+      <li>Название ключа (для идентификации)</li>
+      <li>Привязка к конкретному ассистенту (опционально)</li>
+      <li>Разрешённые домены (опционально, для виджетов)</li>
+    </ul>
+  </section>
+
+  <!-- ── Rate Limit ── -->
+  <section class="section" id="rate-limit">
+    <h2>Лимиты запросов</h2>
+
+    <div class="rate-grid">
+      <div class="rate-card">
+        <div class="val">60</div>
+        <div class="label">запросов / минуту<br>по API ключу</div>
+      </div>
+      <div class="rate-card">
+        <div class="val">30</div>
+        <div class="label">запросов / минуту<br>по JWT сессии</div>
+      </div>
+      <div class="rate-card">
+        <div class="val">60s</div>
+        <div class="label">таймаут стриминга<br>после чего обрыв</div>
+      </div>
+    </div>
+
+    <p>При каждом успешном запросе сервер возвращает заголовки со статистикой:</p>
+
+    <table>
+      <thead><tr><th>Заголовок</th><th>Значение</th></tr></thead>
+      <tbody>
+        <tr><td><code>X-RateLimit-Limit</code></td><td><p>Максимум запросов в окне (60 или 30)</p></td></tr>
+        <tr><td><code>X-RateLimit-Remaining</code></td><td><p>Осталось запросов в текущем окне</p></td></tr>
+        <tr><td><code>X-RateLimit-Reset</code></td><td><p>Unix-timestamp (сек) — когда сбросится счётчик</p></td></tr>
+        <tr><td><code>Retry-After</code></td><td><p>Только при 429 — через сколько секунд можно повторить</p></td></tr>
+      </tbody>
+    </table>
+
+    <div class="info-box tip">
+      <span class="icon">💡</span>
+      <p>При получении <strong>429</strong> дождитесь истечения <code>Retry-After</code> секунд и повторите запрос.</p>
+    </div>
+  </section>
+
+  <!-- ── Errors ── -->
+  <section class="section" id="errors">
+    <h2>Коды ошибок</h2>
+
+    <div class="status-row">
+      <div class="status-chip status-200"><span class="code-num">200</span> OK</div>
+      <div class="status-chip status-400"><span class="code-num">400</span> Bad Request</div>
+      <div class="status-chip status-401"><span class="code-num">401</span> Unauthorized</div>
+      <div class="status-chip status-403"><span class="code-num">403</span> Forbidden</div>
+      <div class="status-chip status-404"><span class="code-num">404</span> Not Found</div>
+      <div class="status-chip status-429"><span class="code-num">429</span> Too Many Requests</div>
+      <div class="status-chip status-502"><span class="code-num">502</span> AI Error</div>
+    </div>
+
+    <table>
+      <thead><tr><th>Код</th><th>Причина</th><th>Решение</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="type-chip">400</span></td>
+          <td><p>Не передан обязательный параметр (<code>agentId</code> или <code>message</code>)</p></td>
+          <td><p>Добавьте недостающие поля в тело запроса</p></td>
+        </tr>
+        <tr>
+          <td><span class="type-chip">401</span></td>
+          <td><p>Отсутствует, неверный или отозванный API ключ</p></td>
+          <td><p>Проверьте заголовок <code>Authorization: Bearer sk-...</code></p></td>
+        </tr>
+        <tr>
+          <td><span class="type-chip">403</span></td>
+          <td><p>Домен запроса не входит в <code>allowedDomains</code> ключа; или организация заблокирована</p></td>
+          <td><p>Добавьте домен в настройках ключа, либо обратитесь в поддержку</p></td>
+        </tr>
+        <tr>
+          <td><span class="type-chip">404</span></td>
+          <td><p>Ассистент с таким <code>agentId</code> не найден, или не принадлежит вашей организации; либо неверный <code>conversationId</code></p></td>
+          <td><p>Проверьте UUID ассистента в дашборде</p></td>
+        </tr>
+        <tr>
+          <td><span class="type-chip">429</span></td>
+          <td><p>Превышен лимит запросов</p></td>
+          <td><p>Подождите <code>Retry-After</code> секунд</p></td>
+        </tr>
+        <tr>
+          <td><span class="type-chip">502</span></td>
+          <td><p>Ошибка LLM-бэкенда (Ollama недоступен или вернул ошибку)</p></td>
+          <td><p>Повторите запрос через несколько секунд</p></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>Все ошибки возвращают JSON:</p>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">JSON</span>
+        <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+      </div>
+      <pre>{
+  <span class="key">"error"</span><span class="op">:</span> <span class="str">"Agent not found"</span>
+}</pre>
+    </div>
+  </section>
+
+  <!-- ── POST /chat ── -->
+  <section class="section" id="chat">
+    <h2>POST /chat — обычный чат</h2>
+
+    <div class="endpoint-card">
+      <div class="endpoint-header">
+        <span class="method-tag post">POST</span>
+        <span class="path-tag"><span class="base">https://your-domain.ru</span>/api/v1/chat</span>
+      </div>
+      <div class="endpoint-desc">
+        <p>Отправить сообщение ассистенту и получить полный ответ в формате JSON. Если <code>conversationId</code> не передан — автоматически создаётся новый диалог, его <code>id</code> возвращается в ответе.</p>
+      </div>
+    </div>
+
+    <h3>Тело запроса (application/json)</h3>
+    <table>
+      <thead><tr><th>Параметр</th><th>Тип</th><th>Обязательность</th><th>Описание</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>agentId</code></td>
+          <td><span class="type-chip">string (UUID)</span></td>
+          <td><span class="required-chip">обязательный</span></td>
+          <td><p>UUID ассистента из дашборда</p></td>
+        </tr>
+        <tr>
+          <td><code>message</code></td>
+          <td><span class="type-chip">string</span></td>
+          <td><span class="required-chip">обязательный</span></td>
+          <td><p>Текст сообщения пользователя</p></td>
+        </tr>
+        <tr>
+          <td><code>conversationId</code></td>
+          <td><span class="type-chip">string (UUID)</span></td>
+          <td><span class="optional-chip">опциональный</span></td>
+          <td><p>ID существующего диалога для продолжения контекста. Если не передан — создаётся новый.</p></td>
+        </tr>
+        <tr>
+          <td><code>model</code></td>
+          <td><span class="type-chip">string</span></td>
+          <td><span class="optional-chip">опциональный</span></td>
+          <td><p>Переопределить LLM модель, например <code>qwen2.5:7b</code>, <code>llama3.1:8b</code>. Приоритет: запрос → ассистент → система.</p></td>
+        </tr>
+        <tr>
+          <td><code>temperature</code></td>
+          <td><span class="type-chip">number</span></td>
+          <td><span class="optional-chip">опциональный</span></td>
+          <td><p>Температура генерации (0.0 – 2.0). Выше — креативнее, ниже — точнее.</p></td>
+        </tr>
+        <tr>
+          <td><code>maxTokens</code></td>
+          <td><span class="type-chip">number</span></td>
+          <td><span class="optional-chip">опциональный</span></td>
+          <td><p>Максимальное число токенов в ответе.</p></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Ответ 200 OK</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">JSON</span>
+        <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+      </div>
+      <pre>{
+  <span class="key">"reply"</span><span class="op">:</span>          <span class="str">"Привет! Чем могу помочь?"</span>,
+  <span class="key">"conversationId"</span><span class="op">:</span> <span class="str">"a1b2c3d4-e5f6-7890-abcd-ef1234567890"</span>,
+  <span class="key">"model"</span><span class="op">:</span>          <span class="str">"qwen2.5:7b"</span>,
+  <span class="key">"tokens"</span><span class="op">:</span>         { <span class="key">"prompt"</span><span class="op">:</span> <span class="num">42</span>, <span class="key">"completion"</span><span class="op">:</span> <span class="num">18</span>, <span class="key">"total"</span><span class="op">:</span> <span class="num">60</span> },
+  <span class="key">"created"</span><span class="op">:</span>        <span class="num">true</span>   <span class="cmt">// true если диалог был создан автоматически</span>
+}</pre>
+    </div>
+
+    <h3>Описание полей ответа</h3>
+    <table>
+      <thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead>
+      <tbody>
+        <tr><td><code>reply</code></td><td><span class="type-chip">string</span></td><td><p>Текст ответа ассистента</p></td></tr>
+        <tr><td><code>conversationId</code></td><td><span class="type-chip">string</span></td><td><p>ID диалога — сохраните для следующих сообщений</p></td></tr>
+        <tr><td><code>model</code></td><td><span class="type-chip">string</span></td><td><p>Название LLM-модели, которая сгенерировала ответ</p></td></tr>
+        <tr><td><code>tokens</code></td><td><span class="type-chip">object</span></td><td><p>Статистика токенов: <code>prompt</code>, <code>completion</code>, <code>total</code></p></td></tr>
+        <tr><td><code>created</code></td><td><span class="type-chip">boolean</span></td><td><p><code>true</code> — если диалог был создан в этом запросе</p></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ── POST /chat/stream ── -->
+  <section class="section" id="stream">
+    <h2>POST /chat/stream — стриминг (SSE)</h2>
+
+    <div class="endpoint-card">
+      <div class="endpoint-header">
+        <span class="method-tag post">POST</span>
+        <span class="path-tag"><span class="base">https://your-domain.ru</span>/api/v1/chat/stream</span>
+      </div>
+      <div class="endpoint-desc">
+        <p>Потоковый ответ через <strong>Server-Sent Events (SSE)</strong>. Токены приходят по мере генерации — идеально для "живого" отображения ответа в UI.</p>
+      </div>
+    </div>
+
+    <div class="info-box info">
+      <span class="icon">ℹ️</span>
+      <p>Тело запроса идентично <code>POST /chat</code>. Параметры: <code>agentId</code>, <code>message</code>, <code>conversationId</code>, <code>model</code>, <code>temperature</code>, <code>maxTokens</code>.</p>
+    </div>
+
+    <h3>Заголовки ответа</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">HTTP Response Headers</span>
+        <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+      </div>
+      <pre><span class="hdr">Content-Type</span><span class="op">:</span>    <span class="str">text/event-stream; charset=utf-8</span>
+<span class="hdr">Cache-Control</span><span class="op">:</span>   <span class="str">no-cache, no-transform</span>
+<span class="hdr">Connection</span><span class="op">:</span>      <span class="str">keep-alive</span>
+<span class="hdr">X-Accel-Buffering</span><span class="op">:</span> <span class="str">no</span></pre>
+    </div>
+
+    <h3>SSE события</h3>
+    <div class="sse-events">
+      <div class="sse-event">
+        <span class="sse-name sse-token">token</span>
+        <div>
+          <p>Очередной токен ответа. Приходит много раз в процессе генерации.</p>
+          <div class="code-block" style="margin-top:8px; margin-bottom:0">
+            <div class="code-header"><span class="code-lang">SSE</span></div>
+            <pre><span class="cmt">event: token</span>
+<span class="key">data:</span> {<span class="str">"token"</span>: <span class="str">"Привет"</span>}
+
+<span class="cmt">event: token</span>
+<span class="key">data:</span> {<span class="str">"token"</span>: <span class="str">"!"</span>}</pre>
+          </div>
+        </div>
+      </div>
+      <div class="sse-event">
+        <span class="sse-name sse-done">done</span>
+        <div>
+          <p>Генерация завершена. Последнее событие в потоке.</p>
+          <div class="code-block" style="margin-top:8px; margin-bottom:0">
+            <div class="code-header"><span class="code-lang">SSE</span></div>
+            <pre><span class="cmt">event: done</span>
+<span class="key">data:</span> {
+  <span class="str">"conversationId"</span>: <span class="str">"a1b2c3d4-..."</span>,
+  <span class="str">"model"</span>:          <span class="str">"qwen2.5:7b"</span>,
+  <span class="str">"tokens"</span>:         {<span class="str">"prompt"</span>:<span class="num">42</span>, <span class="str">"completion"</span>:<span class="num">18</span>},
+  <span class="str">"created"</span>:        <span class="num">true</span>
+}</pre>
+          </div>
+        </div>
+      </div>
+      <div class="sse-event">
+        <span class="sse-name sse-error">error</span>
+        <div>
+          <p>Ошибка во время генерации (таймаут 60s, ошибка AI-бэкенда и т.п.).</p>
+          <div class="code-block" style="margin-top:8px; margin-bottom:0">
+            <div class="code-header"><span class="code-lang">SSE</span></div>
+            <pre><span class="cmt">event: error</span>
+<span class="key">data:</span> {<span class="str">"error"</span>: <span class="str">"Stream timeout (60 s)"</span>}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Examples ── -->
+  <section class="section" id="examples-curl">
+    <h2>Примеры — cURL</h2>
+
+    <h3>Обычный чат (создать новый диалог)</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">bash</span>
+        <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+      </div>
+      <pre><span class="kw">curl</span> <span class="op">-X</span> POST <span class="str">https://your-domain.ru/api/v1/chat</span> \
+  <span class="op">-H</span> <span class="str">"Authorization: Bearer sk-live_xxxxxxxxxxxxxxxx"</span> \
+  <span class="op">-H</span> <span class="str">"Content-Type: application/json"</span> \
+  <span class="op">-d</span> <span class="str">'{
+    "agentId": "11111111-2222-3333-4444-555555555555",
+    "message": "Привет! Как дела?"
+  }'</span></pre>
+    </div>
+
+    <h3>Продолжить существующий диалог</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">bash</span>
+        <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+      </div>
+      <pre><span class="kw">curl</span> <span class="op">-X</span> POST <span class="str">https://your-domain.ru/api/v1/chat</span> \
+  <span class="op">-H</span> <span class="str">"Authorization: Bearer sk-live_xxxxxxxxxxxxxxxx"</span> \
+  <span class="op">-H</span> <span class="str">"Content-Type: application/json"</span> \
+  <span class="op">-d</span> <span class="str">'{
+    "agentId":        "11111111-2222-3333-4444-555555555555",
+    "conversationId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "message":        "Расскажи подробнее"
+  }'</span></pre>
+    </div>
+
+    <h3>Стриминг</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">bash</span>
+        <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+      </div>
+      <pre><span class="kw">curl</span> <span class="op">-X</span> POST <span class="str">https://your-domain.ru/api/v1/chat/stream</span> \
+  <span class="op">-H</span> <span class="str">"Authorization: Bearer sk-live_xxxxxxxxxxxxxxxx"</span> \
+  <span class="op">-H</span> <span class="str">"Content-Type: application/json"</span> \
+  <span class="op">--no-buffer</span> \
+  <span class="op">-d</span> <span class="str">'{
+    "agentId": "11111111-2222-3333-4444-555555555555",
+    "message": "Напиши короткое стихотворение"
+  }'</span></pre>
+    </div>
+  </section>
+
+  <!-- ── Examples JS ── -->
+  <section class="section" id="examples-js">
+    <h2>Примеры — JavaScript / TypeScript</h2>
+
+    <div class="tabs" id="js-tabs">
+      <button class="tab-btn active" onclick="switchTab('js-tabs','js-fetch')">Fetch API</button>
+      <button class="tab-btn" onclick="switchTab('js-tabs','js-stream')">Streaming</button>
+      <button class="tab-btn" onclick="switchTab('js-tabs','js-class')">Класс клиента</button>
+    </div>
+
+    <div class="tab-content active" id="js-fetch">
+      <div class="code-block" style="border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
+        <div class="code-header">
+          <span class="code-lang">javascript</span>
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+        </div>
+        <pre><span class="kw">async function</span> <span class="url">chat</span>(agentId, message, conversationId = <span class="kw">null</span>) {
+  <span class="kw">const</span> res = <span class="kw">await</span> fetch(<span class="str">"https://your-domain.ru/api/v1/chat"</span>, {
+    method: <span class="str">"POST"</span>,
+    headers: {
+      <span class="str">"Authorization"</span>: <span class="str">`Bearer sk-live_xxxxxxxxxxxxxxxx`</span>,
+      <span class="str">"Content-Type"</span>:  <span class="str">"application/json"</span>,
+    },
+    body: JSON.stringify({ agentId, message, conversationId }),
+  });
+
+  <span class="kw">if</span> (!res.ok) {
+    <span class="kw">const</span> err = <span class="kw">await</span> res.json();
+    <span class="kw">throw new</span> Error(err.error);
+  }
+
+  <span class="kw">return</span> res.json();
+  <span class="cmt">// { reply, conversationId, model, tokens, created }</span>
+}
+
+<span class="cmt">// Использование:</span>
+<span class="kw">const</span> { reply, conversationId } = <span class="kw">await</span> <span class="url">chat</span>(
+  <span class="str">"11111111-2222-3333-4444-555555555555"</span>,
+  <span class="str">"Привет! Что ты умеешь?"</span>
+);
+console.log(reply);</pre>
+      </div>
+    </div>
+
+    <div class="tab-content" id="js-stream">
+      <div class="code-block" style="border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
+        <div class="code-header">
+          <span class="code-lang">javascript</span>
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+        </div>
+        <pre><span class="kw">async function</span> <span class="url">streamChat</span>(agentId, message, onToken, onDone) {
+  <span class="kw">const</span> res = <span class="kw">await</span> fetch(<span class="str">"https://your-domain.ru/api/v1/chat/stream"</span>, {
+    method: <span class="str">"POST"</span>,
+    headers: {
+      <span class="str">"Authorization"</span>: <span class="str">`Bearer sk-live_xxxxxxxxxxxxxxxx`</span>,
+      <span class="str">"Content-Type"</span>:  <span class="str">"application/json"</span>,
+    },
+    body: JSON.stringify({ agentId, message }),
+  });
+
+  <span class="kw">const</span> reader  = res.body.getReader();
+  <span class="kw">const</span> decoder = <span class="kw">new</span> TextDecoder();
+  <span class="kw">let</span> buffer = <span class="str">""</span>;
+
+  <span class="kw">while</span> (<span class="kw">true</span>) {
+    <span class="kw">const</span> { done, value } = <span class="kw">await</span> reader.read();
+    <span class="kw">if</span> (done) <span class="kw">break</span>;
+    buffer += decoder.decode(value, { stream: <span class="kw">true</span> });
+
+    <span class="kw">const</span> lines = buffer.split(<span class="str">"\n"</span>);
+    buffer = lines.pop();  <span class="cmt">// сохраняем незавершённую строку</span>
+
+    <span class="kw">for</span> (<span class="kw">const</span> line <span class="kw">of</span> lines) {
+      <span class="kw">if</span> (line.startsWith(<span class="str">"event: token"</span>)) <span class="kw">continue</span>;
+      <span class="kw">if</span> (line.startsWith(<span class="str">"data: "</span>)) {
+        <span class="kw">const</span> data = JSON.parse(line.slice(<span class="num">6</span>));
+        <span class="kw">if</span> (data.token)          onToken(data.token);
+        <span class="kw">if</span> (data.conversationId) onDone(data);
+      }
+    }
+  }
+}
+
+<span class="cmt">// Использование:</span>
+<span class="kw">let</span> fullText = <span class="str">""</span>;
+<span class="kw">await</span> <span class="url">streamChat</span>(
+  <span class="str">"11111111-2222-3333-4444-555555555555"</span>,
+  <span class="str">"Напиши стихотворение"</span>,
+  (token) => { fullText += token; console.log(token); },
+  (done)  => { console.log(<span class="str">"Готово, модель:"</span>, done.model); }
+);</pre>
+      </div>
+    </div>
+
+    <div class="tab-content" id="js-class">
+      <div class="code-block" style="border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
+        <div class="code-header">
+          <span class="code-lang">typescript</span>
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+        </div>
+        <pre><span class="kw">class</span> <span class="url">AssistantClient</span> {
+  <span class="kw">private</span> baseUrl: <span class="str">string</span>;
+  <span class="kw">private</span> apiKey: <span class="str">string</span>;
+  conversationId: <span class="str">string</span> | <span class="kw">null</span> = <span class="kw">null</span>;
+
+  constructor(baseUrl: <span class="str">string</span>, apiKey: <span class="str">string</span>) {
+    <span class="kw">this</span>.baseUrl = baseUrl;
+    <span class="kw">this</span>.apiKey  = apiKey;
+  }
+
+  <span class="kw">private</span> headers() {
+    <span class="kw">return</span> {
+      <span class="str">"Authorization"</span>: <span class="str">`Bearer </span><span class="kw">${this.apiKey}</span><span class="str">`</span>,
+      <span class="str">"Content-Type"</span>:  <span class="str">"application/json"</span>,
+    };
+  }
+
+  <span class="kw">async</span> <span class="url">send</span>(agentId: <span class="str">string</span>, message: <span class="str">string</span>) {
+    <span class="kw">const</span> res = <span class="kw">await</span> fetch(<span class="str">`</span><span class="kw">${this.baseUrl}</span><span class="str">/api/v1/chat`</span>, {
+      method: <span class="str">"POST"</span>,
+      headers: <span class="kw">this</span>.headers(),
+      body: JSON.stringify({
+        agentId,
+        message,
+        conversationId: <span class="kw">this</span>.conversationId,
+      }),
+    });
+    <span class="kw">const</span> data = <span class="kw">await</span> res.json();
+    <span class="kw">if</span> (!res.ok) <span class="kw">throw new</span> Error(data.error);
+    <span class="kw">this</span>.conversationId = data.conversationId;  <span class="cmt">// сохраняем контекст</span>
+    <span class="kw">return</span> data.reply <span class="kw">as</span> <span class="str">string</span>;
+  }
+
+  <span class="kw">async</span> *<span class="url">stream</span>(agentId: <span class="str">string</span>, message: <span class="str">string</span>) {
+    <span class="kw">const</span> res = <span class="kw">await</span> fetch(<span class="str">`</span><span class="kw">${this.baseUrl}</span><span class="str">/api/v1/chat/stream`</span>, {
+      method: <span class="str">"POST"</span>,
+      headers: <span class="kw">this</span>.headers(),
+      body: JSON.stringify({ agentId, message, conversationId: <span class="kw">this</span>.conversationId }),
+    });
+    <span class="kw">const</span> reader  = res.body!.getReader();
+    <span class="kw">const</span> decoder = <span class="kw">new</span> TextDecoder();
+    <span class="kw">let</span> buf = <span class="str">""</span>;
+    <span class="kw">while</span> (<span class="kw">true</span>) {
+      <span class="kw">const</span> { done, value } = <span class="kw">await</span> reader.read();
+      <span class="kw">if</span> (done) <span class="kw">break</span>;
+      buf += decoder.decode(value, { stream: <span class="kw">true</span> });
+      <span class="kw">const</span> lines = buf.split(<span class="str">"\n"</span>); buf = lines.pop()!;
+      <span class="kw">for</span> (<span class="kw">const</span> line <span class="kw">of</span> lines) {
+        <span class="kw">if</span> (!line.startsWith(<span class="str">"data: "</span>)) <span class="kw">continue</span>;
+        <span class="kw">const</span> d = JSON.parse(line.slice(<span class="num">6</span>));
+        <span class="kw">if</span> (d.token)          <span class="kw">yield</span> d.token <span class="kw">as</span> <span class="str">string</span>;
+        <span class="kw">if</span> (d.conversationId) <span class="kw">this</span>.conversationId = d.conversationId;
+      }
+    }
+  }
+}
+
+<span class="cmt">// Использование:</span>
+<span class="kw">const</span> client = <span class="kw">new</span> <span class="url">AssistantClient</span>(
+  <span class="str">"https://your-domain.ru"</span>,
+  <span class="str">"sk-live_xxxxxxxxxxxxxxxx"</span>
+);
+<span class="kw">const</span> AGENT = <span class="str">"11111111-2222-3333-4444-555555555555"</span>;
+
+<span class="cmt">// Сессия с контекстом:</span>
+console.log(<span class="kw">await</span> client.send(AGENT, <span class="str">"Привет!"</span>));
+console.log(<span class="kw">await</span> client.send(AGENT, <span class="str">"А что умеешь?"</span>));  <span class="cmt">// помнит контекст</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Examples Python ── -->
+  <section class="section" id="examples-python">
+    <h2>Примеры — Python</h2>
+
+    <div class="tabs" id="py-tabs">
+      <button class="tab-btn active" onclick="switchTab('py-tabs','py-requests')">requests</button>
+      <button class="tab-btn" onclick="switchTab('py-tabs','py-stream')">Streaming</button>
+    </div>
+
+    <div class="tab-content active" id="py-requests">
+      <div class="code-block" style="border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
+        <div class="code-header">
+          <span class="code-lang">python</span>
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+        </div>
+        <pre><span class="kw">import</span> requests
+
+API_URL   = <span class="str">"https://your-domain.ru/api/v1"</span>
+API_KEY   = <span class="str">"sk-live_xxxxxxxxxxxxxxxx"</span>
+AGENT_ID  = <span class="str">"11111111-2222-3333-4444-555555555555"</span>
+
+headers = {
+    <span class="str">"Authorization"</span>: <span class="str">f"Bearer {API_KEY}"</span>,
+    <span class="str">"Content-Type"</span>:  <span class="str">"application/json"</span>,
+}
+
+<span class="cmt"># Первое сообщение — создаёт диалог</span>
+resp = requests.post(
+    <span class="str">f"{API_URL}/chat"</span>,
+    headers=headers,
+    json={<span class="str">"agentId"</span>: AGENT_ID, <span class="str">"message"</span>: <span class="str">"Привет!"</span>},
+)
+data = resp.json()
+print(data[<span class="str">"reply"</span>])
+
+conversation_id = data[<span class="str">"conversationId"</span>]
+
+<span class="cmt"># Продолжаем тот же диалог</span>
+resp2 = requests.post(
+    <span class="str">f"{API_URL}/chat"</span>,
+    headers=headers,
+    json={
+        <span class="str">"agentId"</span>:        AGENT_ID,
+        <span class="str">"conversationId"</span>: conversation_id,
+        <span class="str">"message"</span>:        <span class="str">"А что ты умеешь?"</span>,
+    },
+)
+print(resp2.json()[<span class="str">"reply"</span>])</pre>
+      </div>
+    </div>
+
+    <div class="tab-content" id="py-stream">
+      <div class="code-block" style="border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
+        <div class="code-header">
+          <span class="code-lang">python</span>
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+        </div>
+        <pre><span class="kw">import</span> requests, json
+
+API_URL   = <span class="str">"https://your-domain.ru/api/v1"</span>
+API_KEY   = <span class="str">"sk-live_xxxxxxxxxxxxxxxx"</span>
+AGENT_ID  = <span class="str">"11111111-2222-3333-4444-555555555555"</span>
+
+headers = {
+    <span class="str">"Authorization"</span>: <span class="str">f"Bearer {API_KEY}"</span>,
+    <span class="str">"Content-Type"</span>:  <span class="str">"application/json"</span>,
+}
+
+<span class="kw">with</span> requests.post(
+    <span class="str">f"{API_URL}/chat/stream"</span>,
+    headers=headers,
+    json={<span class="str">"agentId"</span>: AGENT_ID, <span class="str">"message"</span>: <span class="str">"Напиши стихотворение"</span>},
+    stream=<span class="kw">True</span>,
+) <span class="kw">as</span> resp:
+    event_type = <span class="kw">None</span>
+    <span class="kw">for</span> raw_line <span class="kw">in</span> resp.iter_lines(decode_unicode=<span class="kw">True</span>):
+        <span class="kw">if</span> raw_line.startswith(<span class="str">"event: "</span>):
+            event_type = raw_line[<span class="num">7</span>:]
+        <span class="kw">elif</span> raw_line.startswith(<span class="str">"data: "</span>):
+            data = json.loads(raw_line[<span class="num">6</span>:])
+            <span class="kw">if</span> event_type == <span class="str">"token"</span>:
+                print(data[<span class="str">"token"</span>], end=<span class="str">""</span>, flush=<span class="kw">True</span>)
+            <span class="kw">elif</span> event_type == <span class="str">"done"</span>:
+                print()  <span class="cmt"># новая строка после завершения</span>
+                print(<span class="str">f"Модель: {data['model']}, токены: {data['tokens']}"</span>)
+            <span class="kw">elif</span> event_type == <span class="str">"error"</span>:
+                print(<span class="str">f"Ошибка: {data['error']}"</span>)</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Widget ── -->
+  <section class="section" id="widget">
+    <h2>Встраивание виджета</h2>
+
+    <p>Для встраивания чата на сайт используйте виджет — он автоматически обращается к API через API ключ с ограничением по домену.</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">html</span>
+        <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+      </div>
+      <pre><span class="cmt">&lt;!-- Вставьте перед &lt;/body&gt; --&gt;</span>
+&lt;<span class="kw">script</span>
+  src=<span class="str">"https://your-domain.ru/widget.js"</span>
+  data-agent-id=<span class="str">"11111111-2222-3333-4444-555555555555"</span>
+  data-api-key=<span class="str">"sk-live_xxxxxxxxxxxxxxxx"</span>
+  defer
+&gt;&lt;/<span class="kw">script</span>&gt;</pre>
+    </div>
+
+    <div class="info-box tip">
+      <span class="icon">🔐</span>
+      <p>Для виджетов создайте отдельный API ключ с ограничением по домену — так ключ нельзя будет использовать с других сайтов.</p>
+    </div>
+  </section>
+
+  <!-- ── Domain Restriction ── -->
+  <section class="section" id="domain-restrict">
+    <h2>Ограничение по доменам</h2>
+
+    <p>API ключ можно ограничить списком разрешённых доменов. Это защищает ключ от использования с посторонних сайтов.</p>
+
+    <table>
+      <thead><tr><th>Паттерн</th><th>Что разрешает</th></tr></thead>
+      <tbody>
+        <tr><td><code>example.com</code></td><td><p>Только точный домен <code>example.com</code></p></td></tr>
+        <tr><td><code>*.example.com</code></td><td><p>Любые поддомены: <code>shop.example.com</code>, <code>app.example.com</code></p></td></tr>
+        <tr><td><em>(пусто)</em></td><td><p>Запросы с любого домена (и без Origin)</p></td></tr>
+      </tbody>
+    </table>
+
+    <p>При запросе с запрещённого домена API вернёт:</p>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">HTTP 403</span>
+        <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+      </div>
+      <pre>{
+  <span class="key">"error"</span><span class="op">:</span> <span class="str">"Domain \"evil.com\" is not allowed for this API key"</span>
+}</pre>
+    </div>
+
+    <div class="info-box warn">
+      <span class="icon">⚠️</span>
+      <p>Если домены указаны, то в запросе <strong>обязательно</strong> должен быть заголовок <code>Origin</code> или <code>Referer</code> — иначе сервер не сможет проверить домен и вернёт 403.</p>
+    </div>
+  </section>
+
+</main>
+
+<script>
+  // ── Tabs ─────────────────────────────────────────────────────────────────────
+  function switchTab(groupId, targetId) {
+    const group = document.getElementById(groupId);
+    group.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(`#${groupId} ~ .tab-content`).forEach(c => c.classList.remove("active"));
+    event.target.classList.add("active");
+    document.getElementById(targetId).classList.add("active");
+  }
+
+  // ── Copy ─────────────────────────────────────────────────────────────────────
+  function copyCode(btn) {
+    const pre = btn.closest(".code-block").querySelector("pre");
+    navigator.clipboard.writeText(pre.innerText).then(() => {
+      btn.textContent = "Скопировано!";
+      btn.classList.add("copied");
+      setTimeout(() => { btn.textContent = "Копировать"; btn.classList.remove("copied"); }, 2000);
+    });
+  }
+
+  // ── Active nav ───────────────────────────────────────────────────────────────
+  const sections = document.querySelectorAll(".section[id]");
+  const navLinks  = document.querySelectorAll(".nav-link[href^='#']");
+
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        navLinks.forEach(l => l.classList.remove("active"));
+        const active = document.querySelector(`.nav-link[href="#${entry.target.id}"]`);
+        if (active) active.classList.add("active");
+      }
+    });
+  }, { threshold: 0.3, rootMargin: "-20px 0px -60% 0px" });
+
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

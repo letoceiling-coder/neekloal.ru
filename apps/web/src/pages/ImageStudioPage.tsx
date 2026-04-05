@@ -16,7 +16,7 @@ const API = import.meta.env.VITE_API_URL ?? "/api";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type QuickOption = "variations" | "reference" | "edit" | "inpaint" | "controlnet" | "removeBg";
+type QuickOption = "variations" | "reference" | "product_pro" | "edit" | "inpaint" | "controlnet" | "removeBg";
 
 interface BrainMeta {
   type?: string;
@@ -62,7 +62,7 @@ interface ImageJob {
   jobId: string;
   jobIds?: string[];
   pipelineId?: string;
-  status: "queued" | "waiting" | "active" | "completed" | "failed";
+  status?: "queued" | "waiting" | "active" | "completed" | "failed";
   mode?: string;
   prompt: string;
   originalPrompt?: string;
@@ -78,6 +78,8 @@ interface ImageJob {
   brain?: BrainMeta | null;
   pipeline?: PipelineMeta | null;
   pipelineExecution?: ExecutionStep[] | null;
+  /** Product Pro batch metadata (aligned with jobIds order) */
+  productProPlan?: { type: "model" | "product"; pose?: string; jobId: string }[];
 }
 
 interface EnhanceInfo {
@@ -113,6 +115,7 @@ const STYLE_CARDS = [
 const QUICK_OPTIONS: { id: QuickOption; label: string; emoji: string; desc: string }[] = [
   { id: "variations",  label: "Вариации",    emoji: "🎯", desc: "Несколько версий" },
   { id: "reference",   label: "Сохранить товар", emoji: "🛍", desc: "Товар сохранится, изменится фон и модель" },
+  { id: "product_pro", label: "Pro 4 фото", emoji: "📸", desc: "4 кадра: 3 с моделью (позы) + каталог без модели, без промпта" },
   { id: "edit",        label: "Редактировать", emoji: "🖌️", desc: "Кисть · только маска меняется" },
   { id: "inpaint",     label: "Inpaint",     emoji: "✏️", desc: "Полная замена области" },
   { id: "controlnet",  label: "ControlNet",  emoji: "🧬", desc: "Контроль формы/позы" },
@@ -198,7 +201,8 @@ const STAGE_STEPS: { stage: GenStage; label: string }[] = [
 ];
 
 const MODE_ICON: Record<string, string> = {
-  text: "🧠", variation: "🎯", reference: "🛍", product: "🛍", edit: "🖌️", inpaint: "✏️", controlnet: "🧬",
+  text: "🧠", variation: "🎯", reference: "🛍", product: "🛍", product_pro: "📸",
+  product_pro_model: "📸", product_pro_catalog: "📦", edit: "🖌️", inpaint: "✏️", controlnet: "🧬",
 };
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -297,7 +301,7 @@ function HistoryCard({
     queued: "bg-neutral-200", waiting: "bg-neutral-200",
     active: "bg-blue-400 animate-pulse",
     completed: "bg-emerald-400", failed: "bg-red-400",
-  }[job.status] ?? "bg-neutral-200";
+  }[job.status ?? "queued"] ?? "bg-neutral-200";
 
   return (
     <button
@@ -700,11 +704,12 @@ export function ImageStudioPage() {
         setGenStage("done");
         loadHistory();
 
-        // Merge all completed URLs into activeJob for display
+        // Merge completed URLs in parallelJobIds order (Product Pro + variations)
         const allUrls = parallelJobIds
           .map((jid) => updates.get(jid))
           .filter((j) => j?.status === "completed")
-          .flatMap((j) => j?.urls ?? (j?.url ? [j.url] : []));
+          .map((j) => j?.urls?.[0] ?? j?.url)
+          .filter((u): u is string => !!u);
 
         if (allUrls.length > 0) {
           setActiveJob((prev) => prev ? {
@@ -734,7 +739,7 @@ export function ImageStudioPage() {
       if (next.has(opt)) next.delete(opt); else next.add(opt);
       // Mutex: only one image-source option at a time
       if (opt !== "removeBg" && opt !== "variations") {
-        for (const o of ["reference", "edit", "inpaint", "controlnet"] as QuickOption[]) {
+        for (const o of ["reference", "product_pro", "edit", "inpaint", "controlnet"] as QuickOption[]) {
           if (o !== opt) next.delete(o);
         }
       }
@@ -744,6 +749,7 @@ export function ImageStudioPage() {
 
   function resolveMode(): string {
     if (activeOptions.has("variations"))  return "variation";
+    if (activeOptions.has("product_pro") && refImage) return "product_pro";
     if (activeOptions.has("controlnet") && refImage) return "controlnet";
     if (activeOptions.has("edit") && refImage) return "edit";
     if (activeOptions.has("inpaint") && refImage && maskImage) return "inpaint";
@@ -855,8 +861,19 @@ export function ImageStudioPage() {
   // ── Generate ─────────────────────────────────────────────────────────────────
 
   async function handleGenerate(overridePrompt?: string) {
-    const raw = (overridePrompt ?? prompt).trim();
-    if (!raw || generating) return;
+    if (generating) return;
+
+    const mode = resolveMode();
+
+    if (mode === "product_pro") {
+      if (!refImage?.refUrl) {
+        setError("Загрузите фото товара для Product Pro");
+        return;
+      }
+    } else {
+      const raw = (overridePrompt ?? prompt).trim();
+      if (!raw) return;
+    }
 
     setError(null);
     setEnhanceInfo(null);
@@ -866,14 +883,13 @@ export function ImageStudioPage() {
     setParallelJobIds([]);
     setParallelResults(new Map());
 
-    const mode = resolveMode();
-
     try {
-      let finalPrompt = raw;
+      const raw = (overridePrompt ?? prompt).trim();
+      let finalPrompt = mode === "product_pro" ? "Product Pro" : raw;
       let finalNeg    = negPrompt || undefined;
 
-      // 1. Enhance
-      if (smartMode) {
+      // 1. Enhance (Product Pro uses only internal prompts on the server)
+      if (smartMode && mode !== "product_pro") {
         setGenStage("enhancing");
         const res = await fetch(`${API}/image/enhance`, {
           method: "POST",
@@ -913,7 +929,7 @@ export function ImageStudioPage() {
         width:        size.w,
         height:       size.h,
         mode,
-        smartMode,
+        smartMode:    mode === "product_pro" ? false : smartMode,
         variations:   activeOptions.has("variations") ? variationCount : 1,
         aspectRatio:  `${size.w}:${size.h}`,
         steps,
@@ -923,6 +939,11 @@ export function ImageStudioPage() {
       if (finalNeg)  body.negativePrompt = finalNeg;
       if (style)     body.style = style;
       if (mode === "controlnet") body.controlType = controlType;
+      if (mode === "product_pro") {
+        body.referenceImageUrl = refImage?.refUrl;
+        body.strength = strength;
+        body.ipAdapterWeight = ipAdapterWeight;
+      }
       if (mode === "product" || mode === "reference" || mode === "inpaint" || mode === "edit") {
         body.referenceImageUrl = refImage?.refUrl;
         body.strength = strength;
@@ -936,6 +957,8 @@ export function ImageStudioPage() {
         jobIds?: string[];
         pipelineId?: string;
         error?: string;
+        type?: string;
+        items?: { type: string; pose?: string; jobId: string }[];
         brain?: BrainMeta | null;
         pipeline?: PipelineMeta | null;
         pipelineExecution?: ExecutionStep[] | null;
@@ -960,13 +983,20 @@ export function ImageStudioPage() {
         status:            "queued",
         mode,
         prompt:            finalPrompt,
-        originalPrompt:    raw,
+        originalPrompt:    mode === "product_pro" ? "[product_pro]" : raw,
         width:             size.w,
         height:            size.h,
         createdAt:         new Date().toISOString(),
         brain:             data.brain             ?? null,
         pipeline:          data.pipeline          ?? null,
         pipelineExecution: data.pipelineExecution ?? null,
+        productProPlan:    data.type === "product_pro" && data.items
+          ? data.items.map((it) => ({
+              type: it.type === "product" ? "product" as const : "model" as const,
+              pose: it.pose,
+              jobId: it.jobId,
+            }))
+          : undefined,
       });
 
       if (isParallel) {
@@ -1010,17 +1040,20 @@ export function ImageStudioPage() {
 
   // ── Derived ────────────────────────────────────────────────────────────────────
 
-  // For parallel variations: merge all completed image URLs
-  const parallelUrls: string[] = parallelJobIds.length > 1
-    ? Array.from(parallelResults.values())
-        .filter((j) => j.status === "completed")
-        .flatMap((j) => j.urls ?? (j.url ? [j.url] : []))
+  const parallelOrderedUrls: string[] = parallelJobIds.length > 1
+    ? parallelJobIds
+        .map((jid) => {
+          const j = parallelResults.get(jid);
+          if (j?.status !== "completed") return null;
+          return j.url ?? j.urls?.[0] ?? null;
+        })
+        .filter((u): u is string => u != null)
     : [];
 
-  const images: string[] = parallelUrls.length > 0
-    ? parallelUrls
-    : activeJob?.urls?.length
-      ? activeJob.urls
+  const images: string[] = activeJob?.urls?.length
+    ? activeJob.urls
+    : parallelOrderedUrls.length > 0
+      ? parallelOrderedUrls
       : activeJob?.url
         ? [activeJob.url]
         : [];
@@ -1247,14 +1280,16 @@ export function ImageStudioPage() {
                 </div>
               )}
 
-              {(activeOptions.has("reference") || activeOptions.has("inpaint") || activeOptions.has("controlnet")) && (
+              {(activeOptions.has("reference") || activeOptions.has("product_pro") || activeOptions.has("inpaint") || activeOptions.has("controlnet")) && (
                 <div className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
                   <p className="mb-2 text-[11px] font-medium text-neutral-400">
                     {activeOptions.has("controlnet")
                       ? "🧬 Изображение для ControlNet"
-                      : activeOptions.has("reference")
-                        ? "🛍 Фото товара / одежды"
-                        : "🖼 Изображение-основа"}
+                      : activeOptions.has("product_pro")
+                        ? "📸 Product Pro — одно фото товара (4 кадра без промпта)"
+                        : activeOptions.has("reference")
+                          ? "🛍 Фото товара / одежды"
+                          : "🖼 Изображение-основа"}
                   </p>
                   <button
                     type="button"
@@ -1278,7 +1313,7 @@ export function ImageStudioPage() {
                     onChange={(e) => { const f = e.target.files?.[0]; if (f) handleSelectRef(f); e.target.value = ""; }}
                   />
 
-                  {activeOptions.has("reference") && (
+                  {(activeOptions.has("reference") || activeOptions.has("product_pro")) && (
                     <div className="mt-2 space-y-3">
                       <div>
                         <div className="flex items-center justify-between text-[11px] text-neutral-400 mb-1">
@@ -1318,6 +1353,11 @@ export function ImageStudioPage() {
                           <span>0.8 сильнее</span>
                         </div>
                       </div>
+                      {activeOptions.has("product_pro") && (
+                        <p className="text-[10px] text-neutral-500 leading-relaxed">
+                          Три кадра: SDXL + IP-Adapter (одежда). Каталог: вырезка фона, белый фон, резкость.
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -1445,10 +1485,13 @@ export function ImageStudioPage() {
             <button
               type="button"
               onClick={() => handleGenerate()}
-              disabled={!prompt.trim() || generating}
+              disabled={
+                generating ||
+                (activeOptions.has("product_pro") ? !refImage : !prompt.trim())
+              }
               className={cn(
                 "relative flex w-full items-center justify-center gap-2 rounded-xl py-3.5 text-sm font-semibold transition",
-                !prompt.trim() || generating
+                generating || (activeOptions.has("product_pro") ? !refImage : !prompt.trim())
                   ? "cursor-not-allowed bg-white/5 text-neutral-500"
                   : "bg-violet-500 text-white shadow-lg shadow-violet-500/20 hover:bg-violet-400 active:scale-[0.99]"
               )}
@@ -1509,13 +1552,24 @@ export function ImageStudioPage() {
                   "grid w-full max-w-2xl gap-2",
                   parallelJobIds.length === 2 ? "grid-cols-2" : "grid-cols-2"
                 )}>
-                  {parallelJobIds.map((jid) => {
+                  {parallelJobIds.map((jid, idx) => {
                     const r = parallelResults.get(jid);
                     const done = r?.status === "completed";
                     const failed = r?.status === "failed";
                     const imgUrl = r?.url ?? r?.urls?.[0];
+                    const pp = activeJob?.productProPlan?.[idx];
+                    const proLabel = pp?.type === "product"
+                      ? "Каталог"
+                      : pp?.type === "model"
+                        ? (pp.pose === "front" ? "Модель · фас" : pp.pose === "side" ? "Модель · профиль" : pp.pose === "walking" ? "Модель · шаг" : "Модель")
+                        : null;
                     return (
                       <div key={jid} className="relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl border border-white/5 bg-neutral-900">
+                        {proLabel && (
+                          <span className="pointer-events-none absolute left-2 top-2 z-10 rounded bg-black/55 px-1.5 py-0.5 text-[9px] font-semibold text-white">
+                            {proLabel}
+                          </span>
+                        )}
                         {done && imgUrl ? (
                           <img src={imgUrl} alt="" className="relative z-10 max-h-full max-w-full object-contain" />
                         ) : failed ? (
@@ -1571,7 +1625,13 @@ export function ImageStudioPage() {
                     </div>
                   </div>
                   <span className="pointer-events-none absolute left-2 top-2 z-[21] rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                    #{i + 1}
+                    {(() => {
+                      const pp = activeJob?.productProPlan?.[i];
+                      if (!pp) return `#${i + 1}`;
+                      if (pp.type === "product") return "Каталог";
+                      const poseRu = pp.pose === "front" ? "фас" : pp.pose === "side" ? "профиль" : pp.pose === "walking" ? "шаг" : "";
+                      return poseRu ? `Модель · ${poseRu}` : "Модель";
+                    })()}
                   </span>
                 </div>
               ))}

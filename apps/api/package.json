@@ -29,7 +29,8 @@
     "ioredis": "^5.0.0",
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^6.10.0",
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^1.1.1",
+    "sharp": "^0.33.5"
   },
   "devDependencies": {
     "prisma": "6.19.0"

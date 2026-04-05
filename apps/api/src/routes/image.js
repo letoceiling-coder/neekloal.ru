@@ -22,13 +22,24 @@ const REFS_DIR = process.env.IMAGE_REFS_DIR || "/var/www/site-al.ru/uploads/refs
 const REFS_PUBLIC = process.env.IMAGE_REFS_PUBLIC || "https://site-al.ru/uploads/refs";
 const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
 
-const VALID_MODES = ["text", "variation", "reference", "inpaint", "controlnet", "edit", "product"];
+const VALID_MODES = ["text", "variation", "reference", "inpaint", "controlnet", "edit", "product", "product_pro"];
 
 /** Appended in "product" mode (marketplace cards) after enhance */
 const PRODUCT_MODE_PROMPT_SUFFIX =
   ", high detail clothing, preserve fabric, preserve design, same outfit, realistic texture, no distortion";
 const PRODUCT_MODE_NEG_APPEND =
   ", deformed clothes, different outfit, low quality fabric, bad texture, blurry";
+
+/** Product Pro — model shots (system prompts, STEP 4) */
+const PRODUCT_PRO_MODEL_PROMPT =
+  "fashion model wearing the same clothing, studio lighting, soft shadows, ecommerce photo, realistic skin, sharp focus";
+const PRODUCT_PRO_MODEL_NEG =
+  "deformed body, bad hands, blurry, low quality, distorted clothes";
+const PRODUCT_PRO_POSE_HINTS = {
+  front: ", full body front view, facing camera, standing pose, professional catalog framing",
+  side: ", full body side profile, standing, 90 degree view, studio shot",
+  walking: ", full body walking pose, mid-stride, natural movement, editorial ecommerce",
+};
 
 function userJobKey(userId) { return `image:active:${userId}`; }
 
@@ -111,6 +122,147 @@ module.exports = async function imageRoutes(fastify) {
       controlType = "canny",
       ipAdapterWeight: ipAdapterWeightRaw,
     } = request.body || {};
+
+    const resolvedModeEarly = VALID_MODES.includes(mode) ? mode : "text";
+
+    // ── Product Pro: 4 parallel jobs, prompts fully internal (STEP 1–3) ───────
+    if (resolvedModeEarly === "product_pro") {
+      if (!referenceImageUrl || typeof referenceImageUrl !== "string") {
+        return reply.code(400).send({ error: "referenceImageUrl required for product_pro" });
+      }
+
+      const redis = getCacheConnection();
+      let activeCount = 0;
+      try { activeCount = Number(await redis.get(userJobKey(request.userId))) || 0; } catch { /* allow */ }
+      if (activeCount >= USER_JOB_LIMIT) {
+        return reply.code(429).send({ error: "Идёт активная генерация. Подождите завершения." });
+      }
+
+      const w = Math.min(Math.max(Number(width) || 1024, MIN_DIM), MAX_WIDTH);
+      const h = Math.min(Math.max(Number(height) || 1024, MIN_DIM), MAX_HEIGHT);
+      const queue = getImageQueue();
+      const pipelineId = uuidv4();
+
+      const ipAdapterWeight = (() => {
+        const n = Number(ipAdapterWeightRaw);
+        if (!Number.isFinite(n)) return 0.55;
+        return Math.min(Math.max(n, 0.3), 0.8);
+      })();
+
+      const baseStrength = Math.min(Math.max(Number(strength) || 0.45, 0.3), 0.6);
+
+      const poses = ["front", "side", "walking"];
+      const allJobIds = [];
+
+      for (const pose of poses) {
+        const vid = uuidv4();
+        allJobIds.push(vid);
+        const modelPrompt =
+          `${PRODUCT_PRO_MODEL_PROMPT}${PRODUCT_PRO_POSE_HINTS[pose] || ""}${PRODUCT_MODE_PROMPT_SUFFIX}`;
+        const modelNeg =
+          `${PRODUCT_PRO_MODEL_NEG}${PRODUCT_MODE_NEG_APPEND}`;
+
+        await queue.add(
+          "generate",
+          {
+            prompt: modelPrompt,
+            negativePrompt: modelNeg,
+            originalPrompt: "[product_pro:model]",
+            width: w,
+            height: h,
+            userId: request.userId,
+            organizationId: request.organizationId,
+            referenceImageUrl,
+            strength: baseStrength,
+            ipAdapterWeight,
+            mode: "product_pro_model",
+            maskUrl: null,
+            controlType: "pose",
+            style: null,
+            aspectRatio: null,
+            autoRemoveBg: false,
+            pipelineId,
+            productProPose: pose,
+            productProItemType: "model",
+            variations: 1,
+            seed: Math.floor(Math.random() * 999999),
+            jobId: vid,
+          },
+          { jobId: vid }
+        );
+      }
+
+      const catId = uuidv4();
+      allJobIds.push(catId);
+      await queue.add(
+        "generate",
+        {
+          prompt:
+            "clean ecommerce product photo, white background, soft shadow, sharp focus, high detail",
+          negativePrompt: DEFAULT_NEGATIVE,
+          originalPrompt: "[product_pro:catalog]",
+          width: w,
+          height: h,
+          userId: request.userId,
+          organizationId: request.organizationId,
+          referenceImageUrl,
+          mode: "product_pro_catalog",
+          productProItemType: "product",
+          variations: 1,
+          pipelineId,
+          jobId: catId,
+        },
+        { jobId: catId }
+      );
+
+      try { await redis.set(userJobKey(request.userId), activeCount + 1, "EX", 300); } catch { /* ignore */ }
+
+      const pipelineExecution = [
+        {
+          type: "generate",
+          action: "product_pro",
+          label: "Product Pro — 4 слота",
+          status: "queued",
+          output: { slots: 4, poses: ["front", "side", "walking", "catalog"] },
+        },
+      ];
+
+      prisma.pipelineExecution.create({
+        data: {
+          id: pipelineId,
+          userId: request.userId,
+          jobId: allJobIds[0],
+          jobIds: allJobIds,
+          steps: pipelineExecution,
+          status: "running",
+        },
+      }).catch((e) => process.stderr.write(`[pipeline:db] create failed: ${e.message}\n`));
+
+      return reply.code(202).send({
+        jobId: allJobIds[0],
+        jobIds: allJobIds,
+        pipelineId,
+        status: "queued",
+        type: "product_pro",
+        items: [
+          { type: "model", pose: "front", jobId: allJobIds[0] },
+          { type: "model", pose: "side", jobId: allJobIds[1] },
+          { type: "model", pose: "walking", jobId: allJobIds[2] },
+          { type: "product", jobId: allJobIds[3] },
+        ],
+        mode: "product_pro",
+        message: "Product Pro: 4 задачи в очереди",
+        brain: null,
+        enhanceApplied: null,
+        pipeline: {
+          stepsCount: 1,
+          steps: [{ type: "generate", mode: "product_pro", label: "Product Pro engine" }],
+          autoMode: false,
+          autoRemoveBg: false,
+        },
+        pipelineExecution,
+      });
+    }
 
     if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
       return reply.code(400).send({ error: "prompt is required" });
@@ -429,6 +581,13 @@ module.exports = async function imageRoutes(fastify) {
       height: job.data.height,
       createdAt: new Date(job.timestamp).toISOString(),
     };
+
+    if (job.data?.productProItemType) {
+      response.productProItemType = job.data.productProItemType;
+    }
+    if (job.data?.productProPose) {
+      response.productProPose = job.data.productProPose;
+    }
 
     if (state === "completed" && result) {
       response.url = result.url;
