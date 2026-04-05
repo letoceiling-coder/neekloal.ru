@@ -28,7 +28,6 @@ async function build() {
   await app.register(require("./routes/widget"));
   await app.register(require("./routes/ai"));
   await app.register(require("./routes/image"));
-  await app.register(require("./routes/video"));
   await app.register(require("./routes/removeBg"));
   // Avito V2: full module (replaces routes/avito.js)
   await app.register(require("./modules/avito/avito.webhook"));
@@ -59,13 +58,6 @@ build()
         startFollowUpWorker(processFollowUpJob);
       } catch (e) {
         app.log.warn({ err: e }, "avito followup worker failed to start");
-      }
-      // Start video generation worker
-      try {
-        const { startVideoWorker } = require("./workers/videoWorker");
-        startVideoWorker();
-      } catch (e) {
-        app.log.warn({ err: e }, "video worker failed to start");
       }
       // Start RAG background worker (stuck-job recovery + periodic reindex)
       const { startWorker } = require("./workers/ragWorker");

@@ -22,7 +22,6 @@ import { ImageSettingsPage } from "./pages/ImageSettingsPage";
 import { AvitoPage } from "./pages/AvitoPage";
 import { TelegramPage } from "./pages/TelegramPage";
 import { AgentChatPage } from "./pages/AgentChatPage";
-import VideoPage from "./pages/VideoPage";
 import { AdminLeadsPage } from "./pages/admin/AdminLeadsPage";
 import { AdminOrganizationsPage } from "./pages/admin/AdminOrganizationsPage";
 import { AdminPlansPage } from "./pages/admin/AdminPlansPage";
@@ -63,7 +62,6 @@ export default function App() {
           <Route path="settings" element={<SettingsPage />} />
           <Route path="image-studio" element={<ImageStudioPage />} />
           <Route path="image-studio/settings" element={<ImageSettingsPage />} />
-          <Route path="video" element={<VideoPage />} />
           <Route path="avito" element={<AvitoPage />} />
           <Route path="telegram" element={<TelegramPage />} />
         </Route>

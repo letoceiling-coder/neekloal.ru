@@ -695,36 +695,6 @@ model UserImageSettings {
   @@map("user_image_settings")
 }
 
-/// One row per generated video job
-model GeneratedVideo {
-  id             String    @id @default(uuid()) @db.Uuid
-  jobId          String    @map("job_id") /// BullMQ job id
-  userId         String    @map("user_id") @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  status         String    @default("pending") /// pending | running | completed | failed
-  mode           String    @default("text") /// text | image2video
-  prompt         String    @db.Text
-  negativePrompt String?   @map("negative_prompt") @db.Text
-  width          Int       @default(512)
-  height         Int       @default(512)
-  fps            Int       @default(8)
-  frameCount     Int       @default(16) @map("frame_count")
-  duration       Float     @default(2.0) /// seconds (frameCount / fps)
-  url            String? /// public URL to .mp4
-  localPath      String?   @map("local_path")
-  previewUrl     String?   @map("preview_url") /// first frame preview PNG
-  previewPath    String?   @map("preview_path")
-  referenceUrl   String?   @map("reference_url") /// source image for image2video
-  errorMessage   String?   @map("error_message") @db.Text
-  createdAt      DateTime  @default(now()) @map("created_at")
-  completedAt    DateTime? @map("completed_at")
-
-  @@index([organizationId, createdAt])
-  @@index([jobId])
-  @@index([userId, status])
-  @@map("generated_videos")
-}
-
 /// Telegram bot linked to a SaaS user (one bot per user)
 model TelegramBot {
   id             String       @id @default(uuid()) @db.Uuid
