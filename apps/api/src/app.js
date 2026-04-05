@@ -28,6 +28,7 @@ async function build() {
   await app.register(require("./routes/widget"));
   await app.register(require("./routes/ai"));
   await app.register(require("./routes/image"));
+  await app.register(require("./routes/video"), { prefix: "/video" });
   await app.register(require("./routes/removeBg"));
   // Avito V2: full module (replaces routes/avito.js)
   await app.register(require("./modules/avito/avito.webhook"));

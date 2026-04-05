@@ -64,6 +64,7 @@ model User {
   conversationsCreated     Conversation[]      @relation("ConversationCreatedBy")
   adminAuditLogs           AdminAuditLog[]     @relation("AdminAuditActor")
   telegramBots             TelegramBot[]
+  videoGenerationJobs      VideoGenerationJob[]
 
   @@map("users")
 }
@@ -761,4 +762,27 @@ model TelegramChat {
   @@unique([botId, telegramChatId])
   @@index([userId])
   @@map("telegram_chats")
+}
+
+/// Асинхронная генерация видео (image + script + voice), статус: queued | processing | completed | failed
+model VideoGenerationJob {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String   @map("organization_id") @db.Uuid
+  status         String   @default("queued") @map("status")
+  /// standard = legacy HTTP LTX / ffmpeg; ltx = ComfyUI GPU pipeline (+ interpolate, optional upscale)
+  mode           String   @default("ltx") @map("mode")
+  imageUrl       String   @map("image_url") @db.Text
+  script         String   @db.Text
+  voiceText      String?  @map("voice_text") @db.Text
+  outputUrl      String?  @map("output_url") @db.Text
+  error          String?  @db.Text
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([organizationId])
+  @@index([status])
+  @@map("video_generation_jobs")
 }

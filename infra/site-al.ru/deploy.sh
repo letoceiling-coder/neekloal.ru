@@ -48,6 +48,10 @@ if pm2 describe image-worker >/dev/null 2>&1; then
   log "PM2 image-worker"
   pm2 restart image-worker
 fi
+if pm2 describe video-worker >/dev/null 2>&1; then
+  log "PM2 video-worker"
+  pm2 restart video-worker
+fi
 pm2 save
 
 log "Frontend: npm ci + build"

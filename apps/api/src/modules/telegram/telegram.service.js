@@ -1282,6 +1282,42 @@ async function processTelegramUpdate(bot, update) {
 
   const tgChat = await getOrCreateTelegramChat(bot, chatIdStr);
 
+  if (msg.photo && Array.isArray(msg.photo) && msg.photo.length > 0) {
+    const caption = msg.caption != null ? String(msg.caption).trim() : "";
+    if (!caption) {
+      await telegramSendMessage(token, chatId, "Пришлите фото с подписью — это сценарий для видео (и озвучки TTS).", {
+        replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      });
+      return { ok: true };
+    }
+    try {
+      const fileId = msg.photo[msg.photo.length - 1].file_id;
+      const gf = await tgRequest("GET", token, `/getFile?file_id=${encodeURIComponent(fileId)}`);
+      const fp = gf.result && gf.result.file_path ? String(gf.result.file_path) : "";
+      if (!fp) throw new Error("no file_path");
+      const imageUrl = `https://api.telegram.org/file/bot${token}/${fp}`;
+      const { createAndEnqueueVideoJob } = require("../../services/videoGeneration");
+      console.log("[VIDEO PIPELINE] step: telegram_enqueue RAW", { chatId: String(chatId) });
+      await createAndEnqueueVideoJob({
+        userId: bot.userId,
+        organizationId: bot.organizationId,
+        imageUrl,
+        script: caption,
+        voiceText: caption,
+        notify: { type: "telegram", token, chatId },
+      });
+      await telegramSendMessage(token, chatId, "⏳ Видео в очереди. Пришлю сюда, когда будет готово.", {
+        replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      });
+    } catch (e) {
+      process.stderr.write(`[VIDEO PIPELINE] telegram enqueue error RAW: ${e.stack || e.message}\n`);
+      await telegramSendMessage(token, chatId, `Не удалось поставить видео в очередь: ${e.message}`, {
+        replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      });
+    }
+    return { ok: true };
+  }
+
   if (text === KB_ROW_PHOTO) {
     await prisma.telegramChat.update({
       where: { id: tgChat.id },

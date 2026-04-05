@@ -18,6 +18,7 @@ import { LoginPage } from "./pages/auth/LoginPage";
 import { RegisterPage } from "./pages/auth/RegisterPage";
 import { ResetPasswordPage } from "./pages/auth/ResetPasswordPage";
 import { ImageStudioPage } from "./pages/ImageStudioPage";
+import { VideoStudioPage } from "./pages/VideoStudioPage";
 import { ImageSettingsPage } from "./pages/ImageSettingsPage";
 import { AvitoPage } from "./pages/AvitoPage";
 import { TelegramPage } from "./pages/TelegramPage";
@@ -61,6 +62,7 @@ export default function App() {
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="image-studio" element={<ImageStudioPage />} />
+          <Route path="video-al" element={<VideoStudioPage />} />
           <Route path="image-studio/settings" element={<ImageSettingsPage />} />
           <Route path="avito" element={<AvitoPage />} />
           <Route path="telegram" element={<TelegramPage />} />
