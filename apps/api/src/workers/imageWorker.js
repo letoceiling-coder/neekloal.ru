@@ -8,11 +8,15 @@ const path = require("path");
 const { v4: uuidv4 } = require("uuid");
 const { getWorkerConnection } = require("../lib/redis");
 const prisma = require("../lib/prisma");
-const { enhanceProductProFile, buildCatalogProductPng } = require("../lib/productProPost");
+const { enhanceProductProFile, enhanceProductProModelFile, buildCatalogProductPng } = require("../lib/productProPost");
 
 const COMFYUI_URL = process.env.COMFYUI_URL || "http://188.124.55.89:8188";
 const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
 const PUBLIC_BASE = process.env.IMAGE_PUBLIC_BASE || "https://site-al.ru/uploads/images";
+
+/** Product Pro model — sampler tuning for natural faces (CFG / steps) */
+const PRODUCT_PRO_CFG = Number(process.env.IMAGE_PRODUCT_PRO_CFG) || 5.5;
+const PRODUCT_PRO_STEPS = Number(process.env.IMAGE_PRODUCT_PRO_STEPS) || 32;
 
 /** SDXL IP-Adapter preset (ComfyUI_IPAdapter_plus). */
 const IPADAPTER_PRESET = process.env.IMAGE_IPADAPTER_PRESET || "PLUS (high strength)";
@@ -126,9 +130,13 @@ function buildReferenceWorkflow(prompt, negativePrompt, width, height, denoise, 
 /**
  * SDXL img2img + IP-Adapter (ComfyUI_IPAdapter_plus). Reference image drives identity/style;
  * latent from same image keeps garment structure. Requires IPAdapter + IPAdapterUnifiedLoader on ComfyUI.
+ * @param {object} [samplerOpts] — optional { cfg, steps } (default cfg 7, steps 25); used for product_pro_model face quality.
  */
-function buildProductIPAdapterWorkflow(prompt, negativePrompt, width, height, denoise, referenceFilename, ipWeight) {
+function buildProductIPAdapterWorkflow(prompt, negativePrompt, width, height, denoise, referenceFilename, ipWeight, samplerOpts) {
   const weight = clampIpAdapterWeight(ipWeight);
+  const so = samplerOpts && typeof samplerOpts === "object" ? samplerOpts : {};
+  const cfg = Number.isFinite(Number(so.cfg)) ? Math.min(Math.max(Number(so.cfg), 1), 15) : 7;
+  const steps = Number.isFinite(Number(so.steps)) ? Math.min(Math.max(Number(so.steps), 10), 60) : 25;
   return {
     "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" } },
     "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: prompt } },
@@ -155,7 +163,7 @@ function buildProductIPAdapterWorkflow(prompt, negativePrompt, width, height, de
     "9": {
       class_type: "KSampler",
       inputs: {
-        cfg: 7,
+        cfg,
         denoise,
         latent_image: ["6", 0],
         model: ["8", 0],
@@ -164,7 +172,7 @@ function buildProductIPAdapterWorkflow(prompt, negativePrompt, width, height, de
         sampler_name: "euler",
         scheduler: "normal",
         seed: Math.floor(Math.random() * 1e15),
-        steps: 25,
+        steps,
       },
     },
     "10": { class_type: "VAEDecode", inputs: { samples: ["9", 0], vae: ["1", 2] } },
@@ -590,7 +598,7 @@ const worker = new Worker(
 
     } else if (mode === "product_pro_catalog") {
       if (!referenceImageUrl) throw new Error("referenceImageUrl required for product_pro_catalog");
-      process.stdout.write(`[imageWorker] product_pro_catalog: rembg + white backdrop + sharpen\n`);
+      process.stdout.write(`[imageWorker] product_pro_catalog: rembg + human check + white + shadow + sharpen\n`);
       const buf = await downloadBuffer(referenceImageUrl);
       const outBuf = await buildCatalogProductPng(buf);
       const saved = await saveBufferAsGenerated(outBuf, { ...job.data, jobId: finalJobId }, finalJobId);
@@ -639,6 +647,8 @@ const worker = new Worker(
         denoise,
         pose: mode === "product_pro_model" ? (job.data.productProPose ?? null) : undefined,
         ipAdapterWeight: ipW,
+        cfg: mode === "product_pro_model" ? PRODUCT_PRO_CFG : undefined,
+        steps: mode === "product_pro_model" ? PRODUCT_PRO_STEPS : undefined,
         hasIPAdapterNodes,
         useIPAdapter,
         workflowType: useIPAdapter ? "ip-adapter" : "img2img",
@@ -646,7 +656,7 @@ const worker = new Worker(
       });
       if (mode === "product_pro_model") {
         process.stdout.write(
-          `[product_pro_model] pose=${job.data.productProPose ?? "?"} denoise=${denoise} ipAdapterWeight=${ipW}\n`
+          `[product_pro_model] pose=${job.data.productProPose ?? "?"} denoise=${denoise} ipAdapterWeight=${ipW} cfg=${PRODUCT_PRO_CFG} steps=${PRODUCT_PRO_STEPS}\n`
         );
       }
 
@@ -664,8 +674,21 @@ const worker = new Worker(
       });
       process.stdout.write(`[imageWorker] workflow type: ${workflowType}\n`);
 
+      const productProSampler = mode === "product_pro_model"
+        ? { cfg: PRODUCT_PRO_CFG, steps: PRODUCT_PRO_STEPS }
+        : undefined;
+
       const workflow = useIPAdapter
-        ? buildProductIPAdapterWorkflow(prompt, neg, width, height, denoise, comfyFn, ipW)
+        ? buildProductIPAdapterWorkflow(
+          prompt,
+          neg,
+          width,
+          height,
+          denoise,
+          comfyFn,
+          ipW,
+          productProSampler
+        )
         : buildReferenceWorkflow(prompt, neg, width, height, denoise, comfyFn);
       const promptId = await submitWorkflow(workflow);
       filenames = await waitForComfyOutput(promptId);
@@ -736,9 +759,10 @@ const worker = new Worker(
       jobId: finalJobId,
     });
 
+    // Optional GFPGAN/CodeFormer: requires extra ComfyUI nodes in the graph, not wired here.
     if (mode === "product_pro_model") {
       for (const s of saved) {
-        await enhanceProductProFile(s.localPath);
+        await enhanceProductProModelFile(s.localPath);
       }
     }
 

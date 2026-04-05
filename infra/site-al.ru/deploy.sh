@@ -44,6 +44,10 @@ else
   pm2 start src/app.js --name ai-api
 fi
 pm2 restart ai-api
+if pm2 describe image-worker >/dev/null 2>&1; then
+  log "PM2 image-worker"
+  pm2 restart image-worker
+fi
 pm2 save
 
 log "Frontend: npm ci + build"

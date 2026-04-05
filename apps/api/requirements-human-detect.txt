@@ -1,0 +1,3 @@
+# Optional: enables catalog human check (face + body) for product_pro_catalog
+# pip install -r requirements-human-detect.txt
+opencv-python-headless>=4.8.0,<5

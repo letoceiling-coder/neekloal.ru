@@ -26,15 +26,22 @@ const VALID_MODES = ["text", "variation", "reference", "inpaint", "controlnet", 
 
 /** Appended in "product" mode (marketplace cards) after enhance */
 const PRODUCT_MODE_PROMPT_SUFFIX =
-  ", high detail clothing, preserve fabric, preserve design, same outfit, realistic texture, no distortion";
+  ", high detail clothing, preserve fabric, preserve design, same outfit, realistic texture, no distortion, "
+  + "editorial fashion quality, natural light falloff";
 const PRODUCT_MODE_NEG_APPEND =
-  ", deformed clothes, different outfit, low quality fabric, bad texture, blurry";
+  ", deformed clothes, different outfit, low quality fabric, bad texture, blurry, cgi look, overprocessed";
 
-/** Product Pro — model shots (pose + camera differ per job for real variation) */
+/** Product Pro — model shots (premium fashion + pose/camera variation) */
 const PRODUCT_PRO_MODEL_PROMPT =
-  "fashion model wearing the same clothing, studio lighting, soft shadows, ecommerce photo, realistic skin, sharp focus";
+  "fashion model wearing the same clothing, soft diffused studio lighting, editorial lighting, "
+  + "high-end fashion photography, fabric texture clearly visible, sharp textile details, "
+  + "natural imperfections, realistic skin texture, photorealistic face, real human face, "
+  + "beauty photography, sharp focus, high detail skin, soft shadows, ecommerce photo";
 const PRODUCT_PRO_MODEL_NEG =
-  "deformed body, bad hands, blurry, low quality, distorted clothes, identical duplicate shot, same framing as other photos";
+  "deformed body, bad hands, blurry, low quality, distorted clothes, identical duplicate shot, same framing as other photos, "
+  + "bad face, ugly face, deformed face, distorted face, extra eyes, extra mouth, bad anatomy, "
+  + "plastic skin, wax skin, blurry face, low detail face, mutated face, horror, creepy, "
+  + "cgi look, fake skin, overprocessed, AI art, artificial, oversharpened";
 
 /** Per-pose: explicit pose line + camera / framing (STEP 2 + STEP 4) */
 const PRODUCT_PRO_SHOTS = {
