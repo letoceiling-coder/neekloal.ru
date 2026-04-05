@@ -22,6 +22,16 @@ fi
 
 log "ROOT OK: ${ROOT}"
 
+log "ffmpeg (required for video-worker interpolate/merge)"
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  log "ffmpeg missing — installing"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y ffmpeg
+else
+  log "ffmpeg ok: $(command -v ffmpeg)"
+fi
+
 log "git fetch origin && reset --hard origin/main"
 git fetch origin
 git reset --hard origin/main
