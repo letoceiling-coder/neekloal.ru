@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Film, Loader2, Download, Upload, AlertCircle, ImageIcon } from "lucide-react";
-import { useAuthStore } from "../stores/authStore";
+import { useAuthStore } from "@/stores/authStore";
 
 const API = import.meta.env.VITE_API_URL ?? "/api";
 
@@ -40,6 +40,10 @@ function StatusBadge({ status }: { status: VideoJobStatus }) {
 }
 
 export function VideoStudioPage() {
+  useEffect(() => {
+    console.log("VIDEO PAGE LOADED");
+  }, []);
+
   const accessToken = useAuthStore((s) => s.accessToken);
   const jsonHeaders = {
     Authorization: `Bearer ${accessToken ?? ""}`,
@@ -370,3 +374,5 @@ export function VideoStudioPage() {
     </div>
   );
 }
+
+export default VideoStudioPage;

@@ -29,7 +29,7 @@ export const sidebarNav: {
   { to: "/knowledge", label: "База знаний", Icon: BookOpen },
   { to: "/api-keys", label: "API ключи", Icon: Key },
   { to: "/image-studio", label: "Image Studio", Icon: Image },
-  { to: "/video-al", label: "Video Studio", Icon: Film },
+  { to: "/video-al", label: "Видео", Icon: Film },
   { to: "/avito",        label: "Avito",        Icon: Store },
   { to: "/telegram",     label: "Telegram Bot", Icon: Send },
   { to: "/analytics",   label: "Аналитика",    Icon: BarChart3 },
