@@ -11,7 +11,7 @@ const sharp = require("sharp");
 const { getWorkerConnection } = require("../lib/redis");
 const prisma = require("../lib/prisma");
 const { fetchLtxVideoToFile } = require("../lib/videoLtx");
-const { runComfyLtxToFile } = require("../lib/comfyLtxVideo");
+const { runComfyLtxToFile, assertComfyHasLtxNodes } = require("../lib/comfyLtxVideo");
 const {
   ffmpegZoompanFromImage,
   mergeVideoVoice,
@@ -132,6 +132,16 @@ const worker = new Worker(
       let videoPath = ltxOut;
 
       if (mode === "ltx") {
+        const allowLtxFallback = process.env.VIDEO_ALLOW_LTX_FALLBACK === "1";
+
+        if (process.env.VIDEO_COMFY_VERIFY_LTX_NODES === "1") {
+          try {
+            await assertComfyHasLtxNodes();
+          } catch (e) {
+            throw new Error(String(e.message || e));
+          }
+        }
+
         logPipeline("ltx_generate", { videoJobId });
         let comfyOk = false;
         try {
@@ -145,9 +155,21 @@ const worker = new Worker(
           comfyOk = false;
         }
 
-        if (!comfyOk) {
+        if (comfyOk) {
+          console.log("[VIDEO PIPELINE] USING COMFY LTX");
+        } else if (allowLtxFallback) {
+          console.log("[VIDEO PIPELINE] USING FALLBACK");
           logPipeline("ltx_generate_fallback", { videoJobId });
           await runStandardVideoGeneration(prepImg, script, ltxOut, videoJobId);
+        } else {
+          throw new Error(
+            "ComfyUI LTX did not return a video. Required: (1) API workflow file at " +
+              `${process.env.VIDEO_COMFY_LTX_API_WORKFLOW_PATH || "apps/api/comfy-workflows/ltx_image_to_video.api.json"} ` +
+              "(Save API Format from ComfyUI with LoadImage, CLIPTextEncode, LTX nodes, SaveVideo/CreateVideo); " +
+              "(2) ComfyUI-LTXVideo installed on GPU, models in place; " +
+              "(3) reachable VIDEO_COMFY_URL. " +
+              "Temporary zoom-only output: set VIDEO_ALLOW_LTX_FALLBACK=1 on video-worker."
+          );
         }
 
         videoPath = ltxOut;

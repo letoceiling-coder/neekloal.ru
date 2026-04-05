@@ -28,8 +28,21 @@ VIDEO_LTX_CLIP_POSITIVE_NODE_ID=2483
 
 (use the string node id from your API export).
 
+## Validation
+
+The worker checks that the API graph includes **LoadImage**, **CLIPTextEncode**, at least one **LTX** `class_type`, and **SaveVideo** / **CreateVideo** (video sink). UI-only exports are rejected.
+
+## Environment
+
+| Variable | Meaning |
+|----------|---------|
+| `VIDEO_ALLOW_LTX_FALLBACK` | Set to `1` to allow ffmpeg **zoompan** if Comfy fails (no real AI motion). Default: **unset / not 1** → job **fails** until Comfy LTX works. |
+| `VIDEO_COMFY_VERIFY_LTX_NODES` | Set to `1` to fail fast if `GET /object_info` on Comfy has **no** LTX node names (custom nodes not installed). |
+
 ## GPU host (reference)
 
 Target ComfyUI: `http://188.124.55.89:8188` — override with `VIDEO_COMFY_URL` or `COMFYUI_URL`.
+
+**Requirement:** ComfyUI must expose LTX nodes (`curl …/object_info` should list class types containing `LTX`). If not, install **ComfyUI-LTXVideo** in the Comfy container and restart ComfyUI.
 
 See also: `docs/COMFY_LTX_SERVER.md`.

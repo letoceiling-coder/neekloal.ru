@@ -35,6 +35,28 @@ function loadWorkflowPrompt(workflowPath) {
  * - LoadImage: inputs.image
  * - CLIPTextEncode: inputs.text (positive — first match, or VIDEO_LTX_CLIP_POSITIVE_NODE_ID)
  */
+/**
+ * Ensure graph looks like LTX I2V (not zoom-only / wrong export).
+ */
+function validateLtxWorkflowStructure(promptGraph) {
+  const nodes = Object.values(promptGraph).filter((n) => n && typeof n === "object");
+  const types = nodes.map((n) => String(n.class_type || ""));
+  const hasLoadImage = types.some((t) => t === "LoadImage");
+  const hasClip = types.some((t) => t === "CLIPTextEncode");
+  const hasSaveVideo = types.some(
+    (t) => t === "SaveVideo" || t === "SaveVideoFFmpeg" || t === "CreateVideo"
+  );
+  const hasLtx = types.some((t) => /ltx|LTX/i.test(t));
+  if (!hasLoadImage) throw new Error("Workflow must contain LoadImage (API export)");
+  if (!hasClip) throw new Error("Workflow must contain CLIPTextEncode");
+  if (!hasSaveVideo) throw new Error("Workflow must contain SaveVideo / CreateVideo (video output node)");
+  if (!hasLtx) {
+    throw new Error(
+      "Workflow must include at least one LTX node (class_type contains LTX). Export I2V graph from ComfyUI-LTXVideo."
+    );
+  }
+}
+
 function injectImageAndPrompt(promptGraph, imageFilename, script) {
   const text = `cinematic motion, ${script}, smooth camera movement`;
   const clipId = process.env.VIDEO_LTX_CLIP_POSITIVE_NODE_ID
@@ -143,8 +165,26 @@ async function runComfyLtxToFile({ imagePath, script, outMp4Path }) {
   }
 }
 
+/**
+ * Optional: verify Comfy exposes LTX nodes (call before batch jobs).
+ */
+async function assertComfyHasLtxNodes(baseUrl = getComfyBaseUrl()) {
+  const res = await fetch(`${baseUrl}/object_info`, { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`Comfy object_info HTTP ${res.status}`);
+  const info = await res.json();
+  const keys = Object.keys(info || {});
+  const hasLtx = keys.some((k) => /ltx|LTX/i.test(k));
+  if (!hasLtx) {
+    throw new Error(
+      "ComfyUI has no LTX nodes in object_info. Install ComfyUI-LTXVideo on GPU and restart ComfyUI."
+    );
+  }
+}
+
 module.exports = {
   runComfyLtxToFile,
   getComfyBaseUrl,
   defaultWorkflowPath,
+  assertComfyHasLtxNodes,
+  validateLtxWorkflowStructure,
 };
