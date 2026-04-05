@@ -1469,7 +1469,7 @@ export function ImageStudioPage() {
         </aside>
 
         {/* ════ CENTER — PREVIEW ═════════════════════════════════════════════ */}
-        <main className="flex min-w-0 flex-1 flex-col items-center justify-center bg-neutral-950 p-6">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center overflow-hidden bg-neutral-950 p-6">
 
           {/* Error */}
           {error && (
@@ -1515,9 +1515,9 @@ export function ImageStudioPage() {
                     const failed = r?.status === "failed";
                     const imgUrl = r?.url ?? r?.urls?.[0];
                     return (
-                      <div key={jid} className="relative aspect-square w-full overflow-hidden rounded-xl border border-white/5 bg-neutral-900">
+                      <div key={jid} className="relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl border border-white/5 bg-neutral-900">
                         {done && imgUrl ? (
-                          <img src={imgUrl} alt="" className="h-full w-full object-cover" />
+                          <img src={imgUrl} alt="" className="relative z-10 max-h-full max-w-full object-contain" />
                         ) : failed ? (
                           <div className="flex h-full items-center justify-center text-red-400 text-xs">❌</div>
                         ) : (
@@ -1535,16 +1535,16 @@ export function ImageStudioPage() {
 
           {/* Result — single image */}
           {genStage === "done" && activeJob?.status === "completed" && images.length === 1 && (
-            <div className="group relative max-w-xl w-full">
+            <div className="group relative flex w-full max-w-xl max-h-[min(75vh,calc(100dvh-10rem))] min-h-0 items-center justify-center overflow-hidden rounded-2xl">
               <img
                 src={images[0]}
                 alt={activeJob.prompt}
-                className="w-full rounded-2xl shadow-2xl shadow-black/60 cursor-zoom-in"
+                className="relative z-10 max-h-full max-w-full cursor-zoom-in rounded-2xl object-contain shadow-2xl shadow-black/60"
                 onClick={() => setLightbox(images[0])}
               />
-              {/* Overlay */}
-              <div className="absolute inset-0 flex flex-col items-end justify-start gap-2 rounded-2xl bg-black/0 p-3 opacity-0 transition-all group-hover:bg-black/30 group-hover:opacity-100">
-                <div className="flex gap-2">
+              {/* Overlay: no pointer capture except on controls */}
+              <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-end justify-start gap-2 rounded-2xl bg-black/0 p-3 opacity-0 transition-all group-hover:bg-black/30 group-hover:opacity-100">
+                <div className="pointer-events-auto flex gap-2">
                   <OverlayBtn icon={<Download className="h-4 w-4" />} label="Скачать" href={images[0]} download />
                   <OverlayBtn icon={<RotateCcw className="h-4 w-4" />} label="Повторить" onClick={() => handleGenerate(activeJob.originalPrompt ?? activeJob.prompt)} />
                   <OverlayBtn icon={<Scissors className="h-4 w-4" />} label="Убрать фон" onClick={() => doRemoveBg(images[0])} />
@@ -1557,18 +1557,20 @@ export function ImageStudioPage() {
           {/* Result — variations grid */}
           {genStage === "done" && activeJob?.status === "completed" && images.length > 1 && (
             <div className={cn(
-              "grid w-full max-w-2xl gap-3",
+              "grid w-full max-h-[min(75vh,calc(100dvh-10rem))] max-w-2xl min-h-0 gap-3 overflow-hidden",
               images.length === 2 ? "grid-cols-2" : "grid-cols-2"
             )}>
               {images.map((url, i) => (
-                <div key={url} className="group relative aspect-square overflow-hidden rounded-xl">
-                  <img src={url} alt="" className="h-full w-full object-cover" />
-                  <div className="absolute inset-0 flex items-end justify-end gap-1.5 bg-black/0 p-2 opacity-0 transition-all group-hover:bg-black/40 group-hover:opacity-100">
-                    <OverlayBtn icon={<ZoomIn className="h-3.5 w-3.5" />} label="Открыть" onClick={() => setLightbox(url)} />
-                    <OverlayBtn icon={<Download className="h-3.5 w-3.5" />} label="Скачать" href={url} download />
-                    <OverlayBtn icon={<Scissors className="h-3.5 w-3.5" />} label="Убрать фон" onClick={() => doRemoveBg(url)} />
+                <div key={url} className="group relative flex aspect-square min-h-0 min-w-0 items-center justify-center overflow-hidden rounded-xl bg-neutral-900">
+                  <img src={url} alt="" className="relative z-10 max-h-full max-w-full object-contain" />
+                  <div className="pointer-events-none absolute inset-0 z-20 flex items-end justify-end bg-black/0 p-2 opacity-0 transition-all group-hover:bg-black/40 group-hover:opacity-100">
+                    <div className="pointer-events-auto flex gap-1.5">
+                      <OverlayBtn icon={<ZoomIn className="h-3.5 w-3.5" />} label="Открыть" onClick={() => setLightbox(url)} />
+                      <OverlayBtn icon={<Download className="h-3.5 w-3.5" />} label="Скачать" href={url} download />
+                      <OverlayBtn icon={<Scissors className="h-3.5 w-3.5" />} label="Убрать фон" onClick={() => doRemoveBg(url)} />
+                    </div>
                   </div>
-                  <span className="absolute left-2 top-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  <span className="pointer-events-none absolute left-2 top-2 z-[21] rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-bold text-white">
                     #{i + 1}
                   </span>
                 </div>
