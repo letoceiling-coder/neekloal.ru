@@ -47,10 +47,22 @@ function clampRefDenoise(strength) {
   return Math.min(Math.max(Number(strength) || 0.45, 0.3), 0.6);
 }
 
+/** Product Pro model jobs — higher denoise for real pose/scene variation (API sends 0.65–0.75) */
+function clampProductProDenoise(strength) {
+  return Math.min(Math.max(Number(strength) || 0.7, 0.65), 0.75);
+}
+
 function clampIpAdapterWeight(w) {
   const n = Number(w);
   if (!Number.isFinite(n)) return 0.55;
   return Math.min(Math.max(n, 0.3), 0.8);
+}
+
+/** Product Pro: keep reference but allow more generation freedom (STEP 3) */
+function clampProductProIpAdapterWeight(w) {
+  const n = Number(w);
+  if (!Number.isFinite(n)) return 0.5;
+  return Math.min(Math.max(n, 0.4), 0.6);
 }
 
 const DEFAULT_NEGATIVE =
@@ -598,8 +610,12 @@ const worker = new Worker(
       // Product Pro model slots: SDXL + IP-Adapter (same as product). Pose variation is via prompt hints;
       // a unified SDXL+OpenPose ControlNet graph would need extra ComfyUI XL ControlNet wiring on the GPU host.
       if (!referenceImageUrl) throw new Error("referenceImageUrl required for product mode");
-      const denoise = clampRefDenoise(strength);
-      const ipW = clampIpAdapterWeight(job.data.ipAdapterWeight);
+      const denoise = mode === "product_pro_model"
+        ? clampProductProDenoise(strength)
+        : clampRefDenoise(strength);
+      const ipW = mode === "product_pro_model"
+        ? clampProductProIpAdapterWeight(job.data.ipAdapterWeight)
+        : clampIpAdapterWeight(job.data.ipAdapterWeight);
       let hasIPAdapterNodes = false;
       try {
         const names = await getComfyNodeNames();
@@ -621,12 +637,18 @@ const worker = new Worker(
         jobId: String(finalJobId),
         referenceImageUrl: String(referenceImageUrl),
         denoise,
+        pose: mode === "product_pro_model" ? (job.data.productProPose ?? null) : undefined,
+        ipAdapterWeight: ipW,
         hasIPAdapterNodes,
         useIPAdapter,
-        ipAdapterWeight: ipW,
         workflowType: useIPAdapter ? "ip-adapter" : "img2img",
         width, height,
       });
+      if (mode === "product_pro_model") {
+        process.stdout.write(
+          `[product_pro_model] pose=${job.data.productProPose ?? "?"} denoise=${denoise} ipAdapterWeight=${ipW}\n`
+        );
+      }
 
       process.stdout.write(`[imageWorker] product mode, useIPAdapter=${useIPAdapter}, downloading image...\n`);
       const buf = await downloadBuffer(referenceImageUrl);

@@ -30,16 +30,41 @@ const PRODUCT_MODE_PROMPT_SUFFIX =
 const PRODUCT_MODE_NEG_APPEND =
   ", deformed clothes, different outfit, low quality fabric, bad texture, blurry";
 
-/** Product Pro — model shots (system prompts, STEP 4) */
+/** Product Pro — model shots (pose + camera differ per job for real variation) */
 const PRODUCT_PRO_MODEL_PROMPT =
   "fashion model wearing the same clothing, studio lighting, soft shadows, ecommerce photo, realistic skin, sharp focus";
 const PRODUCT_PRO_MODEL_NEG =
-  "deformed body, bad hands, blurry, low quality, distorted clothes";
-const PRODUCT_PRO_POSE_HINTS = {
-  front: ", full body front view, facing camera, standing pose, professional catalog framing",
-  side: ", full body side profile, standing, 90 degree view, studio shot",
-  walking: ", full body walking pose, mid-stride, natural movement, editorial ecommerce",
+  "deformed body, bad hands, blurry, low quality, distorted clothes, identical duplicate shot, same framing as other photos";
+
+/** Per-pose: explicit pose line + camera / framing (STEP 2 + STEP 4) */
+const PRODUCT_PRO_SHOTS = {
+  front: {
+    poseLine: "front pose, looking at camera",
+    cameraLine: "eye level angle, medium full shot, centered composition, catalog framing",
+  },
+  side: {
+    poseLine: "side pose, profile",
+    cameraLine: "three-quarter camera angle, full length body in frame, subject offset in frame, side view emphasis",
+  },
+  walking: {
+    poseLine: "walking pose, dynamic movement",
+    cameraLine: "slightly low angle, wider framing, dynamic asymmetrical composition, motion in scene",
+  },
 };
+
+/** img2img denoise per model slot — STEP 1 (0.65–0.75) */
+const PRODUCT_PRO_MODEL_DENOISE = {
+  front: 0.65,
+  side: 0.7,
+  walking: 0.75,
+};
+
+/** STEP 3: IP-Adapter weight band for product_pro_model */
+function clampProductProIpAdapterWeight(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0.5;
+  return Math.min(Math.max(n, 0.4), 0.6);
+}
 
 function userJobKey(userId) { return `image:active:${userId}`; }
 
@@ -143,13 +168,7 @@ module.exports = async function imageRoutes(fastify) {
       const queue = getImageQueue();
       const pipelineId = uuidv4();
 
-      const ipAdapterWeight = (() => {
-        const n = Number(ipAdapterWeightRaw);
-        if (!Number.isFinite(n)) return 0.55;
-        return Math.min(Math.max(n, 0.3), 0.8);
-      })();
-
-      const baseStrength = Math.min(Math.max(Number(strength) || 0.45, 0.3), 0.6);
+      const ipAdapterWeight = clampProductProIpAdapterWeight(ipAdapterWeightRaw);
 
       const poses = ["front", "side", "walking"];
       const allJobIds = [];
@@ -157,10 +176,16 @@ module.exports = async function imageRoutes(fastify) {
       for (const pose of poses) {
         const vid = uuidv4();
         allJobIds.push(vid);
+        const shot = PRODUCT_PRO_SHOTS[pose] || PRODUCT_PRO_SHOTS.front;
+        const denoiseForPose = PRODUCT_PRO_MODEL_DENOISE[pose] ?? 0.7;
         const modelPrompt =
-          `${PRODUCT_PRO_MODEL_PROMPT}${PRODUCT_PRO_POSE_HINTS[pose] || ""}${PRODUCT_MODE_PROMPT_SUFFIX}`;
+          `${PRODUCT_PRO_MODEL_PROMPT}, ${shot.poseLine}, ${shot.cameraLine}${PRODUCT_MODE_PROMPT_SUFFIX}`;
         const modelNeg =
           `${PRODUCT_PRO_MODEL_NEG}${PRODUCT_MODE_NEG_APPEND}`;
+
+        process.stdout.write(
+          `[image:product_pro:queue] pose=${pose} denoise=${denoiseForPose} ipAdapterWeight=${ipAdapterWeight}\n`
+        );
 
         await queue.add(
           "generate",
@@ -173,7 +198,7 @@ module.exports = async function imageRoutes(fastify) {
             userId: request.userId,
             organizationId: request.organizationId,
             referenceImageUrl,
-            strength: baseStrength,
+            strength: denoiseForPose,
             ipAdapterWeight,
             mode: "product_pro_model",
             maskUrl: null,

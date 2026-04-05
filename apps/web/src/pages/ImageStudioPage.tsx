@@ -662,6 +662,11 @@ export function ImageStudioPage() {
   useEffect(() => { loadHistory(); }, []);
 
   useEffect(() => {
+    if (!activeOptions.has("product_pro")) return;
+    setIpAdapterWeight((w) => Math.min(0.6, Math.max(0.4, w)));
+  }, [activeOptions.has("product_pro")]);
+
+  useEffect(() => {
     if (!activeJobId) return;
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(() => pollJob(activeJobId), 3000);
@@ -1315,25 +1320,32 @@ export function ImageStudioPage() {
 
                   {(activeOptions.has("reference") || activeOptions.has("product_pro")) && (
                     <div className="mt-2 space-y-3">
-                      <div>
-                        <div className="flex items-center justify-between text-[11px] text-neutral-400 mb-1">
-                          <span>Точность товара</span>
-                          <span>{strength.toFixed(2)}</span>
+                      {activeOptions.has("reference") && (
+                        <div>
+                          <div className="flex items-center justify-between text-[11px] text-neutral-400 mb-1">
+                            <span>Точность товара</span>
+                            <span>{strength.toFixed(2)}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.3"
+                            max="0.6"
+                            step="0.05"
+                            value={strength}
+                            onChange={(e) => setStrength(Number(e.target.value))}
+                            className="w-full accent-violet-500"
+                          />
+                          <div className="flex justify-between text-[9px] text-neutral-600 mt-0.5">
+                            <span>0.3 креативнее</span>
+                            <span>0.6 строже</span>
+                          </div>
                         </div>
-                        <input
-                          type="range"
-                          min="0.3"
-                          max="0.6"
-                          step="0.05"
-                          value={strength}
-                          onChange={(e) => setStrength(Number(e.target.value))}
-                          className="w-full accent-violet-500"
-                        />
-                        <div className="flex justify-between text-[9px] text-neutral-600 mt-0.5">
-                          <span>0.3 креативнее</span>
-                          <span>0.6 строже</span>
-                        </div>
-                      </div>
+                      )}
+                      {activeOptions.has("product_pro") && (
+                        <p className="text-[10px] text-neutral-500 leading-relaxed">
+                          Три кадра с моделью: на сервере разные denoise (0.65 / 0.70 / 0.75), позы и ракурс в промпте — кадры не копии.
+                        </p>
+                      )}
                       <div>
                         <div className="flex items-center justify-between text-[11px] text-neutral-400 mb-1">
                           <span>Удержание образа (IP-Adapter)</span>
@@ -1341,21 +1353,21 @@ export function ImageStudioPage() {
                         </div>
                         <input
                           type="range"
-                          min="0.3"
-                          max="0.8"
+                          min={activeOptions.has("product_pro") ? "0.4" : "0.3"}
+                          max={activeOptions.has("product_pro") ? "0.6" : "0.8"}
                           step="0.05"
                           value={ipAdapterWeight}
                           onChange={(e) => setIpAdapterWeight(Number(e.target.value))}
                           className="w-full accent-fuchsia-500"
                         />
                         <div className="flex justify-between text-[9px] text-neutral-600 mt-0.5">
-                          <span>0.3 мягче</span>
-                          <span>0.8 сильнее</span>
+                          <span>{activeOptions.has("product_pro") ? "0.4 мягче" : "0.3 мягче"}</span>
+                          <span>{activeOptions.has("product_pro") ? "0.6 сильнее" : "0.8 сильнее"}</span>
                         </div>
                       </div>
                       {activeOptions.has("product_pro") && (
                         <p className="text-[10px] text-neutral-500 leading-relaxed">
-                          Три кадра: SDXL + IP-Adapter (одежда). Каталог: вырезка фона, белый фон, резкость.
+                          Каталог: вырезка фона, белый фон, резкость.
                         </p>
                       )}
                     </div>
