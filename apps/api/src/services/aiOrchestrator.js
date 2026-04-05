@@ -23,6 +23,7 @@ const MODE_LABELS = {
   reference:  "По образцу",
   inpaint:    "Редактирование",
   controlnet: "ControlNet",
+  product:    "Товар / одежда",
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

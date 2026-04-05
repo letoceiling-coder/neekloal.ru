@@ -13,6 +13,45 @@ const COMFYUI_URL = process.env.COMFYUI_URL || "http://188.124.55.89:8188";
 const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
 const PUBLIC_BASE = process.env.IMAGE_PUBLIC_BASE || "https://site-al.ru/uploads/images";
 
+/** SDXL IP-Adapter preset (ComfyUI_IPAdapter_plus). */
+const IPADAPTER_PRESET = process.env.IMAGE_IPADAPTER_PRESET || "PLUS (high strength)";
+
+let comfyNodeNameCache = null;
+let comfyNodeNameCacheAt = 0;
+const OBJECT_INFO_TTL_MS = 300_000;
+
+async function getComfyNodeNames() {
+  if (comfyNodeNameCache && Date.now() - comfyNodeNameCacheAt < OBJECT_INFO_TTL_MS) {
+    return comfyNodeNameCache;
+  }
+  const res = await fetch(`${COMFYUI_URL}/object_info`, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`object_info failed (${res.status})`);
+  const data = await res.json();
+  comfyNodeNameCache = new Set(Object.keys(data));
+  comfyNodeNameCacheAt = Date.now();
+  return comfyNodeNameCache;
+}
+
+function logGenLine(payload) {
+  const line = JSON.stringify({
+    t: new Date().toISOString(),
+    svc: "imageWorker",
+    ...payload,
+  });
+  process.stdout.write(`${line}\n`);
+}
+
+/** SDXL img2img denoise clamp — marketplace product band */
+function clampRefDenoise(strength) {
+  return Math.min(Math.max(Number(strength) || 0.45, 0.3), 0.6);
+}
+
+function clampIpAdapterWeight(w) {
+  const n = Number(w);
+  if (!Number.isFinite(n)) return 0.55;
+  return Math.min(Math.max(n, 0.3), 0.8);
+}
+
 const DEFAULT_NEGATIVE =
   "blurry, low quality, bad anatomy, extra limbs, extra objects, distorted, watermark, text, ugly, deformed, out of focus, overexposed, underexposed, duplicate";
 
@@ -50,24 +89,73 @@ function buildTextWorkflow(prompt, width = 1024, height = 1024, negativePrompt, 
   };
 }
 
-function buildReferenceWorkflow(prompt, negativePrompt, width, height, strength, referenceFilename) {
+function buildReferenceWorkflow(prompt, negativePrompt, width, height, denoise, referenceFilename) {
   return {
     "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" } },
     "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: prompt } },
     "3": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE } },
-    "4": { class_type: "LoadImage", inputs: { image: referenceFilename, upload: "image" } },
+    "4": { class_type: "LoadImage", inputs: { image: referenceFilename } },
     "5": { class_type: "ImageScale", inputs: { image: ["4", 0], width, height, upscale_method: "lanczos", crop: "disabled" } },
     "6": { class_type: "VAEEncode", inputs: { pixels: ["5", 0], vae: ["1", 2] } },
     "7": {
       class_type: "KSampler",
       inputs: {
-        cfg: 7, denoise: Math.min(Math.max(Number(strength) || 0.5, 0.1), 1.0),
+        cfg: 7, denoise,
         latent_image: ["6", 0], model: ["1", 0], negative: ["3", 0], positive: ["2", 0],
         sampler_name: "euler", scheduler: "normal", seed: Math.floor(Math.random() * 1e15), steps: 20,
       },
     },
     "8": { class_type: "VAEDecode", inputs: { samples: ["7", 0], vae: ["1", 2] } },
     "9": { class_type: "SaveImage", inputs: { filename_prefix: "ref_", images: ["8", 0] } },
+  };
+}
+
+/**
+ * SDXL img2img + IP-Adapter (ComfyUI_IPAdapter_plus). Reference image drives identity/style;
+ * latent from same image keeps garment structure. Requires IPAdapter + IPAdapterUnifiedLoader on ComfyUI.
+ */
+function buildProductIPAdapterWorkflow(prompt, negativePrompt, width, height, denoise, referenceFilename, ipWeight) {
+  const weight = clampIpAdapterWeight(ipWeight);
+  return {
+    "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" } },
+    "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: prompt } },
+    "3": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE } },
+    "4": { class_type: "LoadImage", inputs: { image: referenceFilename } },
+    "5": { class_type: "ImageScale", inputs: { image: ["4", 0], width, height, upscale_method: "lanczos", crop: "disabled" } },
+    "6": { class_type: "VAEEncode", inputs: { pixels: ["5", 0], vae: ["1", 2] } },
+    "7": {
+      class_type: "IPAdapterUnifiedLoader",
+      inputs: { model: ["1", 0], preset: IPADAPTER_PRESET },
+    },
+    "8": {
+      class_type: "IPAdapter",
+      inputs: {
+        model: ["7", 0],
+        ipadapter: ["7", 1],
+        image: ["5", 0],
+        weight,
+        start_at: 0,
+        end_at: 1,
+        weight_type: "standard",
+      },
+    },
+    "9": {
+      class_type: "KSampler",
+      inputs: {
+        cfg: 7,
+        denoise,
+        latent_image: ["6", 0],
+        model: ["8", 0],
+        negative: ["3", 0],
+        positive: ["2", 0],
+        sampler_name: "euler",
+        scheduler: "normal",
+        seed: Math.floor(Math.random() * 1e15),
+        steps: 25,
+      },
+    },
+    "10": { class_type: "VAEDecode", inputs: { samples: ["9", 0], vae: ["1", 2] } },
+    "11": { class_type: "SaveImage", inputs: { filename_prefix: "product_ip_", images: ["10", 0] } },
   };
 }
 
@@ -105,7 +193,7 @@ function buildControlNetWorkflow(prompt, negativePrompt, width, height, referenc
     },
     "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: prompt } },
     "3": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE } },
-    "4": { class_type: "LoadImage", inputs: { image: referenceFilename, upload: "image" } },
+    "4": { class_type: "LoadImage", inputs: { image: referenceFilename } },
     "5": { class_type: preprocessorClass, inputs: preprocessorInputs },
     "6": {
       class_type: "ControlNetLoader",
@@ -161,7 +249,7 @@ function buildEditWorkflow(prompt, negativePrompt, width, height, strength, refe
     "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" } },
     "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: prompt } },
     "3": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE } },
-    "4": { class_type: "LoadImage", inputs: { image: referenceFilename, upload: "image" } },
+    "4": { class_type: "LoadImage", inputs: { image: referenceFilename } },
     "5": {
       class_type: "ImageScale",
       inputs: { image: ["4", 0], width, height, upscale_method: "lanczos", crop: "disabled" },
@@ -173,7 +261,7 @@ function buildEditWorkflow(prompt, negativePrompt, width, height, strength, refe
   if (maskFilename) {
     return {
       ...base,
-      "7":  { class_type: "LoadImageMask", inputs: { image: maskFilename, channel: "red", upload: "image" } },
+      "7":  { class_type: "LoadImageMask", inputs: { image: maskFilename, channel: "red" } },
       "8":  { class_type: "SetLatentNoiseMask", inputs: { samples: ["6", 0], mask: ["7", 0] } },
       "9":  {
         class_type: "KSampler",
@@ -213,9 +301,9 @@ function buildInpaintWorkflow(prompt, negativePrompt, width, height, referenceFi
     "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "sd_xl_base_1.0.safetensors" } },
     "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: prompt } },
     "3": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: negativePrompt || DEFAULT_NEGATIVE } },
-    "4": { class_type: "LoadImage", inputs: { image: referenceFilename, upload: "image" } },
+    "4": { class_type: "LoadImage", inputs: { image: referenceFilename } },
     "5": { class_type: "ImageScale", inputs: { image: ["4", 0], width, height, upscale_method: "lanczos", crop: "disabled" } },
-    "6": { class_type: "LoadImageMask", inputs: { image: maskFilename, channel: "red", upload: "image" } },
+    "6": { class_type: "LoadImageMask", inputs: { image: maskFilename, channel: "red" } },
     "7": { class_type: "VAEEncode", inputs: { pixels: ["5", 0], vae: ["1", 2] } },
     "8": { class_type: "SetLatentNoiseMask", inputs: { samples: ["7", 0], mask: ["6", 0] } },
     "9": {
@@ -420,13 +508,77 @@ const worker = new Worker(
 
     } else if (mode === "reference") {
       if (!referenceImageUrl) throw new Error("referenceImageUrl required for reference mode");
+      const denoise = clampRefDenoise(strength);
+      logGenLine({
+        event: "image_gen_start",
+        mode: "reference",
+        jobId: String(finalJobId),
+        referenceImageUrl: String(referenceImageUrl),
+        denoise,
+        ipAdapter: false,
+        ipAdapterWeight: null,
+        width, height,
+      });
       process.stdout.write(`[imageWorker] reference mode, downloading image...\n`);
       const buf = await downloadBuffer(referenceImageUrl);
       const comfyFn = await uploadToComfyUI(buf, `ref_${finalJobId}.png`);
-      const workflow = buildReferenceWorkflow(prompt, neg, width, height, strength, comfyFn);
+      const workflow = buildReferenceWorkflow(prompt, neg, width, height, denoise, comfyFn);
       const promptId = await submitWorkflow(workflow);
       filenames = await waitForComfyOutput(promptId);
       job.log(`[imageWorker] reference done`);
+
+    } else if (mode === "product") {
+      if (!referenceImageUrl) throw new Error("referenceImageUrl required for product mode");
+      const denoise = clampRefDenoise(strength);
+      const ipW = clampIpAdapterWeight(job.data.ipAdapterWeight);
+      let hasIPAdapterNodes = false;
+      try {
+        const names = await getComfyNodeNames();
+        hasIPAdapterNodes = names.has("IPAdapterUnifiedLoader") && names.has("IPAdapter");
+        if (!hasIPAdapterNodes) {
+          process.stdout.write("[IP-ADAPTER DISABLED — FALLBACK IMG2IMG]\n");
+        }
+      } catch (e) {
+        hasIPAdapterNodes = false;
+        process.stdout.write("[IP-ADAPTER DISABLED — FALLBACK IMG2IMG]\n");
+        process.stderr.write(`[imageWorker] object_info failed (${e.message}), img2img only for product\n`);
+      }
+
+      const useIPAdapter = hasIPAdapterNodes;
+
+      logGenLine({
+        event: "image_gen_start",
+        mode: "product",
+        jobId: String(finalJobId),
+        referenceImageUrl: String(referenceImageUrl),
+        denoise,
+        hasIPAdapterNodes,
+        useIPAdapter,
+        ipAdapterWeight: ipW,
+        workflowType: useIPAdapter ? "ip-adapter" : "img2img",
+        width, height,
+      });
+
+      process.stdout.write(`[imageWorker] product mode, useIPAdapter=${useIPAdapter}, downloading image...\n`);
+      const buf = await downloadBuffer(referenceImageUrl);
+      const comfyFn = await uploadToComfyUI(buf, `product_${finalJobId}.png`);
+
+      const workflowType = useIPAdapter ? "ip-adapter" : "img2img";
+      console.log("=== PRODUCT PIPELINE ===", {
+        mode,
+        hasIPAdapterNodes,
+        useIPAdapter,
+        ipAdapterWeight: ipW,
+        referenceImageUrl: String(referenceImageUrl),
+      });
+      process.stdout.write(`[imageWorker] workflow type: ${workflowType}\n`);
+
+      const workflow = useIPAdapter
+        ? buildProductIPAdapterWorkflow(prompt, neg, width, height, denoise, comfyFn, ipW)
+        : buildReferenceWorkflow(prompt, neg, width, height, denoise, comfyFn);
+      const promptId = await submitWorkflow(workflow);
+      filenames = await waitForComfyOutput(promptId);
+      job.log(`[imageWorker] product done workflowType=${workflowType}`);
 
     } else if (mode === "inpaint") {
       if (!referenceImageUrl) throw new Error("referenceImageUrl required for inpaint mode");
@@ -515,6 +667,14 @@ worker.on("completed", (job, result) => {
 });
 worker.on("failed", (job, err) => {
   process.stderr.write(`[imageWorker] job ${job?.id} failed: ${err.message}\n`);
+  logGenLine({
+    event: "image_gen_failed",
+    jobId: job?.id,
+    mode: job?.data?.mode,
+    referenceImageUrl: job?.data?.referenceImageUrl ? String(job.data.referenceImageUrl) : null,
+    error: err.message,
+    stack: err.stack ? String(err.stack).slice(0, 400) : undefined,
+  });
   if (job?.data?.pipelineId) {
     prisma.pipelineExecution.update({
       where: { id: job.data.pipelineId },
@@ -527,3 +687,11 @@ worker.on("error", (err) => {
 });
 
 process.stdout.write(`[imageWorker] started. COMFYUI_URL=${COMFYUI_URL}\n`);
+
+getComfyNodeNames()
+  .then((names) => {
+    const hasIP = names.has("IPAdapter") && names.has("IPAdapterUnifiedLoader");
+    if (!hasIP) process.stderr.write("IP-Adapter NOT INSTALLED — STOP\n");
+    else process.stdout.write("[imageWorker] ComfyUI: IPAdapter + IPAdapterUnifiedLoader present\n");
+  })
+  .catch((e) => process.stderr.write(`[imageWorker] ComfyUI object_info check failed: ${e.message}\n`));

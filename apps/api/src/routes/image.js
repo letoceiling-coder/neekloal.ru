@@ -22,7 +22,13 @@ const REFS_DIR = process.env.IMAGE_REFS_DIR || "/var/www/site-al.ru/uploads/refs
 const REFS_PUBLIC = process.env.IMAGE_REFS_PUBLIC || "https://site-al.ru/uploads/refs";
 const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "/var/www/site-al.ru/uploads/images";
 
-const VALID_MODES = ["text", "variation", "reference", "inpaint", "controlnet", "edit"];
+const VALID_MODES = ["text", "variation", "reference", "inpaint", "controlnet", "edit", "product"];
+
+/** Appended in "product" mode (marketplace cards) after enhance */
+const PRODUCT_MODE_PROMPT_SUFFIX =
+  ", high detail clothing, preserve fabric, preserve design, same outfit, realistic texture, no distortion";
+const PRODUCT_MODE_NEG_APPEND =
+  ", deformed clothes, different outfit, low quality fabric, bad texture, blurry";
 
 function userJobKey(userId) { return `image:active:${userId}`; }
 
@@ -103,6 +109,7 @@ module.exports = async function imageRoutes(fastify) {
       variations = 4,
       referenceImageUrl, strength = 0.5, maskUrl,
       controlType = "canny",
+      ipAdapterWeight: ipAdapterWeightRaw,
     } = request.body || {};
 
     if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
@@ -121,6 +128,9 @@ module.exports = async function imageRoutes(fastify) {
     }
     if (resolvedMode === "edit" && !referenceImageUrl) {
       return reply.code(400).send({ error: "referenceImageUrl required for edit mode" });
+    }
+    if (resolvedMode === "product" && !referenceImageUrl) {
+      return reply.code(400).send({ error: "Product mode requires reference image" });
     }
     const resolvedControlType = ["canny", "pose"].includes(controlType) ? controlType : "canny";
 
@@ -209,10 +219,14 @@ module.exports = async function imageRoutes(fastify) {
       : Math.min(Math.max(Number(variations) || 1, 1), 8);
 
     // ── Smart controlnet for referenceImage + brain type ──────────────────────
+    // Do NOT override explicit image pipelines (reference / edit / inpaint / product / controlnet):
+    // e.g. product+reference was wrongly forced to SD1.5 ControlNet instead of SDXL img2img.
     let finalControlType = resolvedControlType;
     let controlStrength  = null;
 
-    if (referenceImageUrl && appliedMode !== "controlnet") {
+    const userExplicitImagePipeline = ["reference", "edit", "inpaint", "controlnet", "product"].includes(resolvedMode);
+
+    if (referenceImageUrl && appliedMode !== "controlnet" && !userExplicitImagePipeline) {
       const btype = brainResult?.type;
       if (btype === "character") {
         appliedMode = "controlnet"; finalControlType = "pose";  controlStrength = 0.7;
@@ -236,6 +250,13 @@ module.exports = async function imageRoutes(fastify) {
     }
     process.stdout.write(`[seed] mode=${appliedMode} seed=${finalSeed}\n`);
 
+    // ── Product mode (clothing): prompt/negative tuned to preserve garment ────
+    if (appliedMode === "product") {
+      finalPrompt = `${finalPrompt.trim()}${PRODUCT_MODE_PROMPT_SUFFIX}`;
+      finalNegative = `${finalNegative || DEFAULT_NEGATIVE}${PRODUCT_MODE_NEG_APPEND}`;
+      process.stdout.write(`[image:generate] product mode: appended clothing-preservation hints\n`);
+    }
+
     // ── Style / dimensions from brain ─────────────────────────────────────────
     const finalStyle       = style       || (brainResult?.style          ?? null);
     const finalAspectRatio = aspectRatio || (brainResult?.aspectRatioLabel ?? null);
@@ -253,6 +274,16 @@ module.exports = async function imageRoutes(fastify) {
     const pipelineId = uuidv4(); // unique id for this pipeline execution record
 
     // ── Shared job data ───────────────────────────────────────────────────────
+    const baseStrength = controlStrength !== null
+      ? controlStrength
+      : Math.min(Math.max(Number(strength) || 0.5, 0.1), 1.0);
+
+    const ipAdapterWeight = (() => {
+      const n = Number(ipAdapterWeightRaw);
+      if (!Number.isFinite(n)) return 0.55;
+      return Math.min(Math.max(n, 0.3), 0.8);
+    })();
+
     const baseJobData = {
       prompt: finalPrompt,
       negativePrompt: finalNegative || DEFAULT_NEGATIVE,
@@ -261,9 +292,10 @@ module.exports = async function imageRoutes(fastify) {
       userId: request.userId,
       organizationId: request.organizationId,
       referenceImageUrl: referenceImageUrl || null,
-      strength: controlStrength !== null
-        ? controlStrength
-        : Math.min(Math.max(Number(strength) || 0.5, 0.1), 1.0),
+      strength: appliedMode === "product"
+        ? Math.min(Math.max(baseStrength, 0.3), 0.6)
+        : baseStrength,
+      ipAdapterWeight: appliedMode === "product" ? ipAdapterWeight : undefined,
       maskUrl: maskUrl || null,
       controlType: finalControlType,
       style: finalStyle,
@@ -271,6 +303,10 @@ module.exports = async function imageRoutes(fastify) {
       autoRemoveBg,
       pipelineId, // link back to PipelineExecution for status update
     };
+
+    process.stdout.write(
+      `[image:queue] mode=${appliedMode} strength=${baseJobData.strength} ref=${referenceImageUrl ? String(referenceImageUrl).slice(0, 96) : "none"}\n`
+    );
 
     // ── PARALLEL VARIATIONS: N separate BullMQ jobs (each 1 image, unique seed)
     let allJobIds;

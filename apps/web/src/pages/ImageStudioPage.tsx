@@ -112,7 +112,7 @@ const STYLE_CARDS = [
 
 const QUICK_OPTIONS: { id: QuickOption; label: string; emoji: string; desc: string }[] = [
   { id: "variations",  label: "Вариации",    emoji: "🎯", desc: "Несколько версий" },
-  { id: "reference",   label: "По образцу",  emoji: "🖼",  desc: "Изображение-основа" },
+  { id: "reference",   label: "Сохранить товар", emoji: "🛍", desc: "Товар сохранится, изменится фон и модель" },
   { id: "edit",        label: "Редактировать", emoji: "🖌️", desc: "Кисть · только маска меняется" },
   { id: "inpaint",     label: "Inpaint",     emoji: "✏️", desc: "Полная замена области" },
   { id: "controlnet",  label: "ControlNet",  emoji: "🧬", desc: "Контроль формы/позы" },
@@ -198,7 +198,7 @@ const STAGE_STEPS: { stage: GenStage; label: string }[] = [
 ];
 
 const MODE_ICON: Record<string, string> = {
-  text: "🧠", variation: "🎯", reference: "🖼", edit: "🖌️", inpaint: "✏️", controlnet: "🧬",
+  text: "🧠", variation: "🎯", reference: "🛍", product: "🛍", edit: "🖌️", inpaint: "✏️", controlnet: "🧬",
 };
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -611,7 +611,10 @@ export function ImageStudioPage() {
   const [activeOptions, setActiveOptions] = useState<Set<QuickOption>>(new Set());
   const [variationCount, setVariationCount] = useState(4);
   const [controlType, setControlType] = useState<"canny" | "pose">("canny");
-  const [strength, setStrength] = useState(0.5);
+  /** Product img2img denoise (0.3 = creative … 0.6 = strict) */
+  const [strength, setStrength] = useState(0.45);
+  /** IP-Adapter weight when GPU supports nodes (API still accepts 0.3–0.8) */
+  const [ipAdapterWeight, setIpAdapterWeight] = useState(0.55);
 
   // Reference image
   const [refImage, setRefImage]     = useState<RefImage | null>(null);
@@ -744,7 +747,7 @@ export function ImageStudioPage() {
     if (activeOptions.has("controlnet") && refImage) return "controlnet";
     if (activeOptions.has("edit") && refImage) return "edit";
     if (activeOptions.has("inpaint") && refImage && maskImage) return "inpaint";
-    if (activeOptions.has("reference") && refImage) return "reference";
+    if (activeOptions.has("reference") && refImage) return "product";
     return "text";
   }
 
@@ -920,10 +923,11 @@ export function ImageStudioPage() {
       if (finalNeg)  body.negativePrompt = finalNeg;
       if (style)     body.style = style;
       if (mode === "controlnet") body.controlType = controlType;
-      if (mode === "reference" || mode === "inpaint" || mode === "edit") {
+      if (mode === "product" || mode === "reference" || mode === "inpaint" || mode === "edit") {
         body.referenceImageUrl = refImage?.refUrl;
         body.strength = strength;
       }
+      if (mode === "product") body.ipAdapterWeight = ipAdapterWeight;
       if (mode === "inpaint" || mode === "edit") body.maskUrl = maskImage?.refUrl;
 
       const res  = await fetch(`${API}/image/generate`, { method: "POST", headers, body: JSON.stringify(body) });
@@ -1246,7 +1250,11 @@ export function ImageStudioPage() {
               {(activeOptions.has("reference") || activeOptions.has("inpaint") || activeOptions.has("controlnet")) && (
                 <div className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
                   <p className="mb-2 text-[11px] font-medium text-neutral-400">
-                    {activeOptions.has("controlnet") ? "🧬 Изображение для ControlNet" : "🖼 Изображение-основа"}
+                    {activeOptions.has("controlnet")
+                      ? "🧬 Изображение для ControlNet"
+                      : activeOptions.has("reference")
+                        ? "🛍 Фото товара / одежды"
+                        : "🖼 Изображение-основа"}
                   </p>
                   <button
                     type="button"
@@ -1271,14 +1279,45 @@ export function ImageStudioPage() {
                   />
 
                   {activeOptions.has("reference") && (
-                    <div className="mt-2">
-                      <div className="flex items-center justify-between text-[11px] text-neutral-400 mb-1">
-                        <span>Сходство</span><span>{Math.round(strength * 100)}%</span>
+                    <div className="mt-2 space-y-3">
+                      <div>
+                        <div className="flex items-center justify-between text-[11px] text-neutral-400 mb-1">
+                          <span>Точность товара</span>
+                          <span>{strength.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.3"
+                          max="0.6"
+                          step="0.05"
+                          value={strength}
+                          onChange={(e) => setStrength(Number(e.target.value))}
+                          className="w-full accent-violet-500"
+                        />
+                        <div className="flex justify-between text-[9px] text-neutral-600 mt-0.5">
+                          <span>0.3 креативнее</span>
+                          <span>0.6 строже</span>
+                        </div>
                       </div>
-                      <input type="range" min="0.2" max="0.8" step="0.05" value={strength}
-                        onChange={(e) => setStrength(Number(e.target.value))}
-                        className="w-full accent-violet-500"
-                      />
+                      <div>
+                        <div className="flex items-center justify-between text-[11px] text-neutral-400 mb-1">
+                          <span>Удержание образа (IP-Adapter)</span>
+                          <span>{ipAdapterWeight.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.3"
+                          max="0.8"
+                          step="0.05"
+                          value={ipAdapterWeight}
+                          onChange={(e) => setIpAdapterWeight(Number(e.target.value))}
+                          className="w-full accent-fuchsia-500"
+                        />
+                        <div className="flex justify-between text-[9px] text-neutral-600 mt-0.5">
+                          <span>0.3 мягче</span>
+                          <span>0.8 сильнее</span>
+                        </div>
+                      </div>
                     </div>
                   )}
 
