@@ -15,8 +15,8 @@ function getImageQueue() {
     _imageQueue = new Queue("image-generation", {
       connection: getWorkerConnection(),
       defaultJobOptions: {
-        attempts: 2,
-        backoff: { type: "exponential", delay: 5000 },
+        attempts: 3,
+        backoff: { type: "exponential", delay: 3000 },
         removeOnComplete: { count: 200 },
         removeOnFail: { count: 100 },
       },

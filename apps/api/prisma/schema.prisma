@@ -704,9 +704,11 @@ model TelegramBot {
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   botToken       String       @map("bot_token")
   botUsername    String?      @map("bot_username")
-  webhookUrl     String?      @map("webhook_url")
-  isActive       Boolean      @default(true) @map("is_active")
-  createdAt      DateTime     @default(now()) @map("created_at")
+  webhookUrl          String?  @map("webhook_url")
+  /// Секрет для заголовка X-Telegram-Bot-Api-Secret-Token (setWebhook secret_token)
+  webhookSecretToken  String?  @map("webhook_secret_token") @db.Text
+  isActive            Boolean  @default(true) @map("is_active")
+  createdAt           DateTime @default(now()) @map("created_at")
 
   chats TelegramChat[]
 
@@ -735,14 +737,25 @@ model TelegramChat {
   userId         String      @map("user_id") @db.Uuid
   agentId        String?     @map("agent_id") @db.Uuid
   conversationId String?     @map("conversation_id") @db.Uuid
-  /// Explicit UI mode: "chat" | "image" (no text-based intent guessing).
+  /// Explicit UI mode: "chat" | "image" | "post" (no text-based intent guessing for chat/image).
   mode           String      @default("chat") @map("mode")
   /// Shown "image mode" UX banner count (max 2).
   uxHintImage    Int         @default(0) @map("ux_hint_image")
   /// Shown "chat mode" UX banner count (max 2).
   uxHintChat     Int         @default(0) @map("ux_hint_chat")
-  /// Sales dialog FSM (chat mode only): greeting → qualify → offer → close
+  /// Chat mode (sales): greeting | qualify | offer | close. Post mode: post_idle | post_waiting_topic | post_ready
   state          String      @default("greeting") @map("state")
+  /// Черновик темы поста (пока ждём ответ «Нужна картинка?»)
+  postDraftTopic String?     @map("post_draft_topic") @db.Text
+  postDraftLinks Json?       @map("post_draft_links")
+  /// SMM: sales | expert | story | ad
+  postStyle      String?     @map("post_style")
+  /// telegram | instagram | avito
+  postPlatform   String?     @map("post_platform")
+  /// friendly | aggressive | premium
+  postTone       String?     @map("post_tone")
+  /// Последние до 3 сгенерированных текстов поста (анти-дубликат)
+  postLastGenerated Json?    @map("post_last_generated")
   createdAt      DateTime    @default(now()) @map("created_at")
 
   @@unique([botId, telegramChatId])

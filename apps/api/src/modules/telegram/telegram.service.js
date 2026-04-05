@@ -5,6 +5,7 @@
  * Text replies use direct Ollama /api/chat only (not the dashboard widget chat path).
  */
 
+const crypto = require("crypto");
 const { v4: uuidv4 } = require("uuid");
 const prisma = require("../../lib/prisma");
 const { createConversation } = require("../../services/agentRuntimeV2");
@@ -20,18 +21,319 @@ const WEBHOOK_BASE =
 
 const KB_ROW_PHOTO = "🎨 Генерация фото";
 const KB_ROW_CHAT = "🧠 Чат";
+const KB_ROW_POST = "📝 Пост";
+
+/** Маркетинговый баннер к посту: вкл. по умолчанию, отключить: TELEGRAM_POST_IMAGE=0 */
+const TELEGRAM_POST_IMAGE_ENABLED = String(process.env.TELEGRAM_POST_IMAGE || "1") !== "0";
+/** После темы спросить «Нужна картинка?» (если TELEGRAM_POST_IMAGE=1). Отключить: TELEGRAM_POST_ASK_IMAGE=0 */
+const TELEGRAM_POST_ASK_IMAGE = String(process.env.TELEGRAM_POST_ASK_IMAGE || "1") !== "0";
+
+/** FSM поста (только при mode === "post"); chat mode использует greeting|qualify|… */
+const POST_STATE_IDLE = "post_idle";
+const POST_STATE_WAITING_TOPIC = "post_waiting_topic";
+const POST_STATE_READY = "post_ready";
 
 /** Inline mode switcher — прикрепляем к ответам бота. */
 const MODE_INLINE_REPLY_MARKUP = {
   inline_keyboard: [
     [{ text: "🎨 Генерация", callback_data: "mode_image" }],
     [{ text: "🧠 Чат", callback_data: "mode_chat" }],
+    [{ text: "📝 Пост", callback_data: "mode_post" }],
   ],
 };
 
+const POST_IMAGE_ASK_MARKUP = {
+  inline_keyboard: [
+    [{ text: "Да ✅", callback_data: "post_img_yes" }],
+    [{ text: "Нет", callback_data: "post_img_no" }],
+  ],
+};
+
+/** SMM: стиль, площадка, тон + переключение режимов */
+const POST_SMM_SETTINGS_MARKUP = {
+  inline_keyboard: [
+    [
+      { text: "💰 Продажа", callback_data: "post_sty_sales" },
+      { text: "📚 Экспертный", callback_data: "post_sty_expert" },
+    ],
+    [
+      { text: "📖 История", callback_data: "post_sty_story" },
+      { text: "📢 Реклама", callback_data: "post_sty_ad" },
+    ],
+    [
+      { text: "📱 Telegram", callback_data: "post_plt_tg" },
+      { text: "📸 Instagram", callback_data: "post_plt_ig" },
+      { text: "🛒 Avito", callback_data: "post_plt_avito" },
+    ],
+    [
+      { text: "😊 Дружелюбно", callback_data: "post_tone_friend" },
+      { text: "⚡ Агрессивно", callback_data: "post_tone_aggr" },
+      { text: "✨ Премиум", callback_data: "post_tone_prem" },
+    ],
+    ...MODE_INLINE_REPLY_MARKUP.inline_keyboard,
+  ],
+};
+
+const DEFAULT_POST_STYLE = "expert";
+const DEFAULT_POST_PLATFORM = "telegram";
+const DEFAULT_POST_TONE = "friendly";
+
 function modeFooterLine(mode) {
-  return `Текущий режим: ${mode === "image" ? "🎨 генерация" : "🧠 чат"}`;
+  if (mode === "image") return "Текущий режим: 🎨 генерация";
+  if (mode === "post") return "Текущий режим: 📝 пост";
+  return "Текущий режим: 🧠 чат";
 }
+
+function triggersPostModeSwitch(text) {
+  const s = String(text).toLowerCase();
+  return s.includes("пост") || s.includes("сделай пост") || s.includes("напиши пост");
+}
+
+function isBarePostTopic(topic) {
+  const t = typeof topic === "string" ? topic.trim() : "";
+  return t.length < 2;
+}
+
+function stripPostTriggers(text) {
+  let s = String(text);
+  s = s.replace(/\s*напиши\s+пост\s*/gi, " ");
+  s = s.replace(/\s*сделай\s+пост\s*/gi, " ");
+  s = s.replace(/\bпост\b/gi, " ");
+  return s.replace(/\s+/g, " ").trim();
+}
+
+function extractHttpLinks(text) {
+  const re = /https?:\/\/[^\s<>)]+/gi;
+  const raw = String(text);
+  const links = raw.match(re) || [];
+  const plainText = raw.replace(re, " ").replace(/\s+/g, " ").trim();
+  return { links, plainText };
+}
+
+const LINK_FETCH_TIMEOUT_MS = 12_000;
+const LINK_FETCH_MAX_BYTES = 500_000;
+const LINK_SOURCE_MAX_TOTAL = 2000;
+const LINK_FETCH_MAX_URLS = 5;
+
+function isAllowedPostLinkFetchUrl(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    const h = u.hostname.toLowerCase();
+    if (h === "localhost" || h === "127.0.0.1" || h === "[::1]") return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stripHtmlTagsInner(text) {
+  return String(text)
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#(\d+);/g, (_, n) => {
+      const code = Number(n);
+      return code >= 32 && code < 0x110000 ? String.fromCharCode(code) : " ";
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => {
+      const code = parseInt(h, 16);
+      return code >= 32 && code < 0x110000 ? String.fromCharCode(code) : " ";
+    })
+    .replace(/&[a-z]+;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Только title, h1, meta description (без body/nav/footer).
+ */
+function extractMetaFromHtml(html) {
+  const s = String(html);
+  let title = "";
+  const mt = s.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (mt) title = stripHtmlTagsInner(mt[1]).slice(0, 600);
+  let h1 = "";
+  const m1 = s.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  if (m1) h1 = stripHtmlTagsInner(m1[1]).slice(0, 600);
+  let description = "";
+  let md =
+    s.match(/<meta[^>]+name=["']description["'][^>]*content=["']([^"']*)["'][^>]*>/i) ||
+    s.match(/<meta[^>]+content=["']([^"']*)["'][^>]*name=["']description["'][^>]*>/i);
+  if (md) description = stripHtmlTagsInner(md[1]).slice(0, 900);
+  if (!description) {
+    const og = s.match(
+      /<meta[^>]+property=["']og:description["'][^>]*content=["']([^"']*)["'][^>]*>/i
+    );
+    if (og) description = stripHtmlTagsInner(og[1]).slice(0, 900);
+  }
+  return { title, h1, description };
+}
+
+async function fetchUrlHtmlString(urlStr) {
+  if (!isAllowedPostLinkFetchUrl(urlStr)) throw new Error("URL not allowed");
+  const res = await fetch(urlStr, {
+    redirect: "follow",
+    headers: {
+      "User-Agent": "Mozilla/5.0 (compatible; NeekloPostBot/1.0; +https://site-al.ru)",
+      Accept: "text/html, */*",
+    },
+    signal: AbortSignal.timeout(LINK_FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const buf = await res.arrayBuffer();
+  if (buf.byteLength > LINK_FETCH_MAX_BYTES) throw new Error("response too large");
+  return new TextDecoder("utf-8", { fatal: false }).decode(buf);
+}
+
+/**
+ * @returns {Promise<string>} блок «Контекст из источника:» (≤2000 символов всего)
+ */
+async function fetchPostSourceContext(links) {
+  const uniq = [...new Set((Array.isArray(links) ? links : []).filter(Boolean).map(String))].slice(
+    0,
+    LINK_FETCH_MAX_URLS
+  );
+  const parts = [];
+  let total = 0;
+  for (const url of uniq) {
+    if (!isAllowedPostLinkFetchUrl(url)) continue;
+    try {
+      const html = await fetchUrlHtmlString(url);
+      const { title, h1, description } = extractMetaFromHtml(html);
+      const block = `${url}\ntitle: ${title}\nh1: ${h1}\ndescription: ${description}`;
+      if (total + block.length + 2 > LINK_SOURCE_MAX_TOTAL) break;
+      parts.push(block);
+      total += block.length + 2;
+      console.log("[telegram-post] RAW link meta", { url, title: title.slice(0, 80), h1Len: h1.length, descLen: description.length });
+    } catch (e) {
+      process.stderr.write(`[post link fetch] RAW ${url} ${e.stack || e.message}\n`);
+    }
+  }
+  if (!parts.length) return "";
+  const body = parts.join("\n\n---\n\n").slice(0, LINK_SOURCE_MAX_TOTAL);
+  return `Контекст из источника:\n${body}`;
+}
+
+function resolvePostStyle(row) {
+  const s = row && row.postStyle;
+  if (s === "sales" || s === "expert" || s === "story" || s === "ad") return s;
+  return DEFAULT_POST_STYLE;
+}
+
+function resolvePostPlatform(row) {
+  const p = row && row.postPlatform;
+  if (p === "telegram" || p === "instagram" || p === "avito") return p;
+  return DEFAULT_POST_PLATFORM;
+}
+
+function resolvePostTone(row) {
+  const t = row && row.postTone;
+  if (t === "friendly" || t === "aggressive" || t === "premium") return t;
+  return DEFAULT_POST_TONE;
+}
+
+function buildPostStyleBlock(style) {
+  if (style === "sales") {
+    return `
+СТИЛЬ «ПРОДАЖА»:
+— Агрессивный призыв к действию (CTA), выгоды в первых строках, срочность и ограничение по времени/количеству где уместно.
+— Акцент на выгодах клиента и снятии возражений.`;
+  }
+  if (style === "expert") {
+    return `
+СТИЛЬ «ЭКСПЕРТНЫЙ»:
+— Образовательный тон, структурированная подача, ощущение экспертности и авторитета без пустой воды.`;
+  }
+  if (style === "story") {
+    return `
+СТИЛЬ «ИСТОРИЯ»:
+— Повествование, эмоциональный зацеп в начале, развитие мысли, логичный вывод к действию.`;
+  }
+  if (style === "ad") {
+    return `
+СТИЛЬ «РЕКЛАМА»:
+— Коротко, ударно, прямое предложение, минимум лишних слов.`;
+  }
+  return "";
+}
+
+function buildPostPlatformBlock(platform) {
+  if (platform === "instagram") {
+    return `
+ПЛАТФОРМА Instagram:
+— Короткие абзацы, уместные эмодзи, живой вовлекающий тон, без перегруза.`;
+  }
+  if (platform === "avito") {
+    return `
+ПЛАТФОРМА Avito:
+— Без «воды», маркированные пункты где уместно, чёткое предложение, при необходимости плейсхолдер цены: [ЦЕНА].`;
+  }
+  return `
+ПЛАТФОРМА Telegram:
+— Полноценный структурированный пост с читаемой подачей.`;
+}
+
+function buildPostToneLine(tone) {
+  const map = {
+    friendly: "дружелюбный, на «ты» или нейтрально-теплый",
+    aggressive: "напористый, прямой, без смягчений",
+    premium: "премиальный, сдержанный, акцент на качестве и статусе",
+  };
+  return map[tone] || map.friendly;
+}
+
+/**
+ * Промпт SMM-поста (агентский уровень).
+ * @param {object} p
+ */
+function buildPostPrompt(p) {
+  const topic = typeof p.topic === "string" ? p.topic.trim() : "";
+  const arr = Array.isArray(p.links) ? p.links.filter(Boolean) : [];
+  const style = p.style || DEFAULT_POST_STYLE;
+  const platform = p.platform || DEFAULT_POST_PLATFORM;
+  const tone = p.tone || DEFAULT_POST_TONE;
+  const sourceCtx = typeof p.sourceContext === "string" ? p.sourceContext.trim() : "";
+  const lastPosts = Array.isArray(p.lastPosts) ? p.lastPosts.filter(Boolean).map(String) : [];
+
+  const linksBlock =
+    arr.length > 0
+      ? `\nСсылки (не выдумывай факты вне темы и источников):\n${arr.map((u) => `— ${u}`).join("\n")}`
+      : "";
+  const srcBlock = sourceCtx ? `\n\n${sourceCtx}` : "";
+  const antiDup =
+    lastPosts.length > 0
+      ? `\n\nНЕ повторяй стиль и формулировки этих текстов:\n${lastPosts.map((t, i) => `--- ${i + 1} ---\n${t.slice(0, 1200)}`).join("\n\n")}`
+      : "";
+
+  return `
+Ты профессиональный SMM-специалист и копирайтер.
+
+Стиль бренда (тон): ${buildPostToneLine(tone)} (${tone})
+
+Тема поста: ${topic}
+${buildPostStyleBlock(style)}
+${buildPostPlatformBlock(platform)}
+${linksBlock}${srcBlock}${antiDup}
+
+Сформируй финальный текст поста на русском языке согласно стилю и платформе выше.
+
+Оформи результат с эмодзи уместно для выбранной платформы:
+🔥 Заголовок / зацеп
+
+Основной текст
+
+📌 Ключевые моменты / выгоды
+
+👉 Призыв к действию
+`.trim();
+}
+
+const POST_SYSTEM_PROMPT = `
+Ты профессиональный маркетолог. Выполняй инструкцию в сообщении пользователя буквально.
+Не упоминай, что ты ИИ. Пиши только по-русски.
+`.trim();
 
 /** Единый базовый system prompt для Telegram (локально для этого модуля). */
 const BASE_SYSTEM_PROMPT = `
@@ -228,9 +530,13 @@ async function telegramGetMe(token) {
   return data.result;
 }
 
-async function telegramSetWebhook(token, webhookUrl) {
-  return tgRequest("POST", token, "/setWebhook", { url: webhookUrl });
+async function telegramSetWebhook(token, webhookUrl, secretToken) {
+  const body = { url: webhookUrl };
+  if (secretToken) body.secret_token = secretToken;
+  return tgRequest("POST", token, "/setWebhook", body);
 }
+
+const TELEGRAM_MAX_MESSAGE_CHARS = 4000;
 
 async function telegramSendMessage(token, chatId, text, extra = {}) {
   return tgRequest("POST", token, "/sendMessage", {
@@ -239,6 +545,23 @@ async function telegramSendMessage(token, chatId, text, extra = {}) {
     parse_mode: extra.parseMode || undefined,
     reply_markup: extra.replyMarkup || undefined,
   });
+}
+
+/** Длинные ответы: разбиение по лимиту Telegram (4096, запас 4000). */
+async function telegramSendLongMessage(token, chatId, text, extra = {}) {
+  const raw = typeof text === "string" ? text : String(text);
+  if (raw.length <= TELEGRAM_MAX_MESSAGE_CHARS) {
+    return telegramSendMessage(token, chatId, raw, extra);
+  }
+  const parts = [];
+  for (let i = 0; i < raw.length; i += TELEGRAM_MAX_MESSAGE_CHARS) {
+    parts.push(raw.slice(i, i + TELEGRAM_MAX_MESSAGE_CHARS));
+  }
+  console.log("[telegram-post] RAW split long message", { parts: parts.length, totalLen: raw.length });
+  for (let i = 0; i < parts.length; i++) {
+    const isLast = i === parts.length - 1;
+    await telegramSendMessage(token, chatId, parts[i], isLast ? extra : {});
+  }
 }
 
 async function telegramSendPhoto(token, chatId, photoUrl, caption, replyMarkup) {
@@ -310,6 +633,7 @@ async function connectBot({ userId, organizationId, botToken }) {
   }
 
   const botUsername = me.username ? String(me.username) : null;
+  const webhookSecretToken = crypto.randomBytes(24).toString("hex");
 
   const bot = await prisma.telegramBot.create({
     data: {
@@ -317,12 +641,13 @@ async function connectBot({ userId, organizationId, botToken }) {
       organizationId,
       botToken: token,
       botUsername,
+      webhookSecretToken,
     },
   });
 
   const webhookUrl = `${WEBHOOK_BASE}/telegram/webhook/${bot.id}`;
   try {
-    await telegramSetWebhook(token, webhookUrl);
+    await telegramSetWebhook(token, webhookUrl, webhookSecretToken);
   } catch (err) {
     await prisma.telegramBot.delete({ where: { id: bot.id } }).catch(() => {});
     const e = new Error(`setWebhook failed: ${err.message}`);
@@ -438,7 +763,23 @@ async function getOrCreateTelegramChat(bot, telegramChatIdStr) {
   });
 }
 
-async function ollamaTelegramChat(bot, tgChat, text) {
+/**
+ * @param {object} [options]
+ * @param {string} [options.systemPromptOverride] — полностью заменяет базовый + sales system (например режим «пост»).
+ * @param {boolean} [options.skipSalesFsm]
+ * @param {string} [options.userContentForModel] — текст в роли user для модели (если не задан — `text`).
+ * @param {boolean} [options.useEmptyHistory] — без истории диалога (пост).
+ * @param {boolean} [options.skipFsmUpdate] — не менять FSM state (пост).
+ */
+async function ollamaTelegramChat(bot, tgChat, text, options = {}) {
+  const {
+    systemPromptOverride = null,
+    skipSalesFsm = false,
+    userContentForModel = null,
+    useEmptyHistory = false,
+    skipFsmUpdate = false,
+  } = options;
+
   const agentId = tgChat.agentId;
   if (!agentId) {
     const e = new Error("Chat has no agent");
@@ -477,12 +818,24 @@ async function ollamaTelegramChat(bot, tgChat, text) {
   console.log("[MODEL USED]:", model);
 
   const state = tgChat.state || "greeting";
-  const history = Array.isArray(conv.messages) ? conv.messages : [];
-  const leadData = { lastUserText: text, userMsgCountBefore: history.filter((m) => m.role === "user").length };
+  const rawHistory = Array.isArray(conv.messages) ? conv.messages : [];
+  const history = useEmptyHistory ? [] : rawHistory;
+  const userLine = userContentForModel != null ? String(userContentForModel) : text;
+  const leadData = { lastUserText: userLine, userMsgCountBefore: history.filter((m) => m.role === "user").length };
 
-  const finalPrompt = buildTelegramFinalSystemPrompt(agent);
-  const salesBlock = buildSalesPrompt(state, leadData);
-  const systemPromptFinal = `
+  let systemPromptFinal;
+  if (systemPromptOverride != null && String(systemPromptOverride).trim()) {
+    systemPromptFinal = `
+${String(systemPromptOverride).trim()}
+
+ВАЖНО:
+— думай и пиши только на русском языке
+— не используй английские конструкции без необходимости
+`.trim();
+  } else {
+    const finalPrompt = buildTelegramFinalSystemPrompt(agent);
+    const salesBlock = skipSalesFsm ? "" : buildSalesPrompt(state, leadData);
+    systemPromptFinal = `
 ${finalPrompt}
 
 ${salesBlock}
@@ -496,15 +849,16 @@ ${salesBlock}
 КРИТИЧНО:
 не «переводи», а изначально отвечай на русском — без смешения языков.
 `.trim();
+  }
 
   const fullMessages = [];
   if (systemPromptFinal.trim()) {
     fullMessages.push({ role: "system", content: systemPromptFinal.trim() });
   }
-  fullMessages.push(...history, { role: "user", content: text });
+  fullMessages.push(...history, { role: "user", content: userLine });
 
   process.stdout.write(
-    `[telegram:chat] conv=${conversationId} try_model=${model} ctx=${history.length}\n`
+    `[telegram:chat] conv=${conversationId} try_model=${model} ctx=${history.length} post=${Boolean(systemPromptOverride)}\n`
   );
 
   let usedModel = model;
@@ -522,21 +876,236 @@ ${salesBlock}
   let reply = stripEnglishTelegramArtifacts(typeof content === "string" ? content : "");
   reply = await enforceRussian(reply, usedModel);
 
-  const updatedMessages = [...history, { role: "user", content: text }, { role: "assistant", content: reply }];
+  const updatedMessages = [...rawHistory, { role: "user", content: userLine }, { role: "assistant", content: reply }];
   await prisma.agentConversation.update({
     where: { id: conversationId },
     data: { messages: updatedMessages },
   });
 
-  const newState = computeNextSalesState(state, text, history);
-  console.log("[FSM STATE]:", state, "→", newState);
-
-  await prisma.telegramChat.update({
-    where: { id: tgChat.id },
-    data: { conversationId, state: newState },
-  });
+  if (!skipFsmUpdate) {
+    const newState = computeNextSalesState(state, userLine, rawHistory);
+    console.log("[FSM STATE]:", state, "→", newState);
+    await prisma.telegramChat.update({
+      where: { id: tgChat.id },
+      data: { conversationId, state: newState },
+    });
+  } else {
+    await prisma.telegramChat.update({
+      where: { id: tgChat.id },
+      data: { conversationId },
+    });
+  }
 
   return reply;
+}
+
+/**
+ * Очередь картинки без блокировки webhook: ожидание job в фоне, затем sendPhoto.
+ * @param {string} [platform] — telegram | instagram | avito
+ */
+function enqueueMarketingBannerImage({ bot, token, chatId, topic, platform }) {
+  const plat = platform || "telegram";
+  const rawPrompt =
+    `advertising banner, high-end commercial design, clean typography, brand style, ` +
+    `professional marketing visual, modern minimalistic layout, premium lighting, ` +
+    `${topic}, social ad for ${plat} platform`;
+  void (async () => {
+    let queueEvents;
+    try {
+      console.log("[telegram-post] RAW image job prompt base", rawPrompt.slice(0, 300));
+      const brain = analyzePrompt(rawPrompt);
+      const enh = await enhancePrompt(rawPrompt, { brain });
+      const improvedPrompt = enh.enhancedPrompt || rawPrompt;
+      const negativePrompt = enh.negativePrompt || DEFAULT_NEGATIVE;
+      const queue = getImageQueue();
+      const jobId = uuidv4();
+      const job = await queue.add(
+        "generate",
+        {
+          prompt: improvedPrompt,
+          negativePrompt,
+          originalPrompt: rawPrompt,
+          width: 1024,
+          height: 1024,
+          userId: bot.userId,
+          organizationId: bot.organizationId,
+          jobId,
+          mode: "text",
+          variations: 1,
+          seed: Math.floor(Math.random() * 999999),
+        },
+        {
+          jobId,
+          attempts: 3,
+          backoff: { type: "exponential", delay: 3000 },
+        }
+      );
+      const connection = getWorkerConnection();
+      queueEvents = new QueueEvents("image-generation", { connection });
+      const result = await job.waitUntilFinished(queueEvents, 180_000);
+      const url = result?.url || (Array.isArray(result?.urls) && result.urls[0]);
+      if (!url) {
+        process.stderr.write("[telegram] post banner: no URL in job result RAW\n");
+        await telegramSendMessage(token, chatId, "⚠️ Не удалось сгенерировать изображение", {
+          replyMarkup: MODE_INLINE_REPLY_MARKUP,
+        }).catch((e) => console.error("[telegram] post banner notify fail RAW", e));
+        return;
+      }
+      await telegramSendPhoto(token, chatId, url, modeFooterLine("post"), MODE_INLINE_REPLY_MARKUP);
+    } catch (err) {
+      process.stderr.write(`[telegram] post banner async RAW: ${err.stack || err.message}\n`);
+      console.error("[telegram] post banner image job failed RAW", err);
+      await telegramSendMessage(token, chatId, "⚠️ Не удалось сгенерировать изображение", {
+        replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      }).catch((e) => console.error("[telegram] post banner error send RAW", e));
+    } finally {
+      if (queueEvents) await queueEvents.close().catch(() => {});
+    }
+  })();
+}
+
+const POST_MODE_USER_ERROR =
+  "⚠️ Ошибка генерации поста. Попробуйте ещё раз.";
+
+async function notifyPostModeUserError(token, chatId) {
+  await telegramSendMessage(token, chatId, POST_MODE_USER_ERROR, {
+    replyMarkup: MODE_INLINE_REPLY_MARKUP,
+  });
+}
+
+/**
+ * Генерация поста вне HTTP webhook (не блокирует ответ Telegram).
+ */
+async function runPostGenerationDeferred({
+  botId,
+  tgChatId,
+  token,
+  chatId,
+  topic,
+  links,
+  includeImage,
+}) {
+  try {
+    const bot = await prisma.telegramBot.findFirst({ where: { id: botId, isActive: true } });
+    const tgChat = await prisma.telegramChat.findUnique({ where: { id: tgChatId } });
+    if (!bot || !tgChat) {
+      const err = new Error(!bot ? "TelegramBot not found or inactive" : "TelegramChat not found");
+      console.error("[POST MODE ERROR]", err);
+      await notifyPostModeUserError(token, chatId).catch((sendErr) => {
+        console.error("[POST MODE ERROR] notify failed", sendErr);
+      });
+      return;
+    }
+
+    const topicStr = typeof topic === "string" ? topic.trim() : "";
+    console.log("[TELEGRAM POST MODE]", `topic: ${topicStr.slice(0, 400)}`, `image: ${includeImage ? "yes" : "no"}`);
+
+    await telegramSendMessage(token, chatId, "⏳ Генерирую пост...", {
+      replyMarkup: MODE_INLINE_REPLY_MARKUP,
+    }).catch((e) => console.error("[telegram-post] loading msg RAW", e));
+
+    const linkArr = Array.isArray(links) ? links : [];
+    const sourceContext = linkArr.length ? await fetchPostSourceContext(linkArr) : "";
+    const style = resolvePostStyle(tgChat);
+    const platform = resolvePostPlatform(tgChat);
+    const tone = resolvePostTone(tgChat);
+    const rawLast = tgChat.postLastGenerated;
+    const prevLast = Array.isArray(rawLast) ? rawLast.map(String) : [];
+
+    const postPrompt = buildPostPrompt({
+      topic: topicStr,
+      links: linkArr,
+      sourceContext,
+      style,
+      platform,
+      tone,
+      lastPosts: prevLast,
+    });
+    console.log("[telegram-post] RAW prompt len", postPrompt.length, "style", style, "platform", platform, "tone", tone);
+
+    const replyText = await ollamaTelegramChat(bot, tgChat, "", {
+      systemPromptOverride: POST_SYSTEM_PROMPT,
+      skipSalesFsm: true,
+      userContentForModel: postPrompt,
+      useEmptyHistory: true,
+      skipFsmUpdate: true,
+    });
+    const outText = `${replyText || "…"}\n\n${modeFooterLine("post")}`;
+    await telegramSendLongMessage(token, chatId, outText, {
+      replyMarkup: MODE_INLINE_REPLY_MARKUP,
+    });
+
+    const nextLast = [...prevLast, (replyText || "").slice(0, 12_000)].slice(-3);
+    if (includeImage) {
+      enqueueMarketingBannerImage({
+        bot,
+        token,
+        chatId,
+        topic: topicStr,
+        platform,
+      });
+    }
+    await prisma.telegramChat.update({
+      where: { id: tgChat.id },
+      data: {
+        state: POST_STATE_IDLE,
+        postDraftTopic: null,
+        postDraftLinks: null,
+        postLastGenerated: nextLast,
+      },
+    });
+  } catch (e) {
+    console.error("[POST MODE ERROR]", e);
+    await notifyPostModeUserError(token, chatId).catch((sendErr) => {
+      console.error("[POST MODE ERROR] notify failed", sendErr);
+    });
+  }
+}
+
+/**
+ * Тема собрана: либо вопрос про картинку (post_ready + черновик), либо сразу генерация.
+ */
+async function schedulePostOrAskImage(bot, latest, token, chatId, topic, links) {
+  const topicStr = typeof topic === "string" ? topic.trim() : "";
+  if (topicStr.length < 2) {
+    await prisma.telegramChat.update({
+      where: { id: latest.id },
+      data: { state: POST_STATE_WAITING_TOPIC },
+    });
+    await telegramSendMessage(token, chatId, `Напишите тему поста\n\n${modeFooterLine("post")}`, {
+      replyMarkup: POST_SMM_SETTINGS_MARKUP,
+    });
+    return;
+  }
+  const ask = TELEGRAM_POST_ASK_IMAGE && TELEGRAM_POST_IMAGE_ENABLED;
+  if (ask) {
+    await prisma.telegramChat.update({
+      where: { id: latest.id },
+      data: {
+        state: POST_STATE_READY,
+        postDraftTopic: topicStr,
+        postDraftLinks: links && links.length ? links : null,
+      },
+    });
+    await telegramSendMessage(token, chatId, `Нужна картинка к посту?\n\n${modeFooterLine("post")}`, {
+      replyMarkup: POST_IMAGE_ASK_MARKUP,
+    });
+    return;
+  }
+  runPostGenerationDeferred({
+    botId: bot.id,
+    tgChatId: latest.id,
+    token,
+    chatId,
+    topic: topicStr,
+    links: links || [],
+    includeImage: TELEGRAM_POST_IMAGE_ENABLED,
+  }).catch((err) => {
+    console.error("[POST MODE ERROR]", err);
+    notifyPostModeUserError(token, chatId).catch((sendErr) => {
+      console.error("[POST MODE ERROR] notify failed", sendErr);
+    });
+  });
 }
 
 /**
@@ -556,8 +1125,101 @@ async function processTelegramUpdate(bot, update) {
     const tgChat = await getOrCreateTelegramChat(bot, chatIdStr);
     const data = String(cq.data || "");
 
+    if (data === "post_img_yes" || data === "post_img_no") {
+      await telegramAnswerCallbackQuery(token, cq.id);
+      const row = await prisma.telegramChat.findUnique({ where: { id: tgChat.id } });
+      if (!row || row.mode !== "post") {
+        return { ok: true };
+      }
+      if (row.state !== POST_STATE_READY || !row.postDraftTopic) {
+        await telegramSendMessage(token, chatId, `Напишите тему поста заново.\n\n${modeFooterLine("post")}`, {
+          replyMarkup: POST_SMM_SETTINGS_MARKUP,
+        });
+        return { ok: true };
+      }
+      const topicStr = row.postDraftTopic;
+      const draftLinks = row.postDraftLinks;
+      const links = Array.isArray(draftLinks) ? draftLinks.map(String) : [];
+      const includeImage = data === "post_img_yes";
+      await prisma.telegramChat.update({
+        where: { id: row.id },
+        data: {
+          state: POST_STATE_IDLE,
+          postDraftTopic: null,
+          postDraftLinks: null,
+        },
+      });
+      runPostGenerationDeferred({
+        botId: bot.id,
+        tgChatId: row.id,
+        token,
+        chatId,
+        topic: topicStr,
+        links,
+        includeImage,
+      }).catch((err) => {
+        console.error("[POST MODE ERROR]", err);
+        notifyPostModeUserError(token, chatId).catch((sendErr) => {
+          console.error("[POST MODE ERROR] notify failed", sendErr);
+        });
+      });
+      return { ok: true };
+    }
+
+    const postStyleCb = {
+      post_sty_sales: "sales",
+      post_sty_expert: "expert",
+      post_sty_story: "story",
+      post_sty_ad: "ad",
+    };
+    if (postStyleCb[data]) {
+      await prisma.telegramChat.update({
+        where: { id: tgChat.id },
+        data: { postStyle: postStyleCb[data] },
+      });
+      await telegramAnswerCallbackQuery(token, cq.id, { text: `Стиль: ${postStyleCb[data]}` });
+      console.log("[telegram-post] RAW postStyle", postStyleCb[data]);
+      return { ok: true };
+    }
+    const postPltCb = {
+      post_plt_tg: "telegram",
+      post_plt_ig: "instagram",
+      post_plt_avito: "avito",
+    };
+    if (postPltCb[data]) {
+      await prisma.telegramChat.update({
+        where: { id: tgChat.id },
+        data: { postPlatform: postPltCb[data] },
+      });
+      await telegramAnswerCallbackQuery(token, cq.id, { text: `Площадка: ${postPltCb[data]}` });
+      console.log("[telegram-post] RAW postPlatform", postPltCb[data]);
+      return { ok: true };
+    }
+    const postToneCb = {
+      post_tone_friend: "friendly",
+      post_tone_aggr: "aggressive",
+      post_tone_prem: "premium",
+    };
+    if (postToneCb[data]) {
+      await prisma.telegramChat.update({
+        where: { id: tgChat.id },
+        data: { postTone: postToneCb[data] },
+      });
+      await telegramAnswerCallbackQuery(token, cq.id, { text: `Тон: ${postToneCb[data]}` });
+      console.log("[telegram-post] RAW postTone", postToneCb[data]);
+      return { ok: true };
+    }
+
     if (data === "mode_chat") {
-      await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "chat" } });
+      await prisma.telegramChat.update({
+        where: { id: tgChat.id },
+        data: {
+          mode: "chat",
+          state: "greeting",
+          postDraftTopic: null,
+          postDraftLinks: null,
+        },
+      });
       await telegramAnswerCallbackQuery(token, cq.id);
       console.log("[TELEGRAM MODE]: chat");
       console.log("[TELEGRAM FLOW]: chat");
@@ -567,12 +1229,33 @@ async function processTelegramUpdate(bot, update) {
       return { ok: true };
     }
     if (data === "mode_image") {
-      await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "image" } });
+      await prisma.telegramChat.update({
+        where: { id: tgChat.id },
+        data: {
+          mode: "image",
+          state: "greeting",
+          postDraftTopic: null,
+          postDraftLinks: null,
+        },
+      });
       await telegramAnswerCallbackQuery(token, cq.id);
       console.log("[TELEGRAM MODE]: image");
       console.log("[TELEGRAM FLOW]: image");
       await telegramSendMessage(token, chatId, `🎨 Режим генерации включен\n\n${modeFooterLine("image")}`, {
         replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      });
+      return { ok: true };
+    }
+    if (data === "mode_post") {
+      await prisma.telegramChat.update({
+        where: { id: tgChat.id },
+        data: { mode: "post", state: POST_STATE_WAITING_TOPIC },
+      });
+      await telegramAnswerCallbackQuery(token, cq.id);
+      console.log("[TELEGRAM MODE]: post");
+      console.log("[TELEGRAM FLOW]: post");
+      await telegramSendMessage(token, chatId, `Напишите тему поста\n\n${modeFooterLine("post")}`, {
+        replyMarkup: POST_SMM_SETTINGS_MARKUP,
       });
       return { ok: true };
     }
@@ -600,7 +1283,15 @@ async function processTelegramUpdate(bot, update) {
   const tgChat = await getOrCreateTelegramChat(bot, chatIdStr);
 
   if (text === KB_ROW_PHOTO) {
-    await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "image" } });
+    await prisma.telegramChat.update({
+      where: { id: tgChat.id },
+      data: {
+        mode: "image",
+        state: "greeting",
+        postDraftTopic: null,
+        postDraftLinks: null,
+      },
+    });
     console.log("[TELEGRAM MODE]: image");
     console.log("[TELEGRAM FLOW]: image");
     await telegramSendMessage(token, chatId, `🎨 Режим генерации включен\n\n${modeFooterLine("image")}`, {
@@ -609,11 +1300,31 @@ async function processTelegramUpdate(bot, update) {
     return { ok: true };
   }
   if (text === KB_ROW_CHAT) {
-    await prisma.telegramChat.update({ where: { id: tgChat.id }, data: { mode: "chat" } });
+    await prisma.telegramChat.update({
+      where: { id: tgChat.id },
+      data: {
+        mode: "chat",
+        state: "greeting",
+        postDraftTopic: null,
+        postDraftLinks: null,
+      },
+    });
     console.log("[TELEGRAM MODE]: chat");
     console.log("[TELEGRAM FLOW]: chat");
     await telegramSendMessage(token, chatId, `🧠 Режим чата включен\n\n${modeFooterLine("chat")}`, {
       replyMarkup: MODE_INLINE_REPLY_MARKUP,
+    });
+    return { ok: true };
+  }
+  if (text === KB_ROW_POST) {
+    await prisma.telegramChat.update({
+      where: { id: tgChat.id },
+      data: { mode: "post", state: POST_STATE_WAITING_TOPIC },
+    });
+    console.log("[TELEGRAM MODE]: post");
+    console.log("[TELEGRAM FLOW]: post");
+    await telegramSendMessage(token, chatId, `Напишите тему поста\n\n${modeFooterLine("post")}`, {
+      replyMarkup: POST_SMM_SETTINGS_MARKUP,
     });
     return { ok: true };
   }
@@ -623,7 +1334,30 @@ async function processTelegramUpdate(bot, update) {
   }
 
   const latest = await prisma.telegramChat.findUnique({ where: { id: tgChat.id } });
-  const mode = (latest && latest.mode) || "chat";
+  if (!latest) {
+    return { ok: true, skipped: true };
+  }
+
+  const { links, plainText } = extractHttpLinks(text);
+
+  if (triggersPostModeSwitch(text)) {
+    await prisma.telegramChat.update({
+      where: { id: latest.id },
+      data: { mode: "post", state: POST_STATE_WAITING_TOPIC },
+    });
+    const topic = stripPostTriggers(plainText || text);
+    if (isBarePostTopic(topic)) {
+      await telegramSendMessage(token, chatId, `Напишите тему поста\n\n${modeFooterLine("post")}`, {
+        replyMarkup: POST_SMM_SETTINGS_MARKUP,
+      });
+      return { ok: true };
+    }
+    const refreshed = await prisma.telegramChat.findUnique({ where: { id: latest.id } });
+    await schedulePostOrAskImage(bot, refreshed || latest, token, chatId, topic, links);
+    return { ok: true };
+  }
+
+  const mode = latest.mode || "chat";
 
   console.log("[TELEGRAM MODE]:", mode);
   console.log("[TELEGRAM FLOW]:", mode);
@@ -657,26 +1391,56 @@ async function processTelegramUpdate(bot, update) {
     return { ok: true };
   }
 
-  if (latest.uxHintChat < 2) {
-    await telegramSendMessage(token, chatId, `🧠 Сейчас режим чата. Можешь писать что угодно.\n\n${modeFooterLine("chat")}`, {
-      replyMarkup: MODE_INLINE_REPLY_MARKUP,
-    });
-    await prisma.telegramChat.update({
-      where: { id: latest.id },
-      data: { uxHintChat: { increment: 1 } },
-    });
+  if (mode === "post") {
+    const st = latest.state || POST_STATE_IDLE;
+    let topic = plainText.length >= 2 ? plainText : text.trim();
+    const linksForPost = links;
+
+    if (st === POST_STATE_READY && topic.length >= 2) {
+      await prisma.telegramChat.update({
+        where: { id: latest.id },
+        data: { postDraftTopic: null, postDraftLinks: null, state: POST_STATE_WAITING_TOPIC },
+      });
+    }
+
+    if (isBarePostTopic(topic)) {
+      await prisma.telegramChat.update({
+        where: { id: latest.id },
+        data: { state: POST_STATE_WAITING_TOPIC },
+      });
+      await telegramSendMessage(token, chatId, `Напишите тему поста\n\n${modeFooterLine("post")}`, {
+        replyMarkup: POST_SMM_SETTINGS_MARKUP,
+      });
+      return { ok: true };
+    }
+
+    const refreshed = await prisma.telegramChat.findUnique({ where: { id: latest.id } });
+    await schedulePostOrAskImage(bot, refreshed || latest, token, chatId, topic, linksForPost);
+    return { ok: true };
   }
 
-  try {
-    const replyText = await ollamaTelegramChat(bot, latest, text);
-    await telegramSendMessage(token, chatId, `${replyText || "…"}\n\n${modeFooterLine("chat")}`, {
-      replyMarkup: MODE_INLINE_REPLY_MARKUP,
-    });
-  } catch (err) {
-    process.stderr.write(`[telegram] chat: ${err.message}\n`);
-    await telegramSendMessage(token, chatId, `Ошибка чата: ${err.message}\n\n${modeFooterLine("chat")}`, {
-      replyMarkup: MODE_INLINE_REPLY_MARKUP,
-    });
+  if (mode === "chat") {
+    if (latest.uxHintChat < 2) {
+      await telegramSendMessage(token, chatId, `🧠 Сейчас режим чата. Можешь писать что угодно.\n\n${modeFooterLine("chat")}`, {
+        replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      });
+      await prisma.telegramChat.update({
+        where: { id: latest.id },
+        data: { uxHintChat: { increment: 1 } },
+      });
+    }
+
+    try {
+      const replyText = await ollamaTelegramChat(bot, latest, text);
+      await telegramSendMessage(token, chatId, `${replyText || "…"}\n\n${modeFooterLine("chat")}`, {
+        replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      });
+    } catch (err) {
+      process.stderr.write(`[telegram] chat: ${err.message}\n`);
+      await telegramSendMessage(token, chatId, `Ошибка чата: ${err.message}\n\n${modeFooterLine("chat")}`, {
+        replyMarkup: MODE_INLINE_REPLY_MARKUP,
+      });
+    }
   }
 
   return { ok: true };
@@ -689,4 +1453,5 @@ module.exports = {
   telegramSendMessage,
   KB_ROW_PHOTO,
   KB_ROW_CHAT,
+  KB_ROW_POST,
 };

@@ -44,6 +44,15 @@ async function postWebhook(request, reply) {
     return reply.code(404).send({ error: "not found" });
   }
 
+  const secretHdr = request.headers["x-telegram-bot-api-secret-token"];
+  const secretStr = typeof secretHdr === "string" ? secretHdr : "";
+  if (bot.webhookSecretToken) {
+    if (secretStr !== bot.webhookSecretToken) {
+      request.log.warn({ botId: bot.id }, "[telegram] webhook X-Telegram-Bot-Api-Secret-Token mismatch RAW");
+      return reply.code(403).send({ error: "forbidden" });
+    }
+  }
+
   try {
     await processTelegramUpdate(bot, request.body || {});
   } catch (err) {
