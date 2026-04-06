@@ -13,6 +13,9 @@
  * Добавление новой задачи: просто добавьте case ниже.
  */
 
+/** Жёсткий fallback при отсутствии модели на Ollama (production). */
+const OLLAMA_FALLBACK_MODEL = "llama3:8b";
+
 const MODEL_MAP = {
   enhance:  process.env.ENHANCER_MODEL || "qwen2.5:7b",
   brain:    process.env.BRAIN_MODEL    || "qwen2.5:7b",
@@ -59,4 +62,66 @@ async function listAvailableModels() {
   return [...new Set(Object.values(MODEL_MAP))];
 }
 
-module.exports = { selectModel, getAllModels, listAvailableModels };
+/**
+ * Режим assistant.model === "auto": выбрать конкретное имя модели по сообщению.
+ * @param {string} [message]
+ * @returns {string}
+ */
+function resolveModel(message) {
+  void message;
+  return selectModel("chat");
+}
+
+/**
+ * Проверить, что модель есть в Ollama; иначе вернуть llama3:8b.
+ * @param {string} requestedModel
+ * @param {string} [ollamaBase]
+ * @returns {Promise<string>}
+ */
+async function ensureModelAvailable(requestedModel, ollamaBase) {
+  const want = String(requestedModel || "").trim();
+  if (!want) {
+    return OLLAMA_FALLBACK_MODEL;
+  }
+
+  const base = ollamaBase || process.env.OLLAMA_URL;
+  let available = [];
+
+  if (base) {
+    try {
+      const res = await fetch(`${String(base).replace(/\/$/, "")}/api/tags`, {
+        signal: AbortSignal.timeout(4000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        available = (data.models ?? []).map((m) => m.name).filter(Boolean);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (available.length === 0) {
+    available = await listAvailableModels();
+  }
+
+  if (available.includes(want)) {
+    return want;
+  }
+  const byPrefix = available.find(
+    (m) => m.startsWith(`${want}:`) || m.split(":")[0] === want
+  );
+  if (byPrefix) {
+    return byPrefix;
+  }
+
+  return OLLAMA_FALLBACK_MODEL;
+}
+
+module.exports = {
+  selectModel,
+  getAllModels,
+  listAvailableModels,
+  resolveModel,
+  ensureModelAvailable,
+};
