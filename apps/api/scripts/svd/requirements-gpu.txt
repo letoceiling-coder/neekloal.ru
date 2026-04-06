@@ -1,0 +1,13 @@
+# GPU server (/opt/svd): pip install -r requirements-gpu.txt
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+diffusers>=0.30.0
+transformers>=4.40.0
+accelerate>=0.30.0
+torch
+torchvision
+imageio>=2.34.0
+imageio-ffmpeg>=0.4.0
+pillow>=10.0.0
+safetensors>=0.4.0

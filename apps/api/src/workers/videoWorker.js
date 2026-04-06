@@ -10,17 +10,16 @@ const { Worker } = require("bullmq");
 const sharp = require("sharp");
 const { getWorkerConnection } = require("../lib/redis");
 const prisma = require("../lib/prisma");
-const { fetchLtxVideoToFile } = require("../lib/videoLtx");
 const { runComfyLtxToFile, assertComfyHasLtxNodes } = require("../lib/comfyLtxVideo");
+const { generateSvdVideo, assertSvdGpuReady } = require("../lib/svdVideo");
+const { generateTTS } = require("../lib/tts");
 const {
-  ffmpegZoompanFromImage,
   mergeVideoVoice,
   mergeVideoVoiceMusic,
   mergeVideoSingleAudio,
   interpolateVideo,
   upscaleVideo2x,
 } = require("../lib/videoCompose");
-const { textToSpeechMp3 } = require("../lib/videoTts");
 
 const OUTPUT_DIR = process.env.VIDEO_OUTPUT_DIR || "/var/www/site-al.ru/uploads/videos";
 const PUBLIC_BASE = process.env.VIDEO_PUBLIC_BASE || "https://site-al.ru/uploads/videos";
@@ -51,6 +50,30 @@ async function preprocessImage(inPath, outPath) {
     .toFile(outPath);
 }
 
+/**
+ * @param {() => Promise<unknown>} fn
+ * @param {number} retries — extra attempts after the first (default 2 → 3 tries total)
+ */
+async function retrySvd(fn, retries = 2) {
+  let last;
+  const n = Number.isFinite(retries) && retries >= 0 ? Math.floor(retries) : 2;
+  for (let i = 0; i <= n; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      console.error("[SVD RETRY]", i, String(e && e.message ? e.message : e));
+    }
+  }
+  throw last;
+}
+
+function getVideoSvdRetries() {
+  const r = Number(process.env.VIDEO_SVD_RETRIES);
+  if (Number.isFinite(r) && r >= 0) return Math.floor(r);
+  return 2;
+}
+
 async function telegramSendVideo(token, chatId, publicUrl) {
   const TG = "https://api.telegram.org";
   const res = await fetch(`${TG}/bot${token}/sendVideo`, {
@@ -69,27 +92,17 @@ async function telegramSendVideo(token, chatId, publicUrl) {
   }
 }
 
-/**
- * Legacy path: HTTP LTX multipart or ffmpeg zoompan. Returns path to mp4 (ltxOut).
- */
-async function runStandardVideoGeneration(prepImg, script, ltxOut, videoJobId) {
-  logPipeline("ltx", { videoJobId });
-  let usedLtx = false;
-  try {
-    usedLtx = await fetchLtxVideoToFile({
-      imagePath: prepImg,
-      script: String(script || ""),
-      outMp4Path: ltxOut,
-    });
-  } catch (e) {
-    process.stderr.write(`[VIDEO PIPELINE] ltx http error RAW: ${e.stack || e.message}\n`);
-    usedLtx = false;
-  }
-  if (!usedLtx) {
-    logPipeline("ltx_fallback", { videoJobId, note: "ffmpeg_zoompan" });
-    await ffmpegZoompanFromImage(prepImg, ltxOut, 6);
-  }
-  return ltxOut;
+/** Stable Video Diffusion via HTTP on GPU (no zoom / fake motion). */
+async function runMotionVideo(prepImg, outMp4, videoJobId) {
+  await assertSvdGpuReady();
+  console.log("[VIDEO PIPELINE] SVD HTTP START");
+  await retrySvd(
+    () => generateSvdVideo({ imagePath: prepImg, outputPath: outMp4 }),
+    getVideoSvdRetries()
+  );
+  console.log("[VIDEO PIPELINE] SVD DONE");
+  logPipeline("svd_http", { videoJobId });
+  return outMp4;
 }
 
 const worker = new Worker(
@@ -160,7 +173,7 @@ const worker = new Worker(
         } else if (allowLtxFallback) {
           console.log("[VIDEO PIPELINE] USING FALLBACK");
           logPipeline("ltx_generate_fallback", { videoJobId });
-          await runStandardVideoGeneration(prepImg, script, ltxOut, videoJobId);
+          await runMotionVideo(prepImg, ltxOut, videoJobId);
         } else {
           throw new Error(
             "ComfyUI LTX did not return a video. Required: (1) API workflow file at " +
@@ -168,7 +181,7 @@ const worker = new Worker(
               "(Save API Format from ComfyUI with LoadImage, CLIPTextEncode, LTX nodes, SaveVideo/CreateVideo); " +
               "(2) ComfyUI-LTXVideo installed on GPU, models in place; " +
               "(3) reachable VIDEO_COMFY_URL. " +
-              "Temporary zoom-only output: set VIDEO_ALLOW_LTX_FALLBACK=1 on video-worker."
+              "Fallback: set VIDEO_ALLOW_LTX_FALLBACK=1 to run SVD over HTTP (VIDEO_SVD_BASE_URL on GPU :5000)."
           );
         }
 
@@ -196,27 +209,24 @@ const worker = new Worker(
           }
         }
       } else {
-        await runStandardVideoGeneration(prepImg, script, ltxOut, videoJobId);
+        await runMotionVideo(prepImg, ltxOut, videoJobId);
         videoPath = ltxOut;
       }
 
       if (voiceText && String(voiceText).trim()) {
         logPipeline("audio", { videoJobId });
-        try {
-          await textToSpeechMp3(String(voiceText), voiceMp3);
-          if (BG_MUSIC && fs.existsSync(BG_MUSIC)) {
-            logPipeline("merge", { videoJobId, music: true });
-            await mergeVideoVoiceMusic(videoPath, voiceMp3, BG_MUSIC, merged);
-            videoPath = merged;
-          } else {
-            logPipeline("merge", { videoJobId, music: false });
-            await mergeVideoVoice(videoPath, voiceMp3, merged);
-            videoPath = merged;
-          }
-        } catch (e) {
-          process.stderr.write(`[VIDEO PIPELINE] tts/merge fail RAW: ${e.stack || e.message}\n`);
-          logPipeline("audio_skip", { videoJobId, err: String(e.message) });
+        await generateTTS({ text: String(voiceText), output: voiceMp3 });
+        console.log("[VIDEO PIPELINE] TTS DONE");
+        if (BG_MUSIC && fs.existsSync(BG_MUSIC)) {
+          logPipeline("merge", { videoJobId, music: true });
+          await mergeVideoVoiceMusic(videoPath, voiceMp3, BG_MUSIC, merged);
+          videoPath = merged;
+        } else {
+          logPipeline("merge", { videoJobId, music: false });
+          await mergeVideoVoice(videoPath, voiceMp3, merged);
+          videoPath = merged;
         }
+        console.log("[VIDEO PIPELINE] MERGE DONE");
       } else if (BG_MUSIC && fs.existsSync(BG_MUSIC)) {
         logPipeline("merge_music_only", { videoJobId });
         await mergeVideoSingleAudio(videoPath, BG_MUSIC, merged);
