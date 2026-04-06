@@ -98,6 +98,12 @@
 
 - `http://127.0.0.1:8188/` → **HTTP 200**
 
+### Python / стабильность ComfyUI (связь с `imageWorker` на MAIN SERVER)
+
+- Часть custom nodes (в т.ч. `comfyui_controlnet_aux`) может требовать **`matplotlib`**. Если в логах `imageWorker` на проде видно `No module named 'matplotlib'`, в контейнере: `docker exec comfyui pip install matplotlib`, при необходимости `docker restart comfyui`.
+- Ошибка ComfyUI **`[Errno 32] Broken pipe`** в ответе history обычно означает падение воркера выполнения графа (VRAM/CUDA, сбой Python). Смотреть `docker logs comfyui` на момент запроса.
+- Аудит текстового графа (как у Telegram «Генерация»): на MAIN SERVER из `apps/api` выполнить `node scripts/e2e-comfy-text-audit.js` (нужен доступ к `COMFYUI_URL`, по умолчанию этот хост `:8188`).
+
 ---
 
 ## 6. Qdrant (векторная БД)

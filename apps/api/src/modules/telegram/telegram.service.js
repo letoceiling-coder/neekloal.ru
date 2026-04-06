@@ -667,6 +667,14 @@ async function connectBot({ userId, organizationId, botToken }) {
   };
 }
 
+/** Краткая причина сбоя для пользователя (без многострочного stack trace). */
+function formatImageGenErrorForUser(err) {
+  const raw = err && err.message ? String(err.message) : "неизвестная ошибка";
+  const line = raw.split("\n")[0].replace(/^\s*Error:\s*/i, "").trim().replace(/\s+/g, " ");
+  if (line.length <= 120) return line;
+  return `${line.slice(0, 117)}…`;
+}
+
 /**
  * enhancePrompt + BullMQ image-generation, ожидание через waitUntilFinished (QueueEvents).
  */
@@ -1420,7 +1428,8 @@ async function processTelegramUpdate(bot, update) {
     } catch (err) {
       process.stderr.write(`[telegram] image pipeline: ${err.message}\n`);
       console.log("[TELEGRAM IMAGE FLOW] error:", err.message);
-      await telegramSendMessage(token, chatId, `❌ Ошибка генерации\n\n${modeFooterLine("image")}`, {
+      const hint = formatImageGenErrorForUser(err);
+      await telegramSendMessage(token, chatId, `❌ Ошибка генерации\n${hint}\n\n${modeFooterLine("image")}`, {
         replyMarkup: MODE_INLINE_REPLY_MARKUP,
       });
     }
