@@ -536,6 +536,12 @@ async function telegramSetWebhook(token, webhookUrl, secretToken) {
   return tgRequest("POST", token, "/setWebhook", body);
 }
 
+async function telegramDeleteWebhook(token) {
+  return tgRequest("POST", token, "/deleteWebhook", {
+    drop_pending_updates: false,
+  });
+}
+
 const TELEGRAM_MAX_MESSAGE_CHARS = 4000;
 
 async function telegramSendMessage(token, chatId, text, extra = {}) {
@@ -665,6 +671,30 @@ async function connectBot({ userId, organizationId, botToken }) {
     botUsername,
     webhookUrl,
   };
+}
+
+/**
+ * Disconnect bot for authenticated SaaS user.
+ * Removes webhook in Telegram and deactivates local bot row.
+ */
+async function disconnectBot({ userId }) {
+  const existing = await prisma.telegramBot.findUnique({ where: { userId } });
+  if (!existing) {
+    const e = new Error("Telegram bot is not connected for this account");
+    e.statusCode = 404;
+    throw e;
+  }
+
+  try {
+    await telegramDeleteWebhook(existing.botToken);
+  } catch (err) {
+    const e = new Error(`deleteWebhook failed: ${err.message}`);
+    e.statusCode = 502;
+    throw e;
+  }
+
+  await prisma.telegramBot.delete({ where: { id: existing.id } });
+  return { ok: true };
 }
 
 /** Краткая причина сбоя для пользователя (без многострочного stack trace). */
@@ -1494,6 +1524,7 @@ async function processTelegramUpdate(bot, update) {
 module.exports = {
   isValidUuid,
   connectBot,
+  disconnectBot,
   processTelegramUpdate,
   telegramSendMessage,
   KB_ROW_PHOTO,

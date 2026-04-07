@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { connectTelegram } from "../api/telegram";
+import { connectTelegram, disconnectTelegram } from "../api/telegram";
 import {
   Button,
   Card,
@@ -48,6 +48,11 @@ function writeSaved(key: string | null, data: SavedOk) {
   sessionStorage.setItem(key, JSON.stringify(data));
 }
 
+function clearSaved(key: string | null) {
+  if (!key || typeof window === "undefined") return;
+  sessionStorage.removeItem(key);
+}
+
 export function TelegramPage() {
   const userId = useAuthStore((s) => s.userId);
   const organizationId = useAuthStore((s) => s.organizationId);
@@ -55,6 +60,7 @@ export function TelegramPage() {
 
   const [token, setToken] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState<SavedOk | null>(null);
   const [alreadyConnected, setAlreadyConnected] = useState(false);
@@ -97,7 +103,29 @@ export function TelegramPage() {
     }
   }
 
+  async function handleDisconnect() {
+    setError(null);
+    setDisconnecting(true);
+    try {
+      await disconnectTelegram();
+      setConnected(null);
+      setAlreadyConnected(false);
+      clearSaved(key);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setConnected(null);
+        setAlreadyConnected(false);
+        clearSaved(key);
+        return;
+      }
+      setError(err instanceof ApiError ? err.message : "Не удалось отключить бота.");
+    } finally {
+      setDisconnecting(false);
+    }
+  }
+
   const disabled = alreadyConnected || Boolean(connected);
+  const actionBusy = submitting || disconnecting;
 
   return (
     <Page
@@ -149,7 +177,7 @@ export function TelegramPage() {
                 placeholder="Bot Token"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
-                disabled={disabled || submitting}
+                disabled={disabled || actionBusy}
                 className="font-mono text-sm"
               />
             </div>
@@ -160,9 +188,20 @@ export function TelegramPage() {
               </p>
             ) : null}
 
-            <Button type="submit" disabled={disabled || submitting || !token.trim()}>
+            <Button type="submit" disabled={disabled || actionBusy || !token.trim()}>
               {submitting ? "Подключение…" : "Подключить"}
             </Button>
+
+            {(connected || alreadyConnected) && (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={actionBusy}
+                onClick={handleDisconnect}
+              >
+                {disconnecting ? "Отключение…" : "Отключить и привязать новый токен"}
+              </Button>
+            )}
           </form>
         </CardContent>
       </Card>

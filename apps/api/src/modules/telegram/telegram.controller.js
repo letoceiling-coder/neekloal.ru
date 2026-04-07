@@ -1,7 +1,7 @@
 "use strict";
 
 const prisma = require("../../lib/prisma");
-const { connectBot, processTelegramUpdate, isValidUuid } = require("./telegram.service");
+const { connectBot, disconnectBot, processTelegramUpdate, isValidUuid } = require("./telegram.service");
 
 /**
  * POST /telegram/connect — JWT; body: { botToken }
@@ -25,6 +25,19 @@ async function postConnect(request, reply) {
   } catch (err) {
     const code = err.statusCode && Number(err.statusCode) >= 400 ? err.statusCode : 500;
     return reply.code(code).send({ error: err.message || "connect_failed" });
+  }
+}
+
+/**
+ * POST /telegram/disconnect — JWT
+ */
+async function postDisconnect(request, reply) {
+  try {
+    await disconnectBot({ userId: request.userId });
+    return reply.code(200).send({ ok: true });
+  } catch (err) {
+    const code = err.statusCode && Number(err.statusCode) >= 400 ? err.statusCode : 500;
+    return reply.code(code).send({ error: err.message || "disconnect_failed" });
   }
 }
 
@@ -64,5 +77,6 @@ async function postWebhook(request, reply) {
 
 module.exports = {
   postConnect,
+  postDisconnect,
   postWebhook,
 };

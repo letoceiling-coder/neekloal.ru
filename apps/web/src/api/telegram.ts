@@ -15,3 +15,7 @@ export function connectTelegram(botToken: string) {
     botToken: botToken.trim(),
   });
 }
+
+export function disconnectTelegram() {
+  return apiClient.post<{ ok: true }>("/telegram/disconnect");
+}
