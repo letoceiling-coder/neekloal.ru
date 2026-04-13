@@ -710,12 +710,52 @@ async function telegramSendLongMessage(token, chatId, text, extra = {}) {
 }
 
 async function telegramSendPhoto(token, chatId, photoUrl, caption, replyMarkup) {
-  return tgRequest("POST", token, "/sendPhoto", {
-    chat_id: chatId,
-    photo: photoUrl,
-    caption: caption || undefined,
-    reply_markup: replyMarkup || undefined,
-  });
+  try {
+    return await tgRequest("POST", token, "/sendPhoto", {
+      chat_id: chatId,
+      photo: photoUrl,
+      caption: caption || undefined,
+      reply_markup: replyMarkup || undefined,
+    });
+  } catch (err) {
+    const msg = err && err.message ? String(err.message).toLowerCase() : "";
+    const shouldUploadFallback =
+      msg.includes("failed to get http url content") ||
+      msg.includes("wrong file identifier/http url specified");
+    if (!shouldUploadFallback || !String(photoUrl || "").startsWith("http")) {
+      throw err;
+    }
+
+    // Fallback: fetch image on server and upload binary to Telegram.
+    const src = await fetch(photoUrl, {
+      signal: AbortSignal.timeout(30_000),
+      dispatcher: TG_FETCH_DISPATCHER,
+    });
+    if (!src.ok) {
+      throw new Error(`telegram_image_fetch_failed: HTTP ${src.status}`);
+    }
+    const ctype = src.headers.get("content-type") || "image/png";
+    const data = await src.arrayBuffer();
+    const form = new FormData();
+    form.set("chat_id", String(chatId));
+    form.set("photo", new Blob([data], { type: ctype }), "image.png");
+    if (caption) form.set("caption", String(caption));
+    if (replyMarkup) form.set("reply_markup", JSON.stringify(replyMarkup));
+
+    const tgUrl = `${TG_API}/bot${token}/sendPhoto`;
+    const uploadRes = await fetch(tgUrl, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(45_000),
+      dispatcher: TG_FETCH_DISPATCHER,
+    });
+    const payload = await uploadRes.json().catch(() => ({}));
+    if (!uploadRes.ok || payload.ok === false) {
+      const desc = payload.description || uploadRes.statusText || "telegram_send_photo_failed";
+      throw new Error(typeof desc === "string" ? desc : JSON.stringify(desc));
+    }
+    return payload;
+  }
 }
 
 async function telegramAnswerCallbackQuery(token, callbackQueryId, extra = {}) {
