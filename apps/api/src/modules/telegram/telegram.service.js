@@ -8,6 +8,7 @@
 const crypto = require("crypto");
 const { lookup } = require("dns").promises;
 const { v4: uuidv4 } = require("uuid");
+const { Agent } = require("undici");
 const prisma = require("../../lib/prisma");
 const { createConversation } = require("../../services/agentRuntimeV2");
 const { enhancePrompt, DEFAULT_NEGATIVE } = require("../../services/promptEnhancer");
@@ -17,6 +18,9 @@ const { getImageQueue } = require("../../queues/imageQueue");
 const { getWorkerConnection } = require("../../lib/redis");
 
 const TG_API = "https://api.telegram.org";
+const TG_FETCH_DISPATCHER = new Agent({
+  connect: { family: 4 },
+});
 const WEBHOOK_BASE =
   (process.env.TELEGRAM_WEBHOOK_BASE || "https://site-al.ru/api").replace(/\/$/, "");
 
@@ -508,32 +512,67 @@ function isValidUuid(id) {
   return typeof id === "string" && UUID_RE.test(id.trim());
 }
 
+function shouldRetryTelegramNetworkError(err) {
+  const msg = err && err.message ? String(err.message).toLowerCase() : "";
+  return (
+    msg.includes("etimedout") ||
+    msg.includes("timeout") ||
+    msg.includes("eai_again") ||
+    msg.includes("enetunreach") ||
+    msg.includes("fetch failed") ||
+    msg.includes("telegram_network_error")
+  );
+}
+
 async function tgRequest(method, token, path, body = null) {
   const url = `${TG_API}/bot${token}${path}`;
-  const opts = { method, signal: AbortSignal.timeout(30_000) };
+  const opts = {
+    method,
+    signal: AbortSignal.timeout(30_000),
+    dispatcher: TG_FETCH_DISPATCHER,
+  };
   if (body != null) {
     opts.headers = { "Content-Type": "application/json" };
     opts.body = JSON.stringify(body);
   }
-  let res;
-  try {
-    res = await fetch(url, opts);
-  } catch (err) {
-    const code =
-      err && err.cause && typeof err.cause === "object" && "code" in err.cause
-        ? String(err.cause.code)
-        : "";
-    const suffix = code ? ` (${code})` : "";
-    throw new Error(`telegram_network_error: ${err.message || "fetch failed"}${suffix}`);
+  const maxAttempts = 3;
+  let lastErr = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let res;
+    try {
+      res = await fetch(url, opts);
+    } catch (err) {
+      const code =
+        err && err.cause && typeof err.cause === "object" && "code" in err.cause
+          ? String(err.cause.code)
+          : "";
+      const suffix = code ? ` (${code})` : "";
+      lastErr = new Error(`telegram_network_error: ${err.message || "fetch failed"}${suffix}`);
+      if (attempt < maxAttempts && shouldRetryTelegramNetworkError(lastErr)) {
+        await sleep(attempt * 500);
+        continue;
+      }
+      throw lastErr;
+    }
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      const desc = data.description || res.statusText || "telegram_error";
+      const err = new Error(typeof desc === "string" ? desc : JSON.stringify(desc));
+      err.telegram = data;
+      // Retry only explicit flood-wait to stabilize under short Telegram throttling bursts.
+      if (attempt < maxAttempts && /retry after/i.test(String(desc || ""))) {
+        const retrySec = extractRetryAfterSeconds(err);
+        await sleep(((retrySec != null ? retrySec : attempt) + 1) * 1000);
+        continue;
+      }
+      throw err;
+    }
+    return data;
   }
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.ok === false) {
-    const desc = data.description || res.statusText || "telegram_error";
-    const err = new Error(typeof desc === "string" ? desc : JSON.stringify(desc));
-    err.telegram = data;
-    throw err;
-  }
-  return data;
+
+  throw lastErr || new Error("telegram_request_failed");
 }
 
 async function telegramGetMe(token) {
