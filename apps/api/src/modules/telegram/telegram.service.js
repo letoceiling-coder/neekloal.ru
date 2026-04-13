@@ -514,7 +514,17 @@ async function tgRequest(method, token, path, body = null) {
     opts.headers = { "Content-Type": "application/json" };
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(url, opts);
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (err) {
+    const code =
+      err && err.cause && typeof err.cause === "object" && "code" in err.cause
+        ? String(err.cause.code)
+        : "";
+    const suffix = code ? ` (${code})` : "";
+    throw new Error(`telegram_network_error: ${err.message || "fetch failed"}${suffix}`);
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
     const desc = data.description || res.statusText || "telegram_error";
@@ -528,6 +538,34 @@ async function tgRequest(method, token, path, body = null) {
 async function telegramGetMe(token) {
   const data = await tgRequest("GET", token, "/getMe", null);
   return data.result;
+}
+
+function shouldRetryGetMeError(err) {
+  const msg = err && err.message ? String(err.message).toLowerCase() : "";
+  return (
+    msg.includes("telegram_network_error") ||
+    msg.includes("temporary failure in name resolution") ||
+    msg.includes("failed to resolve host") ||
+    msg.includes("eai_again") ||
+    msg.includes("enetunreach") ||
+    msg.includes("etimedout") ||
+    msg.includes("timeout")
+  );
+}
+
+async function telegramGetMeWithRetry(token) {
+  const maxAttempts = 4;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await telegramGetMe(token);
+    } catch (err) {
+      lastErr = err;
+      if (!shouldRetryGetMeError(err) || attempt === maxAttempts) break;
+      await sleep(attempt * 600);
+    }
+  }
+  throw lastErr || new Error("getMe failed");
 }
 
 async function telegramSetWebhook(token, webhookUrl, secretToken) {
@@ -664,7 +702,7 @@ async function connectBot({ userId, organizationId, botToken }) {
 
   let me;
   try {
-    me = await telegramGetMe(token);
+    me = await telegramGetMeWithRetry(token);
   } catch (err) {
     const e = new Error(`Telegram getMe failed: ${err.message}`);
     e.statusCode = 502;
