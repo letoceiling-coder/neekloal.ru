@@ -6,6 +6,7 @@
  */
 
 const crypto = require("crypto");
+const { lookup } = require("dns").promises;
 const { v4: uuidv4 } = require("uuid");
 const prisma = require("../../lib/prisma");
 const { createConversation } = require("../../services/agentRuntimeV2");
@@ -568,9 +569,32 @@ async function telegramGetMeWithRetry(token) {
   throw lastErr || new Error("getMe failed");
 }
 
-async function telegramSetWebhook(token, webhookUrl, secretToken) {
+function isIpv4Address(value) {
+  const s = typeof value === "string" ? value.trim() : "";
+  if (!s) return false;
+  const p = s.split(".");
+  if (p.length !== 4) return false;
+  return p.every((x) => /^\d+$/.test(x) && Number(x) >= 0 && Number(x) <= 255);
+}
+
+async function resolveWebhookIpv4(webhookUrl) {
+  try {
+    const host = new URL(webhookUrl).hostname;
+    if (isIpv4Address(host)) return host;
+    const out = await lookup(host, { family: 4 });
+    return out && out.address ? String(out.address) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function telegramSetWebhook(token, webhookUrl, secretToken, webhookIpAddress = null) {
   const body = { url: webhookUrl };
   if (secretToken) body.secret_token = secretToken;
+  if (isIpv4Address(webhookIpAddress)) {
+    // Helps avoid transient Telegram-side DNS resolution issues for webhook host.
+    body.ip_address = webhookIpAddress;
+  }
   return tgRequest("POST", token, "/setWebhook", body);
 }
 
@@ -600,13 +624,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function telegramSetWebhookWithRetry(token, webhookUrl, secretToken) {
+async function telegramSetWebhookWithRetry(token, webhookUrl, secretToken, webhookIpAddress = null) {
   const maxAttempts = 6;
   let lastErr = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      return await telegramSetWebhook(token, webhookUrl, secretToken);
+      return await telegramSetWebhook(token, webhookUrl, secretToken, webhookIpAddress);
     } catch (err) {
       lastErr = err;
       if (!shouldRetryWebhookError(err) || attempt === maxAttempts) break;
@@ -740,8 +764,11 @@ async function connectBot({ userId, organizationId, botToken }) {
   });
 
   const webhookUrl = `${WEBHOOK_BASE}/telegram/webhook/${bot.id}`;
+  const webhookIpAddress =
+    (process.env.TELEGRAM_WEBHOOK_IP && process.env.TELEGRAM_WEBHOOK_IP.trim()) ||
+    (await resolveWebhookIpv4(webhookUrl));
   try {
-    await telegramSetWebhookWithRetry(token, webhookUrl, webhookSecretToken);
+    await telegramSetWebhookWithRetry(token, webhookUrl, webhookSecretToken, webhookIpAddress);
   } catch (err) {
     await prisma.telegramBot.delete({ where: { id: bot.id } }).catch(() => {});
     const e = new Error(`setWebhook failed: ${err.message}`);
