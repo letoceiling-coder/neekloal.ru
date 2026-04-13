@@ -6,7 +6,6 @@
  */
 
 const crypto = require("crypto");
-const { lookup } = require("dns").promises;
 const { v4: uuidv4 } = require("uuid");
 const { Agent } = require("undici");
 const prisma = require("../../lib/prisma");
@@ -616,17 +615,6 @@ function isIpv4Address(value) {
   return p.every((x) => /^\d+$/.test(x) && Number(x) >= 0 && Number(x) <= 255);
 }
 
-async function resolveWebhookIpv4(webhookUrl) {
-  try {
-    const host = new URL(webhookUrl).hostname;
-    if (isIpv4Address(host)) return host;
-    const out = await lookup(host, { family: 4 });
-    return out && out.address ? String(out.address) : null;
-  } catch {
-    return null;
-  }
-}
-
 async function telegramSetWebhook(token, webhookUrl, secretToken, webhookIpAddress = null) {
   const body = { url: webhookUrl };
   if (secretToken) body.secret_token = secretToken;
@@ -803,9 +791,7 @@ async function connectBot({ userId, organizationId, botToken }) {
   });
 
   const webhookUrl = `${WEBHOOK_BASE}/telegram/webhook/${bot.id}`;
-  const webhookIpAddress =
-    (process.env.TELEGRAM_WEBHOOK_IP && process.env.TELEGRAM_WEBHOOK_IP.trim()) ||
-    (await resolveWebhookIpv4(webhookUrl));
+  const webhookIpAddress = process.env.TELEGRAM_WEBHOOK_IP && process.env.TELEGRAM_WEBHOOK_IP.trim();
   try {
     await telegramSetWebhookWithRetry(token, webhookUrl, webhookSecretToken, webhookIpAddress);
   } catch (err) {
