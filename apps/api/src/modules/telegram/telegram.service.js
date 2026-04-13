@@ -577,6 +577,8 @@ async function telegramSetWebhook(token, webhookUrl, secretToken) {
 function shouldRetryWebhookError(err) {
   const msg = err && err.message ? String(err.message).toLowerCase() : "";
   return (
+    msg.includes("too many requests") ||
+    msg.includes("retry after") ||
     msg.includes("temporary failure in name resolution") ||
     msg.includes("failed to resolve host") ||
     msg.includes("timeout") ||
@@ -585,12 +587,21 @@ function shouldRetryWebhookError(err) {
   );
 }
 
+function extractRetryAfterSeconds(err) {
+  const msg = err && err.message ? String(err.message) : "";
+  const m = msg.match(/retry after\s+(\d+)/i);
+  if (!m) return null;
+  const sec = Number(m[1]);
+  if (!Number.isFinite(sec) || sec < 0) return null;
+  return sec;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function telegramSetWebhookWithRetry(token, webhookUrl, secretToken) {
-  const maxAttempts = 4;
+  const maxAttempts = 6;
   let lastErr = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -599,8 +610,14 @@ async function telegramSetWebhookWithRetry(token, webhookUrl, secretToken) {
     } catch (err) {
       lastErr = err;
       if (!shouldRetryWebhookError(err) || attempt === maxAttempts) break;
-      // Telegram occasionally returns transient DNS resolution errors.
-      await sleep(attempt * 700);
+      const retryAfterSec = extractRetryAfterSeconds(err);
+      if (retryAfterSec != null) {
+        // Honor Telegram flood-wait window (+small buffer).
+        await sleep((retryAfterSec + 1) * 1000);
+      } else {
+        // Telegram occasionally returns transient DNS/network errors.
+        await sleep(attempt * 700);
+      }
     }
   }
 
