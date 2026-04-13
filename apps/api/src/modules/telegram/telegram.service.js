@@ -536,6 +536,39 @@ async function telegramSetWebhook(token, webhookUrl, secretToken) {
   return tgRequest("POST", token, "/setWebhook", body);
 }
 
+function shouldRetryWebhookError(err) {
+  const msg = err && err.message ? String(err.message).toLowerCase() : "";
+  return (
+    msg.includes("temporary failure in name resolution") ||
+    msg.includes("failed to resolve host") ||
+    msg.includes("timeout") ||
+    msg.includes("timed out") ||
+    msg.includes("eai_again")
+  );
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function telegramSetWebhookWithRetry(token, webhookUrl, secretToken) {
+  const maxAttempts = 4;
+  let lastErr = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await telegramSetWebhook(token, webhookUrl, secretToken);
+    } catch (err) {
+      lastErr = err;
+      if (!shouldRetryWebhookError(err) || attempt === maxAttempts) break;
+      // Telegram occasionally returns transient DNS resolution errors.
+      await sleep(attempt * 700);
+    }
+  }
+
+  throw lastErr || new Error("setWebhook failed");
+}
+
 async function telegramDeleteWebhook(token) {
   return tgRequest("POST", token, "/deleteWebhook", {
     drop_pending_updates: false,
@@ -653,7 +686,7 @@ async function connectBot({ userId, organizationId, botToken }) {
 
   const webhookUrl = `${WEBHOOK_BASE}/telegram/webhook/${bot.id}`;
   try {
-    await telegramSetWebhook(token, webhookUrl, webhookSecretToken);
+    await telegramSetWebhookWithRetry(token, webhookUrl, webhookSecretToken);
   } catch (err) {
     await prisma.telegramBot.delete({ where: { id: bot.id } }).catch(() => {});
     const e = new Error(`setWebhook failed: ${err.message}`);
