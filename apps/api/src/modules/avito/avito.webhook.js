@@ -620,11 +620,7 @@ module.exports = async function avitoModule(fastify) {
 
     try {
       const { accessToken } = await resolveAccountCredentials(acc);
-      const secretRaw = acc.webhookSecret != null ? String(acc.webhookSecret).trim() : "";
-      const avitoResult = await registerMessengerV3Webhook(accessToken, {
-        url: webhookUrl,
-        ...(secretRaw ? { secret: secretRaw } : {}),
-      });
+      const avitoResult = await registerMessengerV3Webhook(accessToken, { url: webhookUrl });
 
       let subscriptions = null;
       try {

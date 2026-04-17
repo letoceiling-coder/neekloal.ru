@@ -7,8 +7,11 @@
  *   1. DB-based (SaaS): pass { token, accountId } explicitly via createClient()
  *   2. Env-based (legacy fallback): call sendMessage() / getChats() directly
  *
- * Avito Messenger API v1 docs:
+ * Документация Messenger API:
  *   https://developers.avito.ru/api-catalog/messenger/documentation
+ *
+ * Сверка с каталогом: чаты GET v2, сообщения GET v3, webhook POST v3, подписки POST v1,
+ * отправка / read POST v1.
  */
 
 const BASE_URL = "https://api.avito.ru";
@@ -43,21 +46,19 @@ async function apiRequest(token, method, path, body = null) {
 }
 
 /**
- * Register Messenger webhook URL at Avito (v3).
- * @see https://developers.avito.ru/api-catalog/messenger/documentation
- * @param {string} token Bearer access_token
- * @param {{ url: string, secret?: string }} opts  secret — опционально, должен совпадать с webhookSecret в CRM для проверки подписи
+ * Включение webhook V3: POST /messenger/v3/webhook, тело только { url } (как в каталоге API).
+ * Подпись входящих: webhookSecret в CRM должен совпадать с тем, что задано в настройках уведомлений Авито (если платформа его запрашивает отдельно).
+ * @param {string} token Bearer access_token (scope messenger:read)
+ * @param {{ url: string }} opts
  * @returns {Promise<{ status: number, data: unknown }>}
  */
-async function registerMessengerV3Webhook(token, { url, secret }) {
+async function registerMessengerV3Webhook(token, { url }) {
   const t = String(token ?? "").trim();
   const u = String(url ?? "").trim();
   if (!t) throw new Error("[avitoClient] token is required for webhook registration");
   if (!u) throw new Error("[avitoClient] webhook url is required");
 
   const body = { url: u };
-  const sec = secret != null ? String(secret).trim() : "";
-  if (sec) body.secret = sec;
 
   const res = await fetch(`${BASE_URL}/messenger/v3/webhook`, {
     method: "POST",
@@ -86,25 +87,17 @@ async function registerMessengerV3Webhook(token, { url, secret }) {
 }
 
 /**
- * List active Messenger webhook subscriptions (path differs between API revisions).
- * @param {string} token
+ * Список подписок webhook: официально POST /messenger/v1/subscriptions (не GET).
+ * @param {string} token (scope messenger:read)
  * @returns {Promise<{ path: string, data: unknown }>}
  */
 async function listMessengerWebhookSubscriptions(token) {
   const t = String(token ?? "").trim();
   if (!t) throw new Error("[avitoClient] token is required");
 
-  const paths = ["/messenger/v3/subscriptions", "/messenger/v1/subscriptions"];
-  let lastErr = null;
-  for (const p of paths) {
-    try {
-      const data = await apiRequest(t, "GET", p);
-      return { path: p, data };
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr ?? new Error("[avitoClient] list webhook subscriptions failed");
+  const path = "/messenger/v1/subscriptions";
+  const data = await apiRequest(t, "POST", path, {});
+  return { path, data };
 }
 
 /**
@@ -193,7 +186,7 @@ function createClient({ token, accountId }) {
     sendMessage: async (chatId, text) => {
       const result = await apiRequest(
         t, "POST",
-        `/messenger/v2/accounts/${id}/chats/${chatId}/messages`,
+        `/messenger/v1/accounts/${id}/chats/${chatId}/messages`,
         { message: { text }, type: "text" }
       );
       process.stdout.write(`[avito:send] chatId=${chatId} chars=${text.length}\n`);
@@ -207,7 +200,7 @@ function createClient({ token, accountId }) {
       apiRequest(t, "GET", `/messenger/v3/accounts/${id}/chats/${chatId}/messages`),
 
     markAsRead: (chatId) =>
-      apiRequest(t, "POST", `/messenger/v2/accounts/${id}/chats/${chatId}/read`),
+      apiRequest(t, "POST", `/messenger/v1/accounts/${id}/chats/${chatId}/read`),
   };
 }
 
