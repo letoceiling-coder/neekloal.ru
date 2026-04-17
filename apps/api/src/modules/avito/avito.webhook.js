@@ -5,9 +5,9 @@
  *
  * Routes registered:
  *   POST   /avito/webhook/:agentId      Public (Avito → us)
- *   GET/HEAD /avito/webhook/:agentId    Logged 405 (browser checks are not webhooks)
+ *   GET /avito/webhook/:agentId         Logged 405 (HEAD follows GET in Fastify — same handler)
  *   POST   /incoming/:agentId           Alias (stealth; nginx: /api/incoming/… → /incoming/…)
- *   GET/HEAD /incoming/:agentId        Logged 405
+ *   GET /incoming/:agentId              Logged 405 (+ implicit HEAD)
  *
  * Logs: append to AVITO_LOG_DIR/avito.log (default /var/www/site-al.ru/logs/avito.log).
  * Lines: webhook-post, webhook-accepted, webhook-signature-reject, webhook-wrong-method.
@@ -346,7 +346,7 @@ module.exports = async function avitoModule(fastify) {
     });
   }
 
-  // GET/HEAD hit this URL when opened in a browser or by link-preview bots — log for diagnostics
+  // GET (и HEAD через цепочку Fastify) — браузер / боты; лог и 405. Явный HEAD не регистрируем: дублирует маршрут GET.
   async function logWebhookWrongMethod(request, reply) {
     const agentId = String(request.params.agentId ?? "").trim();
     appendAvitoLog({
@@ -360,6 +360,9 @@ module.exports = async function avitoModule(fastify) {
     process.stdout.write(
       `[avito:webhook] ${request.method} ${request.url} agent=${agentId} — Avito uses POST JSON; browser check is not a webhook.\n`
     );
+    if (request.method === "HEAD") {
+      return reply.code(405).header("Allow", "POST").send();
+    }
     return reply
       .code(405)
       .header("Allow", "POST")
@@ -372,13 +375,11 @@ module.exports = async function avitoModule(fastify) {
   // ── POST /avito/webhook/:agentId ─────────────────────────────────────────
   // Legacy URL — kept for backward compatibility (existing Avito console configs)
   fastify.get("/avito/webhook/:agentId", logWebhookWrongMethod);
-  fastify.head("/avito/webhook/:agentId", logWebhookWrongMethod);
   fastify.post("/avito/webhook/:agentId", handleWebhook);
 
   // ── POST /incoming/:agentId ──────────────────────────────────────────────
   // Stealth alias — same logic, no "avito" keyword in URL (avoids external blocking)
   fastify.get("/incoming/:agentId", logWebhookWrongMethod);
-  fastify.head("/incoming/:agentId", logWebhookWrongMethod);
   fastify.post("/incoming/:agentId", handleWebhook);
 
   // ══════════════════════════════════════════════════════════════════════════
