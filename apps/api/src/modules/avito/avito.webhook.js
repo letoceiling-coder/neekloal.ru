@@ -98,11 +98,30 @@ function redactHeadersForLog(headers) {
   return out;
 }
 
+/** Avito V3 webhook часто кладёт тип в payload.type, а не в корень event.type */
+function avitoWebhookEventType(event) {
+  return event?.type ?? event?.payload?.type ?? null;
+}
+
+/**
+ * Сообщение в чате (нужна очередь processAvitoJob). V3: только payload.value без корневого type.
+ */
+function isAvitoInboundChatMessageEvent(event) {
+  const t = avitoWebhookEventType(event);
+  if (t === "message") return true;
+  const val = event?.payload?.value ?? {};
+  const chatId = val.chat_id != null ? String(val.chat_id).trim() : "";
+  const msgId = val.id != null ? String(val.id).trim() : "";
+  const text = String(val.content?.text ?? "").trim();
+  if (t != null && t !== "message") return false;
+  return Boolean(chatId && msgId && text);
+}
+
 function summarizeAvitoWebhookEvent(event) {
   const val = event?.payload?.value ?? {};
   const text = String(val.content?.text ?? "");
   return {
-    eventType: event?.type ?? null,
+    eventType: avitoWebhookEventType(event),
     chatId: val.chat_id != null ? String(val.chat_id) : null,
     authorId: val.author_id != null ? String(val.author_id) : null,
     messageId: val.id != null ? String(val.id) : null,
@@ -274,7 +293,7 @@ module.exports = async function avitoModule(fastify) {
       ...summary,
     });
     process.stdout.write(
-      `[avito:webhook] accepted eventId=${eventId} type=${event?.type ?? "?"} agentId=${agentId}\n`
+      `[avito:webhook] accepted eventId=${eventId} type=${avitoWebhookEventType(event) ?? "?"} agentId=${agentId}\n`
     );
 
     // ACK immediately — Avito retries on slow responses
@@ -289,11 +308,13 @@ module.exports = async function avitoModule(fastify) {
           return;
         }
 
-        if (event?.type !== "message") {
+        if (!isAvitoInboundChatMessageEvent(event)) {
           await prisma.avitoWebhookEvent.create({
-            data: { id: eventId, agentId, type: event?.type ?? "unknown", payload: event ?? {} },
+            data: { id: eventId, agentId, type: avitoWebhookEventType(event) ?? "unknown", payload: event ?? {} },
           });
-          process.stdout.write(`[avito:webhook] non-message type=${event?.type} — stored\n`);
+          process.stdout.write(
+            `[avito:webhook] non-message type=${avitoWebhookEventType(event) ?? "undefined"} — stored\n`
+          );
           return;
         }
 
