@@ -506,6 +506,12 @@ model AvitoAccount {
   name           String?
   /// Avito OAuth bearer token
   accessToken    String       @map("access_token") @db.Text
+  /// Optional Avito OAuth client_id for automatic token refresh
+  clientId       String?      @map("client_id")
+  /// Optional Avito OAuth client_secret for automatic token refresh
+  clientSecret   String?      @map("client_secret") @db.Text
+  /// Expiration time for accessToken (when obtained via client_credentials)
+  accessTokenExpiresAt DateTime? @map("access_token_expires_at")
   /// Numeric Avito account / user ID (used for anti-loop and API calls)
   accountId      String       @map("account_id")
   /// Optional HMAC secret for webhook signature verification

@@ -24,8 +24,9 @@
  *   [followup:close]   lead marked LOST after step 3
  */
 
-const prisma          = require("../../lib/prisma");
-const { createClient } = require("../../services/avitoClient");
+const prisma                     = require("../../lib/prisma");
+const { createClient }           = require("../../services/avitoClient");
+const { resolveAccountCredentials } = require("./avito.credentials");
 
 // ── Follow-up message templates (step-specific) ───────────────────────────────
 
@@ -95,7 +96,8 @@ async function processFollowUpJob(job) {
   if (agent.avitoAccount?.isActive) {
     const acc = agent.avitoAccount;
     try {
-      avitoClient = createClient({ token: acc.accessToken, accountId: acc.accountId });
+      const creds = await resolveAccountCredentials(acc);
+      avitoClient = createClient({ token: creds.accessToken, accountId: creds.accountId });
     } catch (e) {
       process.stderr.write(`[followup:processor] DB account invalid: ${e.message}\n`);
     }

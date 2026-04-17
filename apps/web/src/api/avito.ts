@@ -11,6 +11,7 @@ export interface AvitoAccount {
   accountId:        string;
   isActive:         boolean;
   hasToken:         boolean;
+  hasAppCredentials?: boolean;
   hasWebhookSecret: boolean;
   createdAt:        string;
   updatedAt:        string;
@@ -18,8 +19,10 @@ export interface AvitoAccount {
 
 export interface CreateAvitoAccountInput {
   name?:          string;
-  accessToken:    string;
-  accountId:      string;
+  accessToken?:   string;
+  accountId?:     string;
+  clientId?:      string;
+  clientSecret?:  string;
   webhookSecret?: string;
   isActive?:      boolean;
 }
@@ -28,6 +31,8 @@ export interface PatchAvitoAccountInput {
   name?:          string | null;
   accessToken?:   string;
   accountId?:     string;
+  clientId?:      string | null;
+  clientSecret?:  string | null;
   webhookSecret?: string | null;
   isActive?:      boolean;
 }
@@ -218,6 +223,50 @@ export interface AvitoTestSendResult {
   result: unknown;
 }
 
+export interface AvitoWebhookStatus {
+  lastEventTime: string | null;
+  lastChatId: string | null;
+  deliveryStatus: "ok" | "error" | "unknown";
+  invalidSignatureCount: number;
+}
+
+export interface AvitoRegisterMessengerWebhookResult {
+  ok: boolean;
+  webhookUrl: string;
+  avito: unknown;
+  subscriptions: unknown;
+}
+
+export interface AvitoChatMessage {
+  id?: string;
+  chat_id?: string;
+  author_id?: string | number;
+  created?: number;
+  direction?: "in" | "out" | string;
+  type?: string;
+  content?: {
+    text?: string;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface AvitoChatSummary {
+  id?: string;
+  chat_id?: string;
+  created?: number;
+  updated?: number;
+  users?: Array<{ id?: string | number; name?: string }>;
+  last_message?: {
+    author_id?: string | number;
+    created?: number;
+    direction?: "in" | "out" | string;
+    content?: { text?: string; [key: string]: unknown };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
 export function useAvitoSync() {
   const qc = useQueryClient();
   return useMutation({
@@ -244,5 +293,59 @@ export function useAvitoTestSend() {
   return useMutation({
     mutationFn: (body: { chatId: string; text?: string }) =>
       apiClient.post<AvitoTestSendResult>("/avito/test-send", body),
+  });
+}
+
+export function useAvitoChatMessages() {
+  return useMutation({
+    mutationFn: (chatId: string) =>
+      apiClient.get<{ messages: AvitoChatMessage[] }>(`/avito/chats/${encodeURIComponent(chatId)}/messages`),
+  });
+}
+
+export function useAvitoChats(refetchIntervalMs?: number) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery({
+    queryKey: ["avito-chats-live"],
+    queryFn: () => apiClient.get<{ chats: AvitoChatSummary[] }>("/avito/chats"),
+    enabled: Boolean(accessToken),
+    staleTime: 0,
+    refetchInterval: typeof refetchIntervalMs === "number" ? refetchIntervalMs : false,
+    retry: false,
+  });
+}
+
+export function useAvitoChatMessagesQuery(chatId: string | null, refetchIntervalMs?: number) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery({
+    queryKey: ["avito-chat-messages", chatId],
+    queryFn: () => apiClient.get<{ messages: AvitoChatMessage[] }>(`/avito/chats/${encodeURIComponent(chatId ?? "")}/messages`),
+    enabled: Boolean(accessToken) && Boolean(chatId),
+    staleTime: 0,
+    refetchInterval: chatId && typeof refetchIntervalMs === "number" ? refetchIntervalMs : false,
+    retry: false,
+  });
+}
+
+export function useAvitoWebhookStatus() {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery({
+    queryKey: ["avito-webhook-status"],
+    queryFn: () => apiClient.get<AvitoWebhookStatus>("/avito/webhook-status"),
+    enabled: Boolean(accessToken),
+    staleTime: 0,
+    retry: false,
+  });
+}
+
+/** Вызывает Avito API POST /messenger/v3/webhook для URL вида {base}/{agentId}. */
+export function useRegisterAvitoMessengerWebhook() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { agentId: string; webhookBaseUrl?: string }) =>
+      apiClient.post<AvitoRegisterMessengerWebhookResult>("/avito/messenger/register-webhook", body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["avito-webhook-status"] });
+    },
   });
 }

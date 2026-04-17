@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import React, { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Store, CheckCircle2, XCircle, Copy, RefreshCw, Loader2,
   MessageSquare, ClipboardList, ChevronDown, Zap, Users,
@@ -22,8 +22,13 @@ import {
   useAvitoTokenCheck,
   useAvitoDialogs,
   useAvitoTestSend,
+  useAvitoChats,
+  useAvitoChatMessagesQuery,
+  useAvitoWebhookStatus,
+  useRegisterAvitoMessengerWebhook,
   type AvitoAccount,
-  type AvitoConversation,
+  type AvitoChatSummary,
+  type AvitoChatMessage,
   type AvitoAuditLog,
   type AvitoSyncResult,
   type AvitoTokenCheckResult,
@@ -52,6 +57,46 @@ function modeDesc(v: string) {
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleString("ru-RU", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
+function fmtUnix(ts?: number) {
+  if (!ts) return "—";
+  return new Date(ts * 1000).toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+function pickChatId(chat: AvitoChatSummary): string {
+  return String(chat.id ?? chat.chat_id ?? "").trim();
+}
+function chatPreview(chat: AvitoChatSummary): string {
+  const text = chat.last_message?.content?.text;
+  if (text && text.trim()) return text.trim();
+  return "Сообщение без text-поля";
+}
+function initialChatIdFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const p = window.location.pathname;
+  const legacyPrefix = "/avito/chatId=";
+  if (p.startsWith(legacyPrefix)) {
+    const chatId = decodeURIComponent(p.slice(legacyPrefix.length));
+    return chatId && chatId.trim() ? chatId.trim() : null;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const chatId = params.get("chatId");
+  return chatId && chatId.trim() ? chatId.trim() : null;
+}
+function setChatIdInUrl(chatId: string | null) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (chatId && chatId.trim()) {
+    url.searchParams.set("chatId", chatId.trim());
+  } else {
+    url.searchParams.delete("chatId");
+  }
+  const canonicalPath = "/avito";
+  window.history.replaceState({}, "", `${canonicalPath}${url.search}${url.hash}`);
+}
 function intentColor(intent: string) {
   const map: Record<string, string> = {
     price_inquiry: "text-violet-700 bg-violet-50", availability: "text-blue-700 bg-blue-50",
@@ -67,7 +112,15 @@ function intentColor(intent: string) {
 
 interface AccountFormProps {
   initial?: Partial<AvitoAccount & { accessToken?: string }>;
-  onSave:   (data: { name: string; accessToken: string; accountId: string; webhookSecret: string; isActive: boolean }) => void;
+  onSave:   (data: {
+    name: string;
+    accessToken: string;
+    accountId: string;
+    clientId: string;
+    clientSecret: string;
+    webhookSecret: string;
+    isActive: boolean;
+  }) => void;
   onCancel: () => void;
   loading:  boolean;
 }
@@ -76,6 +129,8 @@ function AccountForm({ initial, onSave, onCancel, loading }: AccountFormProps) {
   const [name,          setName]          = useState(initial?.name ?? "");
   const [accessToken,   setAccessToken]   = useState(initial?.accessToken ?? "");
   const [accountId,     setAccountId]     = useState(initial?.accountId ?? "");
+  const [clientId,      setClientId]      = useState("");
+  const [clientSecret,  setClientSecret]  = useState("");
   const [webhookSecret, setWebhookSecret] = useState("");
   const [isActive,      setIsActive]      = useState(initial?.isActive ?? true);
   const [showToken,     setShowToken]     = useState(false);
@@ -84,9 +139,20 @@ function AccountForm({ initial, onSave, onCancel, loading }: AccountFormProps) {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!isEdit && !accessToken.trim()) return;
-    if (!accountId.trim()) return;
-    onSave({ name: name.trim(), accessToken: accessToken.trim(), accountId: accountId.trim(), webhookSecret: webhookSecret.trim(), isActive });
+    const hasAppCreds = Boolean(clientId.trim() && clientSecret.trim());
+    if (!hasAppCreds) {
+      if (!isEdit && !accessToken.trim()) return;
+      if (!accountId.trim()) return;
+    }
+    onSave({
+      name: name.trim(),
+      accessToken: accessToken.trim(),
+      accountId: accountId.trim(),
+      clientId: clientId.trim(),
+      clientSecret: clientSecret.trim(),
+      webhookSecret: webhookSecret.trim(),
+      isActive,
+    });
   }
 
   return (
@@ -102,12 +168,30 @@ function AccountForm({ initial, onSave, onCancel, loading }: AccountFormProps) {
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-neutral-600">Account ID <span className="text-red-400">*</span></label>
+          <label className="mb-1 block text-xs font-medium text-neutral-600">Client ID (рекомендуется)</label>
+          <input
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            placeholder="DhbnqKWgtKWV-B8dHHEC"
+            className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-neutral-600">Client Secret (рекомендуется)</label>
+          <input
+            type={showToken ? "text" : "password"}
+            value={clientSecret}
+            onChange={(e) => setClientSecret(e.target.value)}
+            placeholder="3SlLfRKLafe..."
+            className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-neutral-600">Account ID (опц., авто при client creds)</label>
           <input
             value={accountId}
             onChange={(e) => setAccountId(e.target.value)}
             placeholder="123456789"
-            required={!isEdit}
             className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none"
           />
         </div>
@@ -115,15 +199,14 @@ function AccountForm({ initial, onSave, onCancel, loading }: AccountFormProps) {
 
       <div>
         <label className="mb-1 block text-xs font-medium text-neutral-600">
-          Access Token {isEdit ? "(оставьте пустым чтобы не менять)" : <span className="text-red-400">*</span>}
+          Access Token (опц., авто при client creds)
         </label>
         <div className="relative">
           <input
             type={showToken ? "text" : "password"}
             value={accessToken}
             onChange={(e) => setAccessToken(e.target.value)}
-            placeholder={isEdit ? "••••••••• (не изменять)" : "Bearer token из Avito Developer Console"}
-            required={!isEdit}
+            placeholder={isEdit ? "••••••••• (не изменять)" : "Можно не заполнять, если указаны client_id/client_secret"}
             className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 pr-9 text-sm placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none"
           />
           <button
@@ -257,6 +340,11 @@ function AccountCard({
             <CheckCircle2 className="h-3 w-3 text-emerald-500" /> Token OK
           </span>
         )}
+        {account.hasAppCredentials && (
+          <span className="flex items-center gap-1 rounded-md bg-white/80 border border-neutral-200 px-2 py-0.5 text-[11px] text-neutral-500">
+            <KeyRound className="h-3 w-3 text-blue-500" /> OAuth App
+          </span>
+        )}
         {account.hasWebhookSecret && (
           <span className="flex items-center gap-1 rounded-md bg-white/80 border border-neutral-200 px-2 py-0.5 text-[11px] text-neutral-500">
             <ShieldCheck className="h-3 w-3 text-blue-500" /> Webhook Secret
@@ -282,6 +370,7 @@ function AgentRow({
   onCopy:   (id: string) => void;
 }) {
   const patchAgent = usePatchAvitoAgent();
+  const registerWh = useRegisterAvitoMessengerWebhook();
   const [modeOpen,    setModeOpen]    = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
 
@@ -391,8 +480,28 @@ function AgentRow({
               ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
               : <Copy className="h-3.5 w-3.5" />}
           </button>
+          <button
+            type="button"
+            disabled={!linkedAccount || registerWh.isPending}
+            onClick={() => registerWh.mutate({ agentId: agent.id })}
+            className="ml-0.5 inline-flex items-center gap-1 rounded border border-neutral-200 bg-white px-2 py-0.5 text-[10px] font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-45"
+            title="Вызвать Avito API: POST /messenger/v3/webhook с этим URL (нужен привязанный аккаунт и токен)"
+          >
+            {registerWh.isPending && registerWh.variables?.agentId === agent.id ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : null}
+            В Avito
+          </button>
         </div>
       </div>
+      {registerWh.isError && registerWh.variables?.agentId === agent.id && (
+        <p className="mt-2 text-[10px] text-red-600 break-all">
+          {(registerWh.error as Error)?.message ?? String(registerWh.error)}
+        </p>
+      )}
+      {registerWh.isSuccess && registerWh.data?.ok && registerWh.variables?.agentId === agent.id && (
+        <p className="mt-2 text-[10px] text-emerald-600">URL зарегистрирован в Avito (см. ответ API в Network).</p>
+      )}
     </div>
   );
 }
@@ -447,8 +556,9 @@ export function AvitoPage() {
     queryFn:  () => apiClient.get<Agent[]>("/agents"),
     enabled:  Boolean(accessToken),
   });
-  const { data: conversations, isLoading: convsLoading  } = useAvitoConversations();
+  const { data: conversations } = useAvitoConversations();
   const { data: auditLogs,     isLoading: auditLoading  } = useAvitoAudit();
+  const { data: webhookStatus } = useAvitoWebhookStatus();
 
   // Mutations
   const createAccount = useCreateAvitoAccount();
@@ -460,6 +570,7 @@ export function AvitoPage() {
   const tokenCheckMutation = useAvitoTokenCheck();
   const dialogsMutation    = useAvitoDialogs();
   const testSendMutation   = useAvitoTestSend();
+  const { data: liveChatsData, isLoading: liveChatsLoading, error: liveChatsError } = useAvitoChats();
 
   // UI state
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -467,6 +578,14 @@ export function AvitoPage() {
   const [copiedId,       setCopiedId]       = useState<string | null>(null);
   const [expandedAudit,  setExpandedAudit]  = useState<string | null>(null);
   const [testChatId,     setTestChatId]     = useState("");
+  const [selectedChatId, setSelectedChatId] = useState<string | null>(initialChatIdFromUrl);
+  const [replyText,      setReplyText]      = useState("");
+  const [chatSearch,     setChatSearch]     = useState("");
+  const [chatFilter,     setChatFilter]     = useState<"all" | "unread">("all");
+  const [unreadByChatId, setUnreadByChatId] = useState<Record<string, number>>({});
+  const messagesBoxRef = useRef<HTMLUListElement | null>(null);
+  const chatMessagesQuery = useAvitoChatMessagesQuery(selectedChatId);
+  const qc = useQueryClient();
 
   // Derived status
   const activeAccounts = accounts?.filter((a) => a.isActive && a.hasToken) ?? [];
@@ -478,28 +597,187 @@ export function AvitoPage() {
     setTimeout(() => setCopiedId(null), 1800);
   }
 
-  async function handleCreate(data: { name: string; accessToken: string; accountId: string; webhookSecret: string; isActive: boolean }) {
+  async function handleCreate(data: {
+    name: string;
+    accessToken: string;
+    accountId: string;
+    clientId: string;
+    clientSecret: string;
+    webhookSecret: string;
+    isActive: boolean;
+  }) {
     await createAccount.mutateAsync({
       name:          data.name || undefined,
-      accessToken:   data.accessToken,
-      accountId:     data.accountId,
+      ...(data.accessToken ? { accessToken: data.accessToken } : {}),
+      ...(data.accountId ? { accountId: data.accountId } : {}),
+      ...(data.clientId ? { clientId: data.clientId } : {}),
+      ...(data.clientSecret ? { clientSecret: data.clientSecret } : {}),
       webhookSecret: data.webhookSecret || undefined,
       isActive:      data.isActive,
     });
     setShowCreateForm(false);
   }
 
-  async function handleEdit(id: string, data: { name: string; accessToken: string; accountId: string; webhookSecret: string; isActive: boolean }) {
+  async function handleEdit(id: string, data: {
+    name: string;
+    accessToken: string;
+    accountId: string;
+    clientId: string;
+    clientSecret: string;
+    webhookSecret: string;
+    isActive: boolean;
+  }) {
     await patchAccount.mutateAsync({
       id,
       name:          data.name || null,
       ...(data.accessToken ? { accessToken: data.accessToken } : {}),
-      accountId:     data.accountId,
+      ...(data.accountId ? { accountId: data.accountId } : {}),
+      ...(data.clientId ? { clientId: data.clientId } : {}),
+      ...(data.clientSecret ? { clientSecret: data.clientSecret } : {}),
       webhookSecret: data.webhookSecret || null,
       isActive:      data.isActive,
     });
     setEditingId(null);
   }
+
+  function openChat(chatId: string) {
+    const id = chatId.trim();
+    if (!id) return;
+    setSelectedChatId(id);
+    setChatIdInUrl(id);
+    setUnreadByChatId((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }
+
+  const liveChats = liveChatsData?.chats ?? [];
+  const filteredChats = liveChats.filter((chat) => {
+    const id = pickChatId(chat);
+    const unread = (unreadByChatId[id] ?? 0) > 0;
+    if (chatFilter === "unread" && !unread) return false;
+    const q = chatSearch.trim().toLowerCase();
+    if (!q) return true;
+    const name = String(chat.users?.[0]?.name ?? "").toLowerCase();
+    const preview = chatPreview(chat).toLowerCase();
+    return id.toLowerCase().includes(q) || name.includes(q) || preview.includes(q);
+  });
+  useEffect(() => {
+    if (!selectedChatId && liveChats.length > 0) {
+      const firstId = pickChatId(liveChats[0]);
+      if (firstId) setSelectedChatId(firstId);
+    }
+  }, [selectedChatId, liveChats]);
+
+  useEffect(() => {
+    setChatIdInUrl(selectedChatId);
+  }, [selectedChatId]);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    let stopped = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let controller: AbortController | null = null;
+
+    const connect = async () => {
+      controller = new AbortController();
+      try {
+        const res = await fetch("/api/avito/events/stream", {
+          method: "GET",
+          headers: {
+            Accept: "text/event-stream",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          signal: controller.signal,
+        });
+        if (!res.ok || !res.body) throw new Error(`Stream failed: ${res.status}`);
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (!stopped) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let marker = buffer.indexOf("\n\n");
+          while (marker >= 0) {
+            const chunk = buffer.slice(0, marker);
+            buffer = buffer.slice(marker + 2);
+            const dataLine = chunk
+              .split("\n")
+              .find((line) => line.startsWith("data:"));
+            if (dataLine) {
+              const payloadRaw = dataLine.slice("data:".length).trim();
+              try {
+                const evt = JSON.parse(payloadRaw) as { chatId?: string; type?: string };
+                if (evt?.type === "message") {
+                  void qc.invalidateQueries({ queryKey: ["avito-chats-live"] });
+                  void qc.invalidateQueries({ queryKey: ["avito-conversations"] });
+                  if (evt.chatId && selectedChatId && evt.chatId === selectedChatId) {
+                    void qc.invalidateQueries({ queryKey: ["avito-chat-messages", selectedChatId] });
+                  }
+                  if (evt.chatId && (!selectedChatId || evt.chatId !== selectedChatId)) {
+                    setUnreadByChatId((prev) => ({
+                      ...prev,
+                      [evt.chatId!]: (prev[evt.chatId!] ?? 0) + 1,
+                    }));
+                  }
+                }
+                if (evt?.type === "status" || evt?.type === "message") {
+                  void qc.invalidateQueries({ queryKey: ["avito-webhook-status"] });
+                }
+              } catch {
+                // ignore malformed data lines
+              }
+            }
+            marker = buffer.indexOf("\n\n");
+          }
+        }
+      } catch {
+        // reconnect below
+      } finally {
+        if (!stopped) reconnectTimer = setTimeout(connect, 2000);
+      }
+    };
+
+    void connect();
+    return () => {
+      stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      controller?.abort();
+    };
+  }, [accessToken, qc, selectedChatId]);
+
+  async function sendReplyFromChatPanel() {
+    const chatId = String(selectedChatId ?? "").trim();
+    const text = replyText.trim();
+    if (!chatId || !text) return;
+    await testSendMutation.mutateAsync({ chatId, text });
+    setReplyText("");
+    void qc.invalidateQueries({ queryKey: ["avito-chat-messages", chatId] });
+    void qc.invalidateQueries({ queryKey: ["avito-chats-live"] });
+    void qc.invalidateQueries({ queryKey: ["avito-conversations"] });
+  }
+
+  useEffect(() => {
+    if (!messagesBoxRef.current) return;
+    // When user switches chats, always jump to latest messages.
+    messagesBoxRef.current.scrollTop = messagesBoxRef.current.scrollHeight;
+  }, [selectedChatId]);
+
+  useEffect(() => {
+    if (!messagesBoxRef.current) return;
+    const el = messagesBoxRef.current;
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // Keep chat pinned to bottom when user is already near bottom.
+    if (distanceToBottom < 120) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [chatMessagesQuery.data]);
 
   return (
     <div className="space-y-5 transition-all duration-200 ease-out">
@@ -816,122 +1094,295 @@ export function AvitoPage() {
         </CardContent>
       </Card>
 
-      {/* ── Conversations + Audit ─────────────────────────────────────────── */}
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Users className="h-4 w-4 text-blue-500" />
-              <h2 className="text-sm font-semibold text-neutral-800">Последние диалоги</h2>
+              <h2 className="text-sm font-semibold text-neutral-800">Входящие Avito</h2>
             </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            {convsLoading ? (
-              <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-neutral-300" /></div>
-            ) : !conversations?.length ? (
-              <p className="py-8 text-center text-sm text-neutral-400">Нет диалогов</p>
-            ) : (
-              <ul className="divide-y divide-neutral-100">
-                {(conversations as AvitoConversation[]).slice(0, 10).map((conv) => (
-                  <li key={conv.id} className="flex items-start gap-3 px-5 py-3">
-                    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-600">
-                      {String(conv.externalUserId ?? "?").slice(-2)}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="truncate text-xs font-medium text-neutral-700">{conv.chatId || "—"}</p>
-                        <span className="shrink-0 text-[10px] text-neutral-400">{fmtDate(conv.updatedAt)}</span>
-                      </div>
-                      <p className="text-[11px] text-neutral-400">{conv.messageCount} сообщ. · user {conv.externalUserId}</p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <ClipboardList className="h-4 w-4 text-violet-500" />
-              <h2 className="text-sm font-semibold text-neutral-800">Журнал аудита</h2>
-            </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            {auditLoading ? (
-              <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-neutral-300" /></div>
-            ) : !auditLogs?.length ? (
-              <p className="py-8 text-center text-sm text-neutral-400">Нет записей</p>
-            ) : (
-              <ul className="divide-y divide-neutral-100">
-                {(auditLogs as AvitoAuditLog[]).slice(0, 10).map((log) => (
-                  <li key={log.id}>
-                    <button
-                      type="button"
-                      onClick={() => setExpandedAudit(expandedAudit === log.id ? null : log.id)}
-                      className="w-full px-5 py-3 text-left hover:bg-neutral-50 transition-colors"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          {log.success
-                            ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
-                            : <XCircle      className="h-3.5 w-3.5 shrink-0 text-red-400" />}
-                          <span className={["shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium", modeStyle(log.decision)].join(" ")}>
-                            {log.decision}
-                          </span>
-                          {log.classification?.intent && (
-                            <span className={["shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium", intentColor(log.classification.intent)].join(" ")}>
-                              {log.classification.intent}
-                            </span>
-                          )}
-                          <span className="truncate text-xs text-neutral-500">{log.chatId}</span>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          {log.durationMs != null && (
-                            <span className="flex items-center gap-0.5 text-[10px] text-neutral-400">
-                              <Clock className="h-3 w-3" />{log.durationMs}ms
-                            </span>
-                          )}
-                          <ChevronDown className={["h-3.5 w-3.5 text-neutral-400 transition-transform", expandedAudit === log.id ? "rotate-180" : ""].join(" ")} />
-                        </div>
-                      </div>
-                      <p className="mt-1 truncate text-left text-[11px] text-neutral-400">
-                        {log.input.slice(0, 80)}{log.input.length > 80 ? "…" : ""}
-                      </p>
-                    </button>
-                    {expandedAudit === log.id && (
-                      <div className="border-t border-neutral-100 bg-neutral-50 px-5 py-3 space-y-2">
-                        <div>
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400 mb-0.5">Вопрос</p>
-                          <p className="text-xs text-neutral-700">{log.input}</p>
-                        </div>
-                        {log.output && (
-                          <div>
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400 mb-0.5">Ответ ИИ</p>
-                            <p className="text-xs text-neutral-600 leading-relaxed">{log.output.slice(0, 300)}{log.output.length > 300 ? "…" : ""}</p>
+            <span className="text-xs text-neutral-500">Обновляется по webhook-событиям</span>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="grid min-h-[640px] grid-cols-[340px_minmax(0,1fr)]">
+            <div className="border-r border-neutral-100">
+              <div className="sticky top-0 z-10 border-b border-neutral-100 bg-white/95 px-4 py-2 text-xs font-medium text-neutral-500 space-y-2 backdrop-blur">
+                <div>Список чатов ({filteredChats.length})</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    value={chatSearch}
+                    onChange={(e) => setChatSearch(e.target.value)}
+                    placeholder="Поиск по chatId, имени, тексту..."
+                    className="min-w-0 flex-1 rounded-md border border-neutral-200 bg-white px-2 py-1 text-[11px] placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setChatFilter("all")}
+                    className={[
+                      "rounded-md border px-2 py-1 text-[11px]",
+                      chatFilter === "all" ? "border-blue-200 bg-blue-50 text-blue-700" : "border-neutral-200 bg-white text-neutral-600",
+                    ].join(" ")}
+                  >
+                    Все
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setChatFilter("unread")}
+                    className={[
+                      "rounded-md border px-2 py-1 text-[11px]",
+                      chatFilter === "unread" ? "border-blue-200 bg-blue-50 text-blue-700" : "border-neutral-200 bg-white text-neutral-600",
+                    ].join(" ")}
+                  >
+                    Непроч.
+                  </button>
+                </div>
+              </div>
+              {liveChatsLoading ? (
+                <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-neutral-300" /></div>
+              ) : liveChatsError ? (
+                <p className="px-4 py-5 text-xs text-red-500">Не удалось загрузить чаты</p>
+              ) : !filteredChats.length ? (
+                <p className="px-4 py-5 text-xs text-neutral-400">Пока нет live-чатов</p>
+              ) : (
+                <ul className="max-h-[600px] overflow-auto divide-y divide-neutral-100">
+                  {filteredChats.map((chat, idx) => {
+                    const chatId = pickChatId(chat);
+                    const selected = chatId && selectedChatId === chatId;
+                    const userName = chat.users?.[0]?.name || "Клиент";
+                    const unreadCount = unreadByChatId[chatId] ?? 0;
+                    return (
+                      <li key={chatId || `chat-${idx}`}>
+                        <button
+                          type="button"
+                          onClick={() => openChat(chatId)}
+                          className={[
+                            "w-full px-4 py-3 text-left transition-colors",
+                            selected ? "bg-blue-50" : "hover:bg-neutral-50",
+                          ].join(" ")}
+                        >
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <p className="truncate text-xs font-medium text-neutral-700">{chatId || "без chatId"}</p>
+                            <div className="flex items-center gap-2 shrink-0">
+                              {unreadCount > 0 && (
+                                <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                                  {unreadCount}
+                                </span>
+                              )}
+                              <span className="text-[10px] text-neutral-400">{fmtUnix(chat.updated ?? chat.created)}</span>
+                            </div>
                           </div>
-                        )}
-                        <div className="flex flex-wrap gap-3 text-[10px] text-neutral-500">
-                          {log.modelUsed && <span>model: <strong>{log.modelUsed}</strong></span>}
-                          {log.classification && (
-                            <>
-                              <span>priority: <strong>{log.classification.priority}</strong></span>
-                              <span>hotLead: <strong>{log.classification.isHotLead ? "да" : "нет"}</strong></span>
-                              <span>conf: <strong>{log.classification.confidence}</strong></span>
-                            </>
-                          )}
-                          <span>{fmtDate(log.createdAt)}</span>
-                        </div>
-                      </div>
+                          <p className="truncate text-[11px] text-neutral-500">{userName} · {chatPreview(chat)}</p>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+            <div className="flex min-h-[640px] flex-col p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <p className="text-xs font-medium text-neutral-600">Переписка: {selectedChatId ?? "не выбрана"}</p>
+                <button
+                  type="button"
+                  onClick={() => chatMessagesQuery.refetch()}
+                  disabled={!selectedChatId || chatMessagesQuery.isFetching}
+                  className="flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2.5 py-1 text-xs text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
+                >
+                  <RefreshCw className={["h-3.5 w-3.5", chatMessagesQuery.isFetching ? "animate-spin" : ""].join(" ")} />
+                  Обновить
+                </button>
+              </div>
+              {!selectedChatId ? (
+                <p className="text-xs text-neutral-400">Выберите чат слева.</p>
+              ) : chatMessagesQuery.isLoading ? (
+                <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-neutral-300" /></div>
+              ) : chatMessagesQuery.error ? (
+                <ErrorRow label="Чат" message={(chatMessagesQuery.error as Error).message} />
+              ) : (
+                <div className="flex h-full flex-1 flex-col gap-3">
+                  <ul
+                    ref={messagesBoxRef}
+                    className="h-[470px] space-y-2 overflow-auto rounded-lg border border-neutral-200 bg-neutral-50 p-3"
+                  >
+                    {(chatMessagesQuery.data?.messages ?? []).map((m: AvitoChatMessage, idx: number) => {
+                      const isOut = m.direction === "out";
+                      const txt = m.content?.text || (typeof m.content === "string" ? m.content : "");
+                      return (
+                        <li
+                          key={m.id ?? `${m.created ?? "x"}-${idx}`}
+                          className={[
+                            "rounded-lg border px-3 py-2 text-xs",
+                            isOut ? "border-emerald-200 bg-emerald-50" : "border-white bg-white",
+                          ].join(" ")}
+                        >
+                          <div className="mb-1 flex items-center justify-between gap-2 text-[10px] text-neutral-500">
+                            <span>{isOut ? "Мы" : `Клиент ${m.author_id ?? "?"}`}</span>
+                            <span>{fmtUnix(m.created)}</span>
+                          </div>
+                          <p className="whitespace-pre-wrap break-words text-neutral-700">{txt || "Сообщение без text-поля"}</p>
+                        </li>
+                      );
+                    })}
+                    {!(chatMessagesQuery.data?.messages ?? []).length && (
+                      <li className="text-xs text-neutral-500">Сообщений пока нет.</li>
                     )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+                  </ul>
+                  <div className="rounded-lg border border-neutral-200 bg-white p-3">
+                    <p className="mb-2 text-xs font-medium text-neutral-600">Ответить в чат</p>
+                    <div className="flex gap-2">
+                      <input
+                        value={replyText}
+                        onChange={(e) => setReplyText(e.target.value)}
+                        placeholder="Введите ответ клиенту..."
+                        className="flex-1 rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-xs placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void sendReplyFromChatPanel()}
+                        disabled={testSendMutation.isPending || !replyText.trim() || !selectedChatId}
+                        className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        {testSendMutation.isPending ? "Отправка..." : "Отправить"}
+                      </button>
+                    </div>
+                    {testSendMutation.error && (
+                      <p className="mt-2 text-[11px] text-red-600">{(testSendMutation.error as Error).message}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-emerald-500" />
+            <h2 className="text-sm font-semibold text-neutral-800">Webhook status</h2>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3">
+              <p className="text-[11px] text-neutral-500">Последнее событие</p>
+              <p className="mt-1 text-xs font-medium text-neutral-700">
+                {webhookStatus?.lastEventTime ? new Date(webhookStatus.lastEventTime).toLocaleString("ru-RU") : "—"}
+              </p>
+            </div>
+            <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3">
+              <p className="text-[11px] text-neutral-500">Последний chatId</p>
+              <p className="mt-1 truncate text-xs font-medium text-neutral-700">{webhookStatus?.lastChatId ?? "—"}</p>
+            </div>
+            <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3">
+              <p className="text-[11px] text-neutral-500">Статус доставки</p>
+              <p className="mt-1 text-xs font-medium">
+                <span className={[
+                  "rounded px-2 py-0.5",
+                  webhookStatus?.deliveryStatus === "ok"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : webhookStatus?.deliveryStatus === "error"
+                      ? "bg-red-100 text-red-700"
+                      : "bg-neutral-200 text-neutral-600",
+                ].join(" ")}>
+                  {webhookStatus?.deliveryStatus === "ok"
+                    ? "ok"
+                    : webhookStatus?.deliveryStatus === "error"
+                      ? "error"
+                      : "нет данных"}
+                </span>
+              </p>
+            </div>
+            <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3">
+              <p className="text-[11px] text-neutral-500">Невалидных подписей</p>
+              <p className="mt-1 text-xs font-medium text-neutral-700">{webhookStatus?.invalidSignatureCount ?? 0}</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <ClipboardList className="h-4 w-4 text-violet-500" />
+            <h2 className="text-sm font-semibold text-neutral-800">Журнал аудита</h2>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          {auditLoading ? (
+            <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-neutral-300" /></div>
+          ) : !auditLogs?.length ? (
+            <p className="py-8 text-center text-sm text-neutral-400">Нет записей</p>
+          ) : (
+            <ul className="divide-y divide-neutral-100">
+              {(auditLogs as AvitoAuditLog[]).slice(0, 10).map((log) => (
+                <li key={log.id}>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedAudit(expandedAudit === log.id ? null : log.id)}
+                    className="w-full px-5 py-3 text-left hover:bg-neutral-50 transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {log.success
+                          ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                          : <XCircle      className="h-3.5 w-3.5 shrink-0 text-red-400" />}
+                        <span className={["shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium", modeStyle(log.decision)].join(" ")}>
+                          {log.decision}
+                        </span>
+                        {log.classification?.intent && (
+                          <span className={["shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium", intentColor(log.classification.intent)].join(" ")}>
+                            {log.classification.intent}
+                          </span>
+                        )}
+                        <span className="truncate text-xs text-neutral-500">{log.chatId}</span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {log.durationMs != null && (
+                          <span className="flex items-center gap-0.5 text-[10px] text-neutral-400">
+                            <Clock className="h-3 w-3" />{log.durationMs}ms
+                          </span>
+                        )}
+                        <ChevronDown className={["h-3.5 w-3.5 text-neutral-400 transition-transform", expandedAudit === log.id ? "rotate-180" : ""].join(" ")} />
+                      </div>
+                    </div>
+                    <p className="mt-1 truncate text-left text-[11px] text-neutral-400">
+                      {log.input.slice(0, 80)}{log.input.length > 80 ? "…" : ""}
+                    </p>
+                  </button>
+                  {expandedAudit === log.id && (
+                    <div className="border-t border-neutral-100 bg-neutral-50 px-5 py-3 space-y-2">
+                      <div>
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400 mb-0.5">Вопрос</p>
+                        <p className="text-xs text-neutral-700">{log.input}</p>
+                      </div>
+                      {log.output && (
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400 mb-0.5">Ответ ИИ</p>
+                          <p className="text-xs text-neutral-600 leading-relaxed">{log.output.slice(0, 300)}{log.output.length > 300 ? "…" : ""}</p>
+                        </div>
+                      )}
+                      <div className="flex flex-wrap gap-3 text-[10px] text-neutral-500">
+                        {log.modelUsed && <span>model: <strong>{log.modelUsed}</strong></span>}
+                        {log.classification && (
+                          <>
+                            <span>priority: <strong>{log.classification.priority}</strong></span>
+                            <span>hotLead: <strong>{log.classification.isHotLead ? "да" : "нет"}</strong></span>
+                            <span>conf: <strong>{log.classification.confidence}</strong></span>
+                          </>
+                        )}
+                        <span>{fmtDate(log.createdAt)}</span>
+                      </div>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ── Pipeline docs ──────────────────────────────────────────────────── */}
       <Card>

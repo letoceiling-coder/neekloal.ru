@@ -28,6 +28,7 @@ const prisma                              = require("../../lib/prisma");
 const { agentChatV2,
         findOrCreateExternalConversation } = require("../../services/agentRuntimeV2");
 const { createClient }                    = require("../../services/avitoClient");
+const { resolveAccountCredentials }       = require("./avito.credentials");
 const { classifyMessage }                 = require("./avito.classifier");
 const { routeMessage }                    = require("./avito.router");
 const { saveAudit }                       = require("./avito.audit");
@@ -100,9 +101,10 @@ async function processAvitoJob(job) {
 
     if (agent.avitoAccount?.isActive) {
       const acc = agent.avitoAccount;
-      myAccountId = acc.accountId;
       try {
-        avitoClient = createClient({ token: acc.accessToken, accountId: acc.accountId });
+        const creds = await resolveAccountCredentials(acc);
+        myAccountId = creds.accountId;
+        avitoClient = createClient({ token: creds.accessToken, accountId: creds.accountId });
         process.stdout.write(`[avito:processor] using DB account id=${acc.id} name="${acc.name ?? ""}"\n`);
       } catch (e) {
         process.stderr.write(`[avito:processor] DB account credentials invalid: ${e.message}\n`);
