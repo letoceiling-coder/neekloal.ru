@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { mapChatToSteps } from "../api/mapChatToSteps";
-import { useAgents, useRunAgentChat, usePatchAgent } from "../api/agents";
+import { useAgents, useRunAgentChat } from "../api/agents";
 import type { AgentExecutionStep } from "../api/types";
 import { useAssistants } from "../api/assistants";
 import { AgentExecutionView } from "../components/agents/AgentExecutionView";
@@ -34,15 +34,9 @@ export function AgentDetailPage() {
     return assistants.find((x) => x.id === agent.assistantId)?.model ?? null;
   }, [agent, assistants]);
 
-  const patchAgent = usePatchAgent();
   const [input,    setInput]    = useState("");
   const [steps,    setSteps]    = useState<AgentExecutionStep[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
-
-  async function setAvitoMode(mode: string) {
-    if (!agent) return;
-    await patchAgent.mutateAsync({ id: agent.id, avitoMode: mode });
-  }
 
   const agentHasTools = Boolean(agent?.tools && agent.tools.length > 0);
 
@@ -153,43 +147,14 @@ export function AgentDetailPage() {
             )}
           </p>
 
-          {/* Avito mode selector */}
-          <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 space-y-2">
-            <p className="text-xs font-semibold text-blue-700">🤖 Avito Messenger</p>
-            <div>
-              <label className="block text-[11px] font-medium text-neutral-600 mb-1">
-                Режим обработки
-              </label>
-              <select
-                value={agent.avitoMode ?? "autoreply"}
-                onChange={(e) => void setAvitoMode(e.target.value)}
-                disabled={patchAgent.isPending}
-                className="w-full rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-700 focus:outline-none focus:border-violet-400 disabled:opacity-50"
-              >
-                <option value="autoreply">autoreply — ИИ отвечает сам</option>
-                <option value="copilot">copilot — ИИ готовит, человек отправляет</option>
-                <option value="human">human — только запись, без ИИ</option>
-                <option value="off">off — игнорировать сообщения</option>
-              </select>
-            </div>
-            <div className="rounded-md border border-blue-200 bg-white px-2.5 py-1.5">
-              <p className="text-[10px] font-medium text-blue-700 mb-0.5">🔗 Webhook URL</p>
-              <code className="block break-all text-[10px] text-blue-600">
-                https://site-al.ru/api/incoming/{agent.id}
-              </code>
-            </div>
-          </div>
-
-          {/* Webhook URL hint */}
-          <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2.5">
-            <p className="text-[11px] font-medium text-blue-700 mb-0.5">🔗 Avito Webhook URL</p>
-            <code className="block break-all text-[10px] text-blue-600">
-              https://site-al.ru/api/incoming/{agent.id}
-            </code>
-            <p className="mt-1 text-[10px] text-blue-400">
-              Укажите этот URL в кабинете разработчика Avito
-            </p>
-          </div>
+          <p className="mt-3 text-xs text-neutral-500 leading-relaxed">
+            Агент здесь — только логика, модель и ассистент. Подключение каналов
+            (например Avito Messenger) настраивается отдельно:{" "}
+            <Link to="/avito" className="text-violet-700 underline underline-offset-2">
+              интеграция Avito
+            </Link>
+            — там же режим ответа, аккаунт и URL вебхука для выбранного агента.
+          </p>
         </CardContent>
       </Card>
 
