@@ -6,8 +6,9 @@
  * Base prefix: /api/v1  (registered in app.js with { prefix: "/api/v1" })
  *
  * Routes:
- *   POST /api/v1/chat          — non-streaming chat (JSON response)
- *   POST /api/v1/chat/stream   — streaming chat (SSE: event/token, event/done, event/error)
+ *   POST /api/v1/chat                    — non-streaming chat (JSON response)
+ *   POST /api/v1/chat/stream             — streaming chat (SSE: event/token, event/done, event/error)
+ *   POST /api/v1/product-photos/verify   — vision check: product card vs image URLs → active flags
  *
  * Authentication:
  *   Authorization: Bearer sk_live_…   API key (X-Api-Key also accepted)
@@ -29,6 +30,7 @@ const {
   streamAgentChat,
   createConversation,
 } = require("../services/agentRuntimeV2");
+const { verifyProductPhotos } = require("../services/productPhotoVerify");
 
 const STREAM_TIMEOUT_MS = 60_000;
 
@@ -254,6 +256,31 @@ module.exports = async function v1Routes(fastify) {
         streamEnded = true;
         raw.end();
       }
+    }
+  });
+
+  // ── POST /product-photos/verify ────────────────────────────────────────────
+  // Batch: URLs of images + product card → each row gets active true/false (vision).
+  fastify.post("/product-photos/verify", {
+    preHandler: [chatAuthMiddleware, rateLimitMiddleware],
+  }, async (request, reply) => {
+    const body = typeof request.body === "object" && request.body ? request.body : {};
+    try {
+      const out = await verifyProductPhotos({
+        productName: body.productName,
+        description: body.description,
+        color: body.color,
+        photos: body.photos,
+        options: body.options,
+      });
+      return reply.code(200).send(out);
+    } catch (err) {
+      const status = err && typeof err === "object" && err.statusCode ? err.statusCode : 500;
+      const message = err instanceof Error ? err.message : String(err);
+      if (status >= 500) {
+        request.log.error({ err }, "[v1:product-photos/verify] failed");
+      }
+      return reply.code(status).send({ error: message });
     }
   });
 };
