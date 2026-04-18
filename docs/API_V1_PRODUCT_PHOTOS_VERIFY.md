@@ -51,6 +51,7 @@
 | `minConfidence` | number (0…1) | `0.55` (или из `PRODUCT_PHOTO_VERIFY_MIN_CONFIDENCE`) | Порог: `active: true` только если модель вернула `match: true` **и** `confidence >= minConfidence`. |
 | `concurrency` | integer (1…6) | `3` | Сколько изображений обрабатывать параллельно. |
 | `language` | `"ru"` \| `"en"` | `"ru"` | Язык формулировок в `issues`. |
+| `strictColorMatch` | boolean | `true`, если в запросе задан `color` | Ужесточённая проверка цвета: модель обязана вернуть `matches_declared_color`, описание **обрезается** (см. `PRODUCT_PHOTO_VERIFY_DESC_MAX`), маркетинговые фразы вроде «другие цвета», «не только коричневый» **игнорируются** при оценке цвета кадра. `false` — прежнее поведение (слабее, не рекомендуется для модерации по цвету). |
 
 ### Пример запроса
 
@@ -84,6 +85,7 @@ JSON:
 | `color` | string \| null | Эхо |
 | `modelUsed` | string | Имя vision-модели Ollama |
 | `minConfidence` | number | Итоговый порог |
+| `strictColorMatch` | boolean \| undefined | Если был задан `color` — фактически использованный режим строгой проверки цвета |
 | `photos` | array | Результат по каждому URL |
 
 ### Элемент `photos[]` в ответе
@@ -92,9 +94,11 @@ JSON:
 |------|-----|----------|
 | `url` | string | Исходный URL |
 | `active` | boolean | `true`, если кадр признан соответствующим карточке и уверенность не ниже порога |
-| `match` | boolean | Сырой вывод модели «совпадает / не совпадает» |
+| `match` | boolean | Итог после правил (при строгом цвете: `false`, если цвет не подтверждён) |
 | `confidence` | number | Уверенность 0…1 |
 | `issues` | string[] | Замечания (например несовпадение цвета) |
+| `matchesDeclaredColor` | boolean \| null | Только при `color` и `strictColorMatch` (не legacy): подтверждает ли модель совпадение с заявленным цветом |
+| `dominantVisibleColors` | string[] | Только при строгом режиме: 1–3 доминирующих цвета по мнению модели |
 | `error` | string | Только при сбое этапа: `missing_url`, `url_not_allowed`, `fetch_failed`, `vision_failed` |
 
 ### Пример ответа
@@ -106,24 +110,36 @@ JSON:
   "color": "красный",
   "modelUsed": "llava:latest",
   "minConfidence": 0.6,
+  "strictColorMatch": true,
   "photos": [
     {
       "url": "https://cdn.example.com/items/1/a.jpg",
       "active": true,
       "match": true,
       "confidence": 0.82,
-      "issues": []
+      "issues": [],
+      "matchesDeclaredColor": true,
+      "dominantVisibleColors": ["красный"]
     },
     {
       "url": "https://cdn.example.com/items/1/b.jpg",
       "active": false,
       "match": false,
       "confidence": 0.4,
-      "issues": ["Цвет на фото не соответствует заявленному красному"]
+      "issues": ["Цвет на фото не соответствует заявленному"],
+      "matchesDeclaredColor": false,
+      "dominantVisibleColors": ["белый", "чёрный"]
     }
   ]
 }
 ```
+
+---
+
+## Цвет, маркетинг и качество модели
+
+- Длинные описания часто содержат фразы вроде «можно выбрать другой цвет» — раньше модель ошибочно принимала **любой** цвет. Сейчас при переданном **`color`** по умолчанию включён **`strictColorMatch`**: эталон цвета — только поле `color`, описание укорочено.
+- **`llava`** слабо различает оттенки и бывает уверенно неправ; для продакшена рассмотрите **`llama3.2-vision`**, **`qwen2.5-vl`** или другие vision-модели в Ollama (`VISION_MODEL`) и подберите `minConfidence` (часто **0.6–0.75** для цвета).
 
 ---
 
@@ -155,6 +171,7 @@ JSON:
 | `PRODUCT_PHOTO_VERIFY_ALLOW_HTTP` | `1` — разрешить `http://` (только для отладки) |
 | `PRODUCT_PHOTO_VERIFY_DNS_CHECK` | `0` — не резолвить DNS для проверки на private IP (слабее по SSRF) |
 | `PRODUCT_PHOTO_VERIFY_HOST_ALLOWLIST` | Список через запятую: если задан, разрешены только эти хосты или их поддомены (например `cdn.shop.ru,img.shop.ru`) |
+| `PRODUCT_PHOTO_VERIFY_DESC_MAX` | Макс. длина описания в символах, уходит в модель (по умолчанию 1800) |
 
 ---
 
