@@ -403,7 +403,6 @@ async function poolMap(items, concurrency, worker) {
  *     minConfidence?: number,
  *     concurrency?: number,
  *     language?: string,
- *     /** If false, do not require explicit matches_declared_color (legacy, weaker). Default: true when `color` is set. */
  *     strictColorMatch?: boolean,
  *   },
  * }} input
