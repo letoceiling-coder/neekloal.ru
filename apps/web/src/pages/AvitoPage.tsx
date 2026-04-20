@@ -6,6 +6,7 @@ import {
   Clock, ShieldCheck, Plus, Trash2, Pencil, Eye, EyeOff,
   ToggleLeft, ToggleRight, Link2, Send, KeyRound, RefreshCcw,
   Terminal, AlertTriangle, UserCheck, UserX, Pause,
+  FlaskConical, RotateCcw, Bot,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "../components/ui";
 import { apiClient } from "../lib/apiClient";
@@ -40,6 +41,12 @@ import {
 } from "../api/avito";
 import type { Agent, Assistant } from "../api/types";
 import { useAssistants } from "../api/assistants";
+import {
+  usePlaygroundChat,
+  type PlaygroundMessage,
+  type PlaygroundFsmStatus,
+  type PlaygroundChatResponse,
+} from "../api/avitoPlayground";
 import { Link as RouterLink } from "react-router-dom";
 
 const WEBHOOK_BASE = "https://site-al.ru/api/incoming";
@@ -50,6 +57,7 @@ const AVITO_TAB_STORAGE_KEY = "avitoPage:activeTab";
 
 type AvitoTabId =
   | "dialogs"
+  | "playground"
   | "diag"
   | "accounts"
   | "agents"
@@ -58,7 +66,7 @@ type AvitoTabId =
   | "arch";
 
 const AVITO_TAB_IDS: readonly AvitoTabId[] = [
-  "dialogs", "diag", "accounts", "agents", "incoming", "audit", "arch",
+  "dialogs", "playground", "diag", "accounts", "agents", "incoming", "audit", "arch",
 ] as const;
 
 function isAvitoTabId(v: unknown): v is AvitoTabId {
@@ -943,6 +951,11 @@ export function AvitoPage() {
         <ConversationsSection conversations={conversations ?? []} />
       )}
 
+      {/* ── Playground: test AI without persistence ──────────────────────── */}
+      {activeTab === "playground" && (
+        <PlaygroundSection agents={agents ?? []} />
+      )}
+
       {/* ── Diagnostic / Sync ────────────────────────────────────────────── */}
       {activeTab === "diag" && (
       <Card>
@@ -1530,8 +1543,9 @@ interface AvitoTabsNavProps {
 
 function AvitoTabsNav({ active, onChange, counts }: AvitoTabsNavProps) {
   const items: { id: AvitoTabId; label: string; Icon: React.ComponentType<{ className?: string }>; count?: number }[] = [
-    { id: "dialogs",  label: "Диалоги",     Icon: MessageSquare,  count: counts.dialogs },
-    { id: "diag",     label: "Диагностика", Icon: Terminal },
+    { id: "dialogs",    label: "Диалоги",      Icon: MessageSquare,  count: counts.dialogs },
+    { id: "playground", label: "Тестовый чат", Icon: FlaskConical },
+    { id: "diag",       label: "Диагностика",  Icon: Terminal },
     { id: "accounts", label: "Аккаунты",    Icon: Store,          count: counts.accounts },
     { id: "agents",   label: "Агенты",      Icon: Zap,            count: counts.agents },
     { id: "incoming", label: "Входящие",    Icon: Users },
@@ -1721,5 +1735,307 @@ function ConversationsSection({ conversations }: { conversations: AvitoConversat
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ── Playground section (test chat without DB persistence) ────────────────────
+
+interface PlaygroundChatMessage {
+  role:    "user" | "assistant";
+  content: string;
+  meta?:   PlaygroundChatResponse | null;
+}
+
+const PLAYGROUND_STORAGE_AGENT = "avitoPlayground:agentId";
+
+function PlaygroundSection({ agents }: { agents: Agent[] }) {
+  const chat = usePlaygroundChat();
+
+  const [selectedAgentId, setSelectedAgentId] = useState<string>(() => {
+    try {
+      return window.localStorage.getItem(PLAYGROUND_STORAGE_AGENT) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [input, setInput]       = useState("");
+  const [history, setHistory]   = useState<PlaygroundChatMessage[]>([]);
+  const [fsmStatus, setFsmStatus] = useState<PlaygroundFsmStatus>("NEW");
+  const [error, setError]       = useState<string | null>(null);
+  const [showPrompt, setShowPrompt] = useState(false);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep agent choice across reloads
+  useEffect(() => {
+    try {
+      if (selectedAgentId) {
+        window.localStorage.setItem(PLAYGROUND_STORAGE_AGENT, selectedAgentId);
+      }
+    } catch { /* ignore */ }
+  }, [selectedAgentId]);
+
+  // Default agent: first one with assistantId
+  useEffect(() => {
+    if (selectedAgentId || !agents.length) return;
+    const withAssistant = agents.find((a) => a.assistantId);
+    setSelectedAgentId((withAssistant ?? agents[0]).id);
+  }, [agents, selectedAgentId]);
+
+  // Autoscroll on new messages
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [history, chat.isPending]);
+
+  const selectedAgent = agents.find((a) => a.id === selectedAgentId) ?? null;
+
+  function handleReset() {
+    setHistory([]);
+    setFsmStatus("NEW");
+    setError(null);
+    setInput("");
+    chat.reset();
+  }
+
+  async function handleSend() {
+    const text = input.trim();
+    if (!text || !selectedAgentId || chat.isPending) return;
+    setError(null);
+
+    const nextHistory: PlaygroundChatMessage[] = [
+      ...history,
+      { role: "user", content: text },
+    ];
+    setHistory(nextHistory);
+    setInput("");
+
+    try {
+      const res = await chat.mutateAsync({
+        agentId:   selectedAgentId,
+        fsmStatus,
+        messages:  nextHistory.map((m): PlaygroundMessage => ({ role: m.role, content: m.content })),
+      });
+
+      if (res.stopped) {
+        // HANDOFF short-circuit: no AI reply, show the reason inline
+        setHistory((prev) => [
+          ...prev,
+          {
+            role:    "assistant",
+            content: "[Диалог переведён на менеджера — AI остановлен (handoff).]",
+            meta:    res,
+          },
+        ]);
+      } else {
+        setHistory((prev) => [
+          ...prev,
+          { role: "assistant", content: res.reply || "(пустой ответ модели)", meta: res },
+        ]);
+      }
+      setFsmStatus(res.fsm.next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка запроса");
+      // revert the optimistic user message so the user can retry
+      setHistory((prev) => prev.slice(0, -1));
+      setInput(text);
+    }
+  }
+
+  const lastMeta: PlaygroundChatResponse | null =
+    [...history].reverse().find((m) => m.meta)?.meta ?? null;
+
+  const assistantLinked = Boolean(selectedAgent?.assistantId);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <FlaskConical className="h-4 w-4 text-violet-500" />
+            <h2 className="text-sm font-semibold text-neutral-800">Тестовый чат ассистента</h2>
+          </div>
+          <button
+            type="button"
+            onClick={handleReset}
+            disabled={history.length === 0 && !chat.isPending}
+            className="inline-flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-40"
+          >
+            <RotateCcw className="h-3 w-3" />
+            Сбросить
+          </button>
+        </div>
+        <p className="mt-1 text-[11px] text-neutral-400">
+          Тот же pipeline, что и Avito: classifier → FSM → knowledge → system prompt → модель.
+          Диалог нигде не сохраняется — только на этой вкладке.
+        </p>
+      </CardHeader>
+
+      <CardContent className="space-y-3">
+        {/* Agent picker + FSM status */}
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-medium text-neutral-500">Агент</span>
+            <select
+              value={selectedAgentId}
+              onChange={(e) => { setSelectedAgentId(e.target.value); handleReset(); }}
+              className="rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-xs focus:border-blue-400 focus:outline-none"
+            >
+              <option value="">— выберите агента —</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name || a.id.slice(0, 8)}
+                  {a.assistantId ? " · assistant привязан" : " · без assistant"}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-medium text-neutral-500">Статус воронки (FSM)</span>
+            <select
+              value={fsmStatus}
+              onChange={(e) => setFsmStatus(e.target.value as PlaygroundFsmStatus)}
+              className="rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-xs focus:border-blue-400 focus:outline-none"
+            >
+              <option value="NEW">NEW — первое обращение</option>
+              <option value="QUALIFYING">QUALIFYING — интересуется ценой</option>
+              <option value="INTERESTED">INTERESTED — готов купить</option>
+              <option value="HANDOFF">HANDOFF — передан менеджеру</option>
+              <option value="CLOSED">CLOSED — сделка закрыта</option>
+              <option value="LOST">LOST — ушёл</option>
+            </select>
+          </label>
+        </div>
+
+        {selectedAgent && !assistantLinked && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-700">
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+            <span>
+              К агенту не привязан Assistant — база знаний и голос бренда недоступны.
+              Ответы будут собраны только из FSM-подсказок и правил агента.
+            </span>
+          </div>
+        )}
+
+        {/* Chat history */}
+        <div
+          ref={scrollRef}
+          className="h-80 overflow-y-auto rounded-lg border border-neutral-200 bg-neutral-50 p-3"
+        >
+          {history.length === 0 && !chat.isPending && (
+            <div className="flex h-full flex-col items-center justify-center text-center">
+              <Bot className="mb-2 h-6 w-6 text-neutral-300" />
+              <p className="text-xs text-neutral-500">
+                Напишите первое сообщение клиента — AI ответит по той же логике, что и в Avito.
+              </p>
+            </div>
+          )}
+          <ul className="space-y-2">
+            {history.map((m, idx) => (
+              <li
+                key={idx}
+                className={[
+                  "flex",
+                  m.role === "user" ? "justify-end" : "justify-start",
+                ].join(" ")}
+              >
+                <div
+                  className={[
+                    "max-w-[85%] whitespace-pre-wrap rounded-lg px-3 py-2 text-xs shadow-sm",
+                    m.role === "user"
+                      ? "bg-blue-600 text-white"
+                      : "bg-white text-neutral-800 border border-neutral-200",
+                  ].join(" ")}
+                >
+                  {m.content}
+                </div>
+              </li>
+            ))}
+            {chat.isPending && (
+              <li className="flex justify-start">
+                <div className="inline-flex items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs text-neutral-500">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  AI печатает…
+                </div>
+              </li>
+            )}
+          </ul>
+        </div>
+
+        {error && (
+          <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-2 text-[11px] text-red-700">
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+            <span className="break-all">{error}</span>
+          </div>
+        )}
+
+        {/* Composer */}
+        <div className="flex gap-2">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void handleSend();
+              }
+            }}
+            rows={2}
+            placeholder={selectedAgentId ? "Сообщение от клиента… (Enter — отправить, Shift+Enter — перенос)" : "Сначала выберите агента"}
+            disabled={!selectedAgentId || chat.isPending}
+            className="flex-1 resize-none rounded-md border border-neutral-200 bg-white px-3 py-2 text-xs placeholder:text-neutral-400 focus:border-blue-400 focus:outline-none disabled:bg-neutral-50"
+          />
+          <button
+            type="button"
+            onClick={() => void handleSend()}
+            disabled={!selectedAgentId || !input.trim() || chat.isPending}
+            className="inline-flex items-center gap-1.5 self-end rounded-md bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {chat.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+            Отправить
+          </button>
+        </div>
+
+        {/* Inspector */}
+        {lastMeta && (
+          <div className="rounded-lg border border-neutral-200 bg-white p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-semibold text-neutral-700">Инспектор последнего ответа</p>
+              <button
+                type="button"
+                onClick={() => setShowPrompt((v) => !v)}
+                className="text-[11px] text-blue-600 hover:underline"
+              >
+                {showPrompt ? "Скрыть systemPrompt" : "Показать systemPrompt"}
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+              <MetaCell label="Intent"       value={lastMeta.classification.intent} />
+              <MetaCell label="FSM"          value={`${lastMeta.fsm.previous} → ${lastMeta.fsm.next}`} />
+              <MetaCell label="Knowledge"    value={`${lastMeta.knowledge.source} (${lastMeta.knowledge.chars})`} />
+              <MetaCell label="Модель"       value={lastMeta.model.used ?? "—"} />
+              <MetaCell label="Токенов"      value={lastMeta.tokens ? String(lastMeta.tokens.total) : "—"} />
+              <MetaCell label="Время"        value={lastMeta.durationMs != null ? `${lastMeta.durationMs} ms` : "—"} />
+              <MetaCell label="Телефон"      value={lastMeta.fsm.phone ?? "—"} />
+              <MetaCell label="Приоритет"    value={lastMeta.classification.priority} />
+            </div>
+            {showPrompt && (
+              <pre className="max-h-64 overflow-auto rounded-md border border-neutral-200 bg-neutral-50 p-2 text-[10px] leading-4 text-neutral-700 whitespace-pre-wrap">
+                {lastMeta.systemPromptPreview || "(пусто)"}
+              </pre>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function MetaCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-neutral-50 px-2 py-1.5">
+      <p className="text-[10px] uppercase tracking-wide text-neutral-400">{label}</p>
+      <p className="truncate text-[11px] font-medium text-neutral-800" title={value}>{value}</p>
+    </div>
   );
 }

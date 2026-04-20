@@ -36,6 +36,7 @@ async function build() {
   await app.register(require("./routes/removeBg"));
   // Avito V2: full module (replaces routes/avito.js)
   await app.register(require("./modules/avito/avito.webhook"));
+  await app.register(require("./modules/avito/avito.playground"));
   await app.register(require("./modules/telegram/telegram.webhook"), { prefix: "/telegram" });
   await app.register(require("./routes/admin"), { prefix: "/admin" });
   return app;
