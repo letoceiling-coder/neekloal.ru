@@ -1,12 +1,19 @@
 "use strict";
 
 const { tryAcquireLeadNotify } = require("./leadNotificationRate");
+const { resolveManagerChannel, sendManagerText } = require("./notifyManager");
 
 /**
  * Уведомления о новых лидах (Telegram + email через SMTP).
+ *
+ * Telegram-настройки берутся из OrganizationNotificationSettings (БД).
+ * Если в БД пусто — fallback на LEAD_NOTIFY_TELEGRAM_BOT_TOKEN / _CHAT_ID
+ * (для обратной совместимости старых инсталляций).
+ *
  * Лимит частоты: см. leadNotificationRate.js
- * Env:
- *   LEAD_NOTIFY_TELEGRAM_BOT_TOKEN, LEAD_NOTIFY_TELEGRAM_CHAT_ID
+ *
+ * Env (только для email/SMTP и как fallback для TG):
+ *   LEAD_NOTIFY_TELEGRAM_BOT_TOKEN, LEAD_NOTIFY_TELEGRAM_CHAT_ID  (fallback)
  *   LEAD_NOTIFY_EMAIL_TO (через запятую), LEAD_NOTIFY_EMAIL_FROM
  *   SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS
  */
@@ -18,28 +25,6 @@ function escapeHtml(s) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-/** @param {string} text */
-async function sendTelegramPlain(text) {
-  const token = process.env.LEAD_NOTIFY_TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.LEAD_NOTIFY_TELEGRAM_CHAT_ID;
-  if (!token || !chatId) {
-    return;
-  }
-  const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: text.slice(0, 4000),
-    }),
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Telegram ${res.status}: ${t}`);
-  }
 }
 
 /**
@@ -119,9 +104,19 @@ async function notifyNewLead(p, log) {
   const html = htmlParts.join("");
 
   const tasks = [];
-  if (process.env.LEAD_NOTIFY_TELEGRAM_BOT_TOKEN && process.env.LEAD_NOTIFY_TELEGRAM_CHAT_ID) {
-    tasks.push(sendTelegramPlain(plain));
+
+  // Telegram — per-org DB settings, env as fallback, controlled by notifyOnNewLead flag.
+  const managerCh = await resolveManagerChannel(lead.organizationId);
+  if (managerCh.enabled && managerCh.notifyOnNewLead && managerCh.botToken && managerCh.chatId) {
+    tasks.push(
+      sendManagerText(lead.organizationId, plain).then((r) => {
+        if (!r.ok) {
+          log?.info?.({ leadId: lead.id, reason: r.reason }, "lead telegram skipped");
+        }
+      })
+    );
   }
+
   if (
     process.env.LEAD_NOTIFY_EMAIL_TO &&
     process.env.SMTP_HOST &&

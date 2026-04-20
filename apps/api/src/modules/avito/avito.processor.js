@@ -37,6 +37,7 @@ const { resolveNextState, extractPhone }  = require("./avito.fsm");
 const { scheduleFollowUps, cancelFollowUps } = require("./avito.followup.queue");
 const { buildAvitoSystemPrompt }          = require("./avito.prompt");
 const { loadAvitoKnowledgeBlock }         = require("./avito.knowledge");
+const { sendHandoffAlert }                = require("../../services/notifyManager");
 
 // ── Retry helper ──────────────────────────────────────────────────────────────
 
@@ -154,6 +155,15 @@ async function processAvitoJob(job) {
     audit.classification = classification;
 
     // ── 7. Upsert AvitoLead FSM row ──────────────────────────────────────────
+    // Capture previous (status, isHot) BEFORE upsert, so we can detect
+    // transitions NEW→HANDOFF and isHot=false→true and fire a single alert.
+    const prev = await prisma.avitoLead.findUnique({
+      where:  { agentId_chatId: { agentId, chatId } },
+      select: { status: true, isHot: true },
+    });
+    const prevStatus = prev ? prev.status : null;
+    const prevIsHot  = prev ? Boolean(prev.isHot) : false;
+
     let lead = await prisma.avitoLead.upsert({
       where:  { agentId_chatId: { agentId, chatId } },
       create: {
@@ -204,6 +214,47 @@ async function processAvitoJob(job) {
         `[avito:contact] phone=${detectedPhone} chatId=${chatId} → HANDOFF\n`
       );
       lead = { ...lead, status: "HANDOFF" };
+    }
+
+    // ── 9.1 Manager alert on HANDOFF or hot-lead transition ──────────────────
+    // Fire-and-forget: errors are logged but never break the pipeline.
+    const becameHandoff = prevStatus !== "HANDOFF" && lead.status === "HANDOFF";
+    const becameHot     = !prevIsHot && Boolean(lead.isHot);
+
+    if (becameHandoff || becameHot) {
+      const chatUrl = `https://site-al.ru/avito?chatId=${encodeURIComponent(chatId)}`;
+      const convMessages = Array.isArray(conv.messages) ? conv.messages : [];
+      // Append the current inbound message so the brief reflects latest context.
+      const messagesForBrief = convMessages.concat([{ role: "user", content: String(text || "") }]);
+
+      void sendHandoffAlert({
+        organizationId: agent.organizationId,
+        leadId:         lead.id,
+        source:         "avito",
+        chatId,
+        externalUserId: String(authorId),
+        phone:          detectedPhone || lead.phone || undefined,
+        intent:         classification.intent,
+        status:         lead.status,
+        isHot:          Boolean(lead.isHot),
+        chatUrl,
+        messages:       messagesForBrief,
+      }).then((r) => {
+        if (r.ok) {
+          process.stdout.write(
+            `[notifyManager] alert sent org=${agent.organizationId} lead=${lead.id} ` +
+            `reason=${becameHandoff ? "handoff" : "hot"}\n`
+          );
+        } else if (r.skipped) {
+          process.stdout.write(
+            `[notifyManager] alert skipped org=${agent.organizationId} lead=${lead.id} reason=${r.skipped}\n`
+          );
+        }
+      }).catch((err) => {
+        process.stderr.write(
+          `[notifyManager] alert error org=${agent.organizationId}: ${err && err.message ? err.message : String(err)}\n`
+        );
+      });
     }
 
     // ── 10. CRM sync ─────────────────────────────────────────────────────────

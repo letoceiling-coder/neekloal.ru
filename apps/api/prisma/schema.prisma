@@ -131,12 +131,44 @@ model Organization {
   messages          Message[]
   agentExecutions   AgentExecution[]
   agentSteps        AgentStep[]
-  knowledge         Knowledge[]
-  knowledgeChunks   KnowledgeChunk[]
-  usages            Usage[]
+  knowledge             Knowledge[]
+  knowledgeChunks       KnowledgeChunk[]
+  usages                Usage[]
+  notificationSettings  OrganizationNotificationSettings?
 
   @@index([planId])
   @@map("organizations")
+}
+
+/// Per-organization notification settings (Telegram manager alerts + email).
+/// Lives in DB (not env) so owners/admins can edit them from the admin panel.
+model OrganizationNotificationSettings {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @unique @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// Telegram Bot API token used to send manager alerts (may be empty → fallback to env LEAD_NOTIFY_TELEGRAM_BOT_TOKEN)
+  tgManagerBotToken String?  @map("tg_manager_bot_token") @db.Text
+  /// chat_id (user/group/channel) to deliver alerts to
+  tgManagerChatId   String?  @map("tg_manager_chat_id")
+  tgManagerEnabled  Boolean  @default(true) @map("tg_manager_enabled")
+
+  /// Fire alert on first contact in a channel (Avito/Telegram/site)
+  notifyOnNewLead  Boolean @default(true) @map("notify_on_new_lead")
+  /// Fire alert when a lead hits HANDOFF (phone detected / contact request / stuck)
+  notifyOnHandoff  Boolean @default(true) @map("notify_on_handoff")
+  /// Fire alert when classifier marks the message as hot (buy intent, urgency…)
+  notifyOnHotLead  Boolean @default(true) @map("notify_on_hot_lead")
+
+  /// Optional email backup channel
+  emailEnabled    Boolean @default(false) @map("email_enabled")
+  /// Comma-separated list of recipients; SMTP creds still live in env
+  emailRecipients String? @map("email_recipients") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("organization_notification_settings")
 }
 
 model Membership {

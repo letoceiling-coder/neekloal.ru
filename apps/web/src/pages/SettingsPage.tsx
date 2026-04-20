@@ -1,15 +1,22 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   type BillingUsageHistoryItem,
   useBillingSummary,
 } from "../api/billing";
 import {
+  useNotificationSettings,
+  useUpdateNotificationSettings,
+  useTestNotification,
+} from "../api/notificationSettings";
+import {
+  Button,
   Card,
   CardContent,
   CardHeader,
   DataTable,
   type DataTableColumn,
   ErrorState,
+  Input,
   Loader,
   Page,
 } from "../components/ui";
@@ -28,6 +35,222 @@ function formatLimit(n: number | null): string {
   }
   return n.toLocaleString("ru-RU");
 }
+
+// ─── Telegram notification settings block ────────────────────────────────────
+
+function NotificationSettingsSection() {
+  const { data, isLoading, error, refetch } = useNotificationSettings();
+  const update = useUpdateNotificationSettings();
+  const test   = useTestNotification();
+
+  const [chatId,     setChatId]     = useState("");
+  const [botToken,   setBotToken]   = useState("");
+  const [enabled,    setEnabled]    = useState(true);
+  const [onNewLead,  setOnNewLead]  = useState(true);
+  const [onHandoff,  setOnHandoff]  = useState(true);
+  const [onHotLead,  setOnHotLead]  = useState(true);
+  const [saved,      setSaved]      = useState(false);
+  const [testOk,     setTestOk]     = useState<string | null>(null);
+  const [testErr,    setTestErr]    = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!data) return;
+    const s = data.settings;
+    setChatId(s.tgManagerChatId);
+    setEnabled(s.tgManagerEnabled);
+    setOnNewLead(s.notifyOnNewLead);
+    setOnHandoff(s.notifyOnHandoff);
+    setOnHotLead(s.notifyOnHotLead);
+    // botToken поле всегда стартует пустым — редактор, а не показ
+    setBotToken("");
+  }, [data]);
+
+  const tokenSet = Boolean(data?.settings.tgManagerBotTokenSet);
+  const ready    = Boolean(data?.effective.telegramReady);
+  const source   = data?.effective.source ?? "none";
+
+  async function handleSave() {
+    setSaved(false);
+    const payload: Parameters<typeof update.mutateAsync>[0] = {
+      tgManagerChatId: chatId.trim() || null,
+      tgManagerEnabled: enabled,
+      notifyOnNewLead: onNewLead,
+      notifyOnHandoff: onHandoff,
+      notifyOnHotLead: onHotLead,
+    };
+    if (botToken.trim() !== "") {
+      payload.tgManagerBotToken = botToken.trim();
+    }
+    await update.mutateAsync(payload);
+    setBotToken("");
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  async function handleClearToken() {
+    if (!window.confirm("Удалить Bot Token? Канал перестанет работать до следующего сохранения.")) return;
+    await update.mutateAsync({ tgManagerBotToken: null });
+    setBotToken("");
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  async function handleTest() {
+    setTestOk(null);
+    setTestErr(null);
+    try {
+      const r = await test.mutateAsync(undefined);
+      if (r.ok) {
+        setTestOk(`Отправлено (источник: ${r.source})`);
+      } else {
+        setTestErr(r.error);
+      }
+    } catch (e) {
+      setTestErr(e instanceof Error ? e.message : "Не удалось отправить");
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold text-neutral-900">Уведомления менеджеру (Telegram)</p>
+            <p className="text-xs text-neutral-500">
+              Алерты о новых лидах, HANDOFF и горячих клиентах — летят в указанный чат.
+            </p>
+          </div>
+          <span
+            className={[
+              "rounded-full px-2 py-0.5 text-xs font-medium",
+              ready ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700",
+            ].join(" ")}
+            title={
+              source === "db"
+                ? "Используются настройки из админки"
+                : source === "env"
+                  ? "Используется fallback из переменных окружения (LEAD_NOTIFY_*)"
+                  : "Telegram не настроен"
+            }
+          >
+            {ready ? `готово · ${source}` : "не настроено"}
+          </span>
+        </div>
+      </CardHeader>
+      <CardContent className="border-t border-neutral-100 pt-4 space-y-4">
+        {isLoading ? (
+          <Loader />
+        ) : error ? (
+          <ErrorState
+            message={error instanceof Error ? error.message : "Ошибка загрузки"}
+            onRetry={() => void refetch()}
+          />
+        ) : (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Input
+                  id="tg-bot-token"
+                  label={`Bot Token${tokenSet ? " (задан, оставьте пустым, чтобы не менять)" : ""}`}
+                  type="password"
+                  value={botToken}
+                  onChange={(e) => setBotToken(e.target.value)}
+                  placeholder={tokenSet ? "••••••••:••••••••••••••••••••••••" : "123456:ABC-DEF…"}
+                  autoComplete="off"
+                />
+                {tokenSet && (
+                  <button
+                    type="button"
+                    onClick={() => void handleClearToken()}
+                    className="mt-1 text-[11px] text-red-600 underline underline-offset-2"
+                  >
+                    Удалить сохранённый токен
+                  </button>
+                )}
+              </div>
+              <Input
+                id="tg-chat-id"
+                label="Chat ID"
+                value={chatId}
+                onChange={(e) => setChatId(e.target.value)}
+                placeholder="-1001234567890 или 123456789"
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-4 text-sm text-neutral-700">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={(e) => setEnabled(e.target.checked)}
+                  className="h-4 w-4 rounded border-neutral-300"
+                />
+                Канал включён
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={onNewLead}
+                  onChange={(e) => setOnNewLead(e.target.checked)}
+                  className="h-4 w-4 rounded border-neutral-300"
+                />
+                Новый лид
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={onHandoff}
+                  onChange={(e) => setOnHandoff(e.target.checked)}
+                  className="h-4 w-4 rounded border-neutral-300"
+                />
+                HANDOFF (передача менеджеру)
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={onHotLead}
+                  onChange={(e) => setOnHotLead(e.target.checked)}
+                  className="h-4 w-4 rounded border-neutral-300"
+                />
+                Горячий лид
+              </label>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              <Button
+                type="button"
+                onClick={() => void handleSave()}
+                loading={update.isPending}
+              >
+                Сохранить
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => void handleTest()}
+                loading={test.isPending}
+                disabled={!ready && botToken.trim() === ""}
+              >
+                Отправить тестовое сообщение
+              </Button>
+              {saved   && <span className="text-sm text-emerald-600">✓ Сохранено</span>}
+              {testOk  && <span className="text-sm text-emerald-600">✓ {testOk}</span>}
+              {testErr && <span className="text-sm text-red-600">✗ {testErr}</span>}
+            </div>
+
+            <p className="text-xs text-neutral-500 leading-relaxed">
+              Настройки применяются ко всей организации. Если поля пустые — используются
+              переменные окружения сервера (fallback для старых инсталляций).
+              Токен хранится в БД и наружу не отдаётся — при редактировании поле всегда пустое.
+            </p>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Main page ───────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
   const { data, isLoading, error, refetch } = useBillingSummary();
@@ -83,6 +306,8 @@ export function SettingsPage() {
         />
       ) : data ? (
         <div className="space-y-6">
+          <NotificationSettingsSection />
+
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <Card className="sm:col-span-2 lg:col-span-3">
               <CardHeader>

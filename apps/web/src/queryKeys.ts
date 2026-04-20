@@ -27,6 +27,9 @@ export const queryKeys = {
   billing: {
     summary: ["billing", "summary"] as const,
   },
+  notificationSettings: {
+    all: ["notification-settings"] as const,
+  },
   models: {
     /** Raw API response { models: ModelInfo[] } — used by agents.ts useModels */
     all: ["models", "catalog"] as const,
