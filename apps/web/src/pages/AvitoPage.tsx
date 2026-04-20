@@ -44,6 +44,42 @@ import { Link as RouterLink } from "react-router-dom";
 
 const WEBHOOK_BASE = "https://site-al.ru/api/incoming";
 
+// ── Tabs ────────────────────────────────────────────────────────────────────
+
+const AVITO_TAB_STORAGE_KEY = "avitoPage:activeTab";
+
+type AvitoTabId =
+  | "dialogs"
+  | "diag"
+  | "accounts"
+  | "agents"
+  | "incoming"
+  | "audit"
+  | "arch";
+
+const AVITO_TAB_IDS: readonly AvitoTabId[] = [
+  "dialogs", "diag", "accounts", "agents", "incoming", "audit", "arch",
+] as const;
+
+function isAvitoTabId(v: unknown): v is AvitoTabId {
+  return typeof v === "string" && (AVITO_TAB_IDS as readonly string[]).includes(v);
+}
+
+function useAvitoActiveTab(): [AvitoTabId, (t: AvitoTabId) => void] {
+  const [tab, setTab] = useState<AvitoTabId>(() => {
+    try {
+      const raw = window.localStorage.getItem(AVITO_TAB_STORAGE_KEY);
+      return isAvitoTabId(raw) ? raw : "dialogs";
+    } catch {
+      return "dialogs";
+    }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem(AVITO_TAB_STORAGE_KEY, tab); } catch { /* ignore */ }
+  }, [tab]);
+  return [tab, setTab];
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const AVITO_MODES = [
@@ -579,6 +615,7 @@ function ErrorRow({ label, message }: { label: string; message: string }) {
 
 export function AvitoPage() {
   const accessToken = useAuthStore((s) => s.accessToken);
+  const [activeTab, setActiveTab] = useAvitoActiveTab();
 
   // Data
   const { data: accounts, isLoading: accountsLoading, refetch: refetchAccounts } = useAvitoAccounts();
@@ -889,10 +926,25 @@ export function AvitoPage() {
         </Card>
       </div>
 
+      {/* ── Tabs nav ─────────────────────────────────────────────────────── */}
+      <AvitoTabsNav
+        active={activeTab}
+        onChange={setActiveTab}
+        counts={{
+          dialogs:  conversations?.length ?? 0,
+          accounts: accounts?.length ?? 0,
+          agents:   agents?.length ?? 0,
+          audit:    auditLogs?.length ?? 0,
+        }}
+      />
+
       {/* ── Active conversations with takeover controls ──────────────────── */}
-      <ConversationsSection conversations={conversations ?? []} />
+      {activeTab === "dialogs" && (
+        <ConversationsSection conversations={conversations ?? []} />
+      )}
 
       {/* ── Diagnostic / Sync ────────────────────────────────────────────── */}
+      {activeTab === "diag" && (
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
@@ -1015,8 +1067,10 @@ export function AvitoPage() {
 
         </CardContent>
       </Card>
+      )}
 
       {/* ── Avito Accounts ────────────────────────────────────────────────── */}
+      {activeTab === "accounts" && (
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -1091,8 +1145,10 @@ export function AvitoPage() {
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* ── Agents ────────────────────────────────────────────────────────── */}
+      {activeTab === "agents" && (
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -1129,7 +1185,10 @@ export function AvitoPage() {
           )}
         </CardContent>
       </Card>
+      )}
 
+      {activeTab === "incoming" && (
+      <>
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between gap-3">
@@ -1338,7 +1397,10 @@ export function AvitoPage() {
           </div>
         </CardContent>
       </Card>
+      </>
+      )}
 
+      {activeTab === "audit" && (
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
@@ -1419,8 +1481,10 @@ export function AvitoPage() {
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* ── Pipeline docs ──────────────────────────────────────────────────── */}
+      {activeTab === "arch" && (
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
@@ -1451,6 +1515,66 @@ export function AvitoPage() {
           </div>
         </CardContent>
       </Card>
+      )}
+    </div>
+  );
+}
+
+// ── Tabs nav component ───────────────────────────────────────────────────────
+
+interface AvitoTabsNavProps {
+  active:   AvitoTabId;
+  onChange: (t: AvitoTabId) => void;
+  counts:   { dialogs: number; accounts: number; agents: number; audit: number };
+}
+
+function AvitoTabsNav({ active, onChange, counts }: AvitoTabsNavProps) {
+  const items: { id: AvitoTabId; label: string; Icon: React.ComponentType<{ className?: string }>; count?: number }[] = [
+    { id: "dialogs",  label: "Диалоги",     Icon: MessageSquare,  count: counts.dialogs },
+    { id: "diag",     label: "Диагностика", Icon: Terminal },
+    { id: "accounts", label: "Аккаунты",    Icon: Store,          count: counts.accounts },
+    { id: "agents",   label: "Агенты",      Icon: Zap,            count: counts.agents },
+    { id: "incoming", label: "Входящие",    Icon: Users },
+    { id: "audit",    label: "Аудит",       Icon: ClipboardList,  count: counts.audit },
+    { id: "arch",     label: "Архитектура", Icon: ShieldCheck },
+  ];
+  return (
+    <div
+      role="tablist"
+      aria-label="Разделы Avito"
+      className="flex flex-wrap gap-1 border-b border-neutral-200"
+    >
+      {items.map(({ id, label, Icon, count }) => {
+        const isActive = id === active;
+        return (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onChange(id)}
+            className={[
+              "-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium transition-colors",
+              isActive
+                ? "border-blue-600 text-blue-700"
+                : "border-transparent text-neutral-500 hover:border-neutral-300 hover:text-neutral-800",
+            ].join(" ")}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {label}
+            {typeof count === "number" && count > 0 && (
+              <span
+                className={[
+                  "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                  isActive ? "bg-blue-100 text-blue-700" : "bg-neutral-100 text-neutral-600",
+                ].join(" ")}
+              >
+                {count}
+              </span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1464,7 +1588,17 @@ function ConversationsSection({ conversations }: { conversations: AvitoConversat
   const [error,  setError]  = useState<string | null>(null);
 
   if (!conversations || conversations.length === 0) {
-    return null;
+    return (
+      <Card>
+        <CardContent className="py-10 text-center">
+          <MessageSquare className="mx-auto mb-2 h-6 w-6 text-neutral-300" />
+          <p className="text-sm text-neutral-500">Активных диалогов пока нет</p>
+          <p className="mt-1 text-[11px] text-neutral-400">
+            Как только Avito пришлёт первое сообщение — оно появится здесь.
+          </p>
+        </CardContent>
+      </Card>
+    );
   }
 
   async function handleTakeover(c: AvitoConversation) {
