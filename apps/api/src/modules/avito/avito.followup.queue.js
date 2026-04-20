@@ -20,9 +20,15 @@
 const { Queue, Worker } = require("bullmq");
 const { getWorkerConnection } = require("../../lib/redis");
 const prisma = require("../../lib/prisma");
+const { resolveFollowUpSequence } = require("../../services/followupTemplates");
 
 const QUEUE_NAME = "avito-followup";
 
+/**
+ * Hard-coded fallback used only when resolveFollowUpSequence() fails or the
+ * lead/org cannot be resolved (defensive — see scheduleFollowUps).
+ * The canonical defaults live in services/followupTemplates.js::DEFAULT_SEQUENCE.
+ */
 const STEPS = [
   { step: 1, delayMs:  5 * 60 * 1000 },  //  5 min
   { step: 2, delayMs: 15 * 60 * 1000 },  // 15 min
@@ -79,10 +85,29 @@ async function scheduleFollowUps({ agentId, chatId, leadId }) {
   // ── 1. Cancel existing pending follow-ups ────────────────────────────────
   await cancelFollowUps({ agentId, chatId, reason: "new message" });
 
-  // ── 2. Create DB rows + enqueue BullMQ jobs ──────────────────────────────
+  // ── 2. Resolve per-org sequence (falls back to hard-coded defaults) ──────
+  let sequence = STEPS;
+  try {
+    const agent = await prisma.agent.findUnique({
+      where:  { id: agentId },
+      select: { organizationId: true },
+    });
+    if (agent?.organizationId) {
+      const seq = await resolveFollowUpSequence(agent.organizationId);
+      if (Array.isArray(seq) && seq.length > 0) {
+        sequence = seq.map((s) => ({ step: s.step, delayMs: s.delayMs }));
+      }
+    }
+  } catch (err) {
+    process.stderr.write(
+      `[followup:schedule] resolveFollowUpSequence failed agentId=${agentId}: ${err.message}\n`
+    );
+  }
+
+  // ── 3. Create DB rows + enqueue BullMQ jobs ──────────────────────────────
   const now = Date.now();
 
-  for (const { step, delayMs } of STEPS) {
+  for (const { step, delayMs } of sequence) {
     const scheduledAt = new Date(now + delayMs);
 
     // Create DB record first to get the id

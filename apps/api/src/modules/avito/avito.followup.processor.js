@@ -27,8 +27,13 @@
 const prisma                     = require("../../lib/prisma");
 const { createClient }           = require("../../services/avitoClient");
 const { resolveAccountCredentials } = require("./avito.credentials");
+const { resolveStepText }        = require("../../services/followupTemplates");
 
-// ── Follow-up message templates (step-specific) ───────────────────────────────
+// ── Follow-up message templates (hard-coded fallback) ────────────────────────
+//
+// Used only if services/followupTemplates.js cannot resolve a text for the
+// given step (DB failure, org misconfigured, etc). The canonical per-org
+// sequence lives in OrganizationFollowUpTemplate.
 
 const FOLLOW_UP_MESSAGES = {
   1: "Добрый день! Остались вопросы? Готов помочь с выбором 😊",
@@ -121,7 +126,17 @@ async function processFollowUpJob(job) {
   }
 
   // ── 4. Send follow-up message ────────────────────────────────────────────
-  const message = FOLLOW_UP_MESSAGES[step] ?? FOLLOW_UP_MESSAGES[3];
+  let message = null;
+  try {
+    message = await resolveStepText(agent.organizationId, step);
+  } catch (err) {
+    process.stderr.write(
+      `[followup:processor] resolveStepText failed org=${agent.organizationId} step=${step}: ${err.message}\n`
+    );
+  }
+  if (!message) {
+    message = FOLLOW_UP_MESSAGES[step] ?? FOLLOW_UP_MESSAGES[3];
+  }
 
   try {
     await avitoClient.sendMessage(chatId, message);

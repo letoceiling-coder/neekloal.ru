@@ -136,6 +136,7 @@ model Organization {
   knowledgeChunks       KnowledgeChunk[]
   usages                Usage[]
   notificationSettings  OrganizationNotificationSettings?
+  followupTemplates     OrganizationFollowUpTemplate[]
 
   @@index([planId])
   @@map("organizations")
@@ -170,6 +171,30 @@ model OrganizationNotificationSettings {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("organization_notification_settings")
+}
+
+/// Per-organization follow-up message sequence (currently used by Avito pipeline).
+/// If an organization has no active templates, the hard-coded defaults in
+/// avito.followup.{queue,processor}.js still apply.
+model OrganizationFollowUpTemplate {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// Position in the ordered sequence (1-based).
+  step         Int
+  /// Delay from the last inbound user message, in minutes (1 .. 10080 == 1 week).
+  delayMinutes Int     @map("delay_minutes")
+  text         String  @db.Text
+  isActive     Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt         @map("updated_at")
+
+  @@unique([organizationId, step])
+  @@index([organizationId, isActive])
+  @@map("organization_followup_templates")
 }
 
 model Membership {

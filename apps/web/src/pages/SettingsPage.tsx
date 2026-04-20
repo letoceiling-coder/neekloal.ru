@@ -9,6 +9,11 @@ import {
   useTestNotification,
 } from "../api/notificationSettings";
 import {
+  useFollowUpTemplates,
+  useUpdateFollowUpTemplates,
+  type FollowUpTemplate,
+} from "../api/followupTemplates";
+import {
   Button,
   Card,
   CardContent,
@@ -250,6 +255,230 @@ function NotificationSettingsSection() {
   );
 }
 
+// ─── Follow-up templates section ─────────────────────────────────────────────
+
+type DraftStep = {
+  step:         number;
+  delayMinutes: number;
+  text:         string;
+  isActive:     boolean;
+};
+
+function toDraft(list: FollowUpTemplate[]): DraftStep[] {
+  return list.map((s) => ({
+    step:         s.step,
+    delayMinutes: s.delayMinutes,
+    text:         s.text,
+    isActive:     s.isActive,
+  }));
+}
+
+function FollowUpTemplatesSection() {
+  const { data, isLoading, error, refetch } = useFollowUpTemplates();
+  const update = useUpdateFollowUpTemplates();
+
+  const [draft, setDraft] = useState<DraftStep[] | null>(null);
+  const [okMsg, setOkMsg] = useState<string | null>(null);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (data && !draft) {
+      setDraft(toDraft(data.items));
+    }
+  }, [data, draft]);
+
+  const isDirty = useMemo(() => {
+    if (!data || !draft) return false;
+    if (draft.length !== data.items.length) return true;
+    return draft.some((d, i) => {
+      const src = data.items[i];
+      return (
+        d.step !== src.step ||
+        d.delayMinutes !== src.delayMinutes ||
+        d.text !== src.text ||
+        d.isActive !== src.isActive
+      );
+    });
+  }, [data, draft]);
+
+  const renumber = (rows: DraftStep[]): DraftStep[] =>
+    rows.map((r, idx) => ({ ...r, step: idx + 1 }));
+
+  const addStep = () => {
+    if (!draft) return;
+    if (draft.length >= 10) {
+      setErrMsg("Максимум 10 шагов");
+      return;
+    }
+    const last = draft[draft.length - 1];
+    const base: DraftStep = {
+      step:         draft.length + 1,
+      delayMinutes: last ? Math.min(7 * 24 * 60, last.delayMinutes * 2) : 10,
+      text:         "Добрый день! …",
+      isActive:     true,
+    };
+    setDraft([...draft, base]);
+    setErrMsg(null);
+  };
+
+  const removeStep = (idx: number) => {
+    if (!draft) return;
+    setDraft(renumber(draft.filter((_, i) => i !== idx)));
+    setErrMsg(null);
+  };
+
+  const patch = (idx: number, p: Partial<DraftStep>) => {
+    if (!draft) return;
+    setDraft(draft.map((d, i) => (i === idx ? { ...d, ...p } : d)));
+  };
+
+  const reset = () => {
+    if (!data) return;
+    setDraft(toDraft(data.items));
+    setOkMsg(null);
+    setErrMsg(null);
+  };
+
+  const save = async () => {
+    if (!draft) return;
+    setOkMsg(null);
+    setErrMsg(null);
+    try {
+      const res = await update.mutateAsync(
+        draft.map((d) => ({
+          step:         d.step,
+          delayMinutes: d.delayMinutes,
+          text:         d.text.trim(),
+          isActive:     d.isActive,
+        }))
+      );
+      setDraft(toDraft(res.items));
+      setOkMsg(res.usingDefaults
+        ? "Список очищен — вернулись шаблоны по умолчанию"
+        : `Сохранено (${res.items.length} шагов)`);
+    } catch (e) {
+      setErrMsg(e instanceof Error ? e.message : "Не удалось сохранить");
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <p className="text-sm font-semibold text-neutral-900">Follow-up сообщения (Avito)</p>
+        <p className="mt-1 text-xs text-neutral-500">
+          Если клиент не отвечает, AI может сам написать через указанный интервал от последнего сообщения.
+          Шаги рассылаются последовательно; ответ клиента или ручное взятие диалога «в работу» отменяют остаток.
+        </p>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Loader />
+        ) : error ? (
+          <ErrorState
+            message={error instanceof Error ? error.message : "Ошибка загрузки"}
+            onRetry={() => void refetch()}
+          />
+        ) : !draft ? null : (
+          <div className="space-y-3">
+            {data?.usingDefaults && draft.length === (data?.items.length ?? 0) && !isDirty && (
+              <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-700">
+                Сейчас используются шаблоны по умолчанию. Отредактируйте и сохраните, чтобы применить свои.
+              </p>
+            )}
+
+            {draft.length === 0 && (
+              <p className="rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 text-[11px] text-neutral-600">
+                Follow-up полностью отключён для этой организации.
+              </p>
+            )}
+
+            <ul className="space-y-3">
+              {draft.map((s, idx) => (
+                <li
+                  key={idx}
+                  className="rounded-md border border-neutral-200 bg-white p-3"
+                >
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-violet-100 px-1.5 text-[10px] font-semibold text-violet-700">
+                      Шаг {s.step}
+                    </span>
+                    <label className="flex items-center gap-1 text-[11px] text-neutral-600">
+                      Через
+                      <input
+                        type="number"
+                        min={1}
+                        max={10080}
+                        value={s.delayMinutes}
+                        onChange={(e) => patch(idx, { delayMinutes: Math.max(1, Number(e.target.value) || 1) })}
+                        className="h-6 w-20 rounded border border-neutral-200 px-1.5 text-xs outline-none focus:border-violet-400"
+                      />
+                      минут
+                    </label>
+                    <label className="flex items-center gap-1 text-[11px] text-neutral-600">
+                      <input
+                        type="checkbox"
+                        checked={s.isActive}
+                        onChange={(e) => patch(idx, { isActive: e.target.checked })}
+                        className="h-3 w-3"
+                      />
+                      активен
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => removeStep(idx)}
+                      className="ml-auto rounded border border-red-200 px-2 py-0.5 text-[11px] text-red-600 hover:bg-red-50"
+                    >
+                      Удалить
+                    </button>
+                  </div>
+                  <textarea
+                    value={s.text}
+                    onChange={(e) => patch(idx, { text: e.target.value })}
+                    rows={2}
+                    maxLength={2000}
+                    className="w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-violet-400"
+                  />
+                </li>
+              ))}
+            </ul>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                onClick={addStep}
+                disabled={draft.length >= 10}
+                variant="secondary"
+              >
+                + Добавить шаг
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void save()}
+                loading={update.isPending}
+                disabled={!isDirty}
+              >
+                Сохранить последовательность
+              </Button>
+              {isDirty && (
+                <Button type="button" onClick={reset} variant="ghost">
+                  Отменить изменения
+                </Button>
+              )}
+            </div>
+
+            {okMsg && (
+              <p className="text-[11px] text-emerald-700">{okMsg}</p>
+            )}
+            {errMsg && (
+              <p className="text-[11px] text-red-700">{errMsg}</p>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Main page ───────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
@@ -307,6 +536,7 @@ export function SettingsPage() {
       ) : data ? (
         <div className="space-y-6">
           <NotificationSettingsSection />
+          <FollowUpTemplatesSection />
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <Card className="sm:col-span-2 lg:col-span-3">
