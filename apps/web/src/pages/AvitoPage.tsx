@@ -5,7 +5,7 @@ import {
   MessageSquare, ClipboardList, ChevronDown, Zap, Users,
   Clock, ShieldCheck, Plus, Trash2, Pencil, Eye, EyeOff,
   ToggleLeft, ToggleRight, Link2, Send, KeyRound, RefreshCcw,
-  Terminal, AlertTriangle,
+  Terminal, AlertTriangle, UserCheck, UserX, Pause,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "../components/ui";
 import { apiClient } from "../lib/apiClient";
@@ -26,10 +26,13 @@ import {
   useAvitoChatMessagesQuery,
   useAvitoWebhookStatus,
   useRegisterAvitoMessengerWebhook,
+  useConversationTakeover,
+  useConversationRelease,
   type AvitoAccount,
   type AvitoChatSummary,
   type AvitoChatMessage,
   type AvitoAuditLog,
+  type AvitoConversation,
   type AvitoSyncResult,
   type AvitoTokenCheckResult,
   type AvitoDialogsResult,
@@ -886,6 +889,9 @@ export function AvitoPage() {
         </Card>
       </div>
 
+      {/* ── Active conversations with takeover controls ──────────────────── */}
+      <ConversationsSection conversations={conversations ?? []} />
+
       {/* ── Diagnostic / Sync ────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
@@ -1446,5 +1452,140 @@ export function AvitoPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// ── Conversations section (list + takeover/release) ──────────────────────────
+
+function ConversationsSection({ conversations }: { conversations: AvitoConversation[] }) {
+  const takeover = useConversationTakeover();
+  const release  = useConversationRelease();
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error,  setError]  = useState<string | null>(null);
+
+  if (!conversations || conversations.length === 0) {
+    return null;
+  }
+
+  async function handleTakeover(c: AvitoConversation) {
+    setError(null);
+    const note = window.prompt("Комментарий для менеджерской ленты (необязательно):", "") ?? undefined;
+    setBusyId(c.id);
+    try {
+      await takeover.mutateAsync({ conversationId: c.id, note: note?.trim() || undefined });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось взять диалог");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleRelease(c: AvitoConversation) {
+    setError(null);
+    if (!window.confirm("Вернуть диалог AI? Бот снова начнёт отвечать на сообщения.")) return;
+    setBusyId(c.id);
+    try {
+      await release.mutateAsync(c.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось вернуть диалог AI");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const sorted = [...conversations].sort((a, b) => {
+    // Paused first, then by updatedAt desc
+    if (Boolean(a.humanTakeover) !== Boolean(b.humanTakeover)) {
+      return a.humanTakeover ? -1 : 1;
+    }
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <MessageSquare className="h-4 w-4 text-neutral-500" />
+            <h2 className="text-sm font-semibold text-neutral-800">
+              Активные диалоги ({conversations.length})
+            </h2>
+          </div>
+          <span className="text-[11px] text-neutral-400">
+            «Взять в работу» — ставит AI на паузу и отменяет follow-up'ы
+          </span>
+        </div>
+      </CardHeader>
+      <CardContent className="p-0">
+        {error && (
+          <div className="mx-4 mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            {error}
+          </div>
+        )}
+        <ul className="divide-y divide-neutral-100">
+          {sorted.slice(0, 30).map((c) => {
+            const paused = Boolean(c.humanTakeover);
+            const isBusy = busyId === c.id;
+            return (
+              <li key={c.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[11px] text-neutral-700 truncate" title={c.chatId}>
+                      {c.chatId}
+                    </span>
+                    {paused && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
+                        title={`Взят ${c.humanTakeover?.by?.email ?? "менеджером"} · ${fmtDate(c.humanTakeover!.at)}`}
+                      >
+                        <Pause className="h-2.5 w-2.5" />
+                        В работе{c.humanTakeover?.by?.email ? ` · ${c.humanTakeover.by.email}` : ""}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-3 text-[10px] text-neutral-500 mt-0.5">
+                    <span>{c.messageCount} сообщ.</span>
+                    <span>обновлён {fmtDate(c.updatedAt)}</span>
+                    {paused && c.humanTakeover?.note && (
+                      <span className="italic truncate" title={c.humanTakeover.note}>
+                        «{c.humanTakeover.note}»
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="shrink-0">
+                  {paused ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleRelease(c)}
+                      disabled={isBusy}
+                      className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                    >
+                      {isBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <UserX className="h-3 w-3" />}
+                      Передать AI
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void handleTakeover(c)}
+                      disabled={isBusy}
+                      className="inline-flex items-center gap-1 rounded-md border border-violet-200 bg-violet-50 px-2 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-50"
+                    >
+                      {isBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <UserCheck className="h-3 w-3" />}
+                      Взять в работу
+                    </button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        {sorted.length > 30 && (
+          <p className="px-4 py-2 text-[11px] text-neutral-400">
+            Показаны первые 30 из {sorted.length} диалогов.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

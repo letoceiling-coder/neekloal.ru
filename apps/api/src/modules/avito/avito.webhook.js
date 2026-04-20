@@ -683,6 +683,9 @@ module.exports = async function avitoModule(fastify) {
       where:   { organizationId: request.organizationId, source: "avito" },
       orderBy: { updatedAt: "desc" },
       take:    200,
+      include: {
+        humanTakeoverByUser: { select: { id: true, email: true } },
+      },
     });
     return rows.map((r) => ({
       id:             r.id,
@@ -693,6 +696,15 @@ module.exports = async function avitoModule(fastify) {
       messageCount:   Array.isArray(r.messages) ? r.messages.length : 0,
       createdAt:      r.createdAt,
       updatedAt:      r.updatedAt,
+      humanTakeover: r.humanTakeoverAt
+        ? {
+            at:   r.humanTakeoverAt instanceof Date ? r.humanTakeoverAt.toISOString() : r.humanTakeoverAt,
+            by:   r.humanTakeoverByUser
+              ? { id: r.humanTakeoverByUser.id, email: r.humanTakeoverByUser.email }
+              : (r.humanTakeoverBy ? { id: r.humanTakeoverBy, email: null } : null),
+            note: r.humanTakeoverNote,
+          }
+        : null,
     }));
   });
 

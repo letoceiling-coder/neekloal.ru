@@ -218,10 +218,12 @@ async function processAvitoJob(job) {
 
     // ── 9.1 Manager alert on HANDOFF or hot-lead transition ──────────────────
     // Fire-and-forget: errors are logged but never break the pipeline.
+    // Suppress the alert if a human has already taken the dialog to work —
+    // they know the context better than a Telegram notification.
     const becameHandoff = prevStatus !== "HANDOFF" && lead.status === "HANDOFF";
     const becameHot     = !prevIsHot && Boolean(lead.isHot);
 
-    if (becameHandoff || becameHot) {
+    if ((becameHandoff || becameHot) && !conv.humanTakeoverAt) {
       const chatUrl = `https://site-al.ru/avito?chatId=${encodeURIComponent(chatId)}`;
       const convMessages = Array.isArray(conv.messages) ? conv.messages : [];
       // Append the current inbound message so the brief reflects latest context.
@@ -277,12 +279,16 @@ async function processAvitoJob(job) {
 
     // ── 11. Follow-up scheduling ──────────────────────────────────────────────
     // Every inbound message: cancel old pending follow-ups and schedule new sequence.
+    // If conversation is on human-takeover — cancel and do not reschedule.
     // Non-fatal — never blocks the main pipeline.
     try {
-      if (lead.status !== "HANDOFF" && lead.status !== "CLOSED" && lead.status !== "LOST") {
-        await scheduleFollowUps({ agentId, chatId, leadId: lead.id });
-      } else {
+      const leadStoppedStates = lead.status === "HANDOFF" || lead.status === "CLOSED" || lead.status === "LOST";
+      if (conv.humanTakeoverAt) {
+        await cancelFollowUps({ agentId, chatId, reason: "human_takeover" });
+      } else if (leadStoppedStates) {
         await cancelFollowUps({ agentId, chatId, reason: `lead.status=${lead.status}` });
+      } else {
+        await scheduleFollowUps({ agentId, chatId, leadId: lead.id });
       }
     } catch (fuErr) {
       process.stderr.write(`[followup:schedule] error (non-fatal): ${fuErr.message}\n`);
@@ -302,6 +308,18 @@ async function processAvitoJob(job) {
         `[avito:handoff] stopped AI lead=${lead.id} chatId=${chatId}\n`
       );
       audit.success = true;
+      return;
+    }
+
+    // ── 13.1 Human takeover guard — manager took this dialog to work ─────────
+    // `humanTakeoverAt` is set from admin UI (POST /conversations/:id/takeover).
+    // Until release, AI must not reply on this conversation.
+    if (conv.humanTakeoverAt) {
+      audit.decision = "human_takeover";
+      audit.success  = true;
+      process.stdout.write(
+        `[avito:takeover] AI paused conv=${conv.id} since=${conv.humanTakeoverAt instanceof Date ? conv.humanTakeoverAt.toISOString() : conv.humanTakeoverAt}\n`
+      );
       return;
     }
 

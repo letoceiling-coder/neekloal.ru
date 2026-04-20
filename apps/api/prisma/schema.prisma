@@ -65,6 +65,7 @@ model User {
   adminAuditLogs           AdminAuditLog[]     @relation("AdminAuditActor")
   telegramBots             TelegramBot[]
   videoGenerationJobs      VideoGenerationJob[]
+  agentConversationTakeovers AgentConversation[] @relation("AgentConversationTakeoverBy")
 
   @@map("users")
 }
@@ -713,6 +714,15 @@ model AgentConversation {
   externalUserId String?  @map("external_user_id")
   /// JSON array of {role, content} messages (user + assistant turns, no system)
   messages       Json     @default("[]")
+
+  /// Human takeover: when not null, AI stops replying on this conversation.
+  /// Manager must explicitly release it to resume autoreplies.
+  humanTakeoverAt   DateTime? @map("human_takeover_at")
+  /// User who took over (FK users.id, ON DELETE SET NULL)
+  humanTakeoverBy   String?   @map("human_takeover_by") @db.Uuid
+  humanTakeoverByUser User?   @relation("AgentConversationTakeoverBy", fields: [humanTakeoverBy], references: [id], onDelete: SetNull)
+  humanTakeoverNote String?   @map("human_takeover_note") @db.Text
+
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
@@ -720,6 +730,7 @@ model AgentConversation {
   @@index([userId])
   @@index([organizationId])
   @@index([source, externalId, agentId])
+  @@index([humanTakeoverAt])
   @@map("agent_conversations")
 }
 

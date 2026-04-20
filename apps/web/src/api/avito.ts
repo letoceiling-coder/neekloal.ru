@@ -37,6 +37,12 @@ export interface PatchAvitoAccountInput {
   isActive?:      boolean;
 }
 
+export interface AvitoConversationTakeover {
+  at:   string;
+  by:   { id: string; email: string | null } | null;
+  note: string | null;
+}
+
 export interface AvitoConversation {
   id:             string;
   agentId:        string;
@@ -46,6 +52,7 @@ export interface AvitoConversation {
   messageCount:   number;
   createdAt:      string;
   updatedAt:      string;
+  humanTakeover:  AvitoConversationTakeover | null;
 }
 
 export interface AvitoAuditLog {
@@ -286,6 +293,39 @@ export function useAvitoDialogs() {
   return useMutation({
     mutationFn: () => apiClient.get<AvitoDialogsResult>("/avito/dialogs"),
     onSuccess:  () => void qc.invalidateQueries({ queryKey: AVITO_CONVERSATIONS_KEY }),
+  });
+}
+
+/**
+ * Take an AgentConversation to work (pause AI replies).
+ * Invalidates the conversation list so the UI refreshes takeover badges.
+ */
+export function useConversationTakeover() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (p: { conversationId: string; note?: string }) =>
+      apiClient.post<{ id: string; humanTakeover: AvitoConversationTakeover | null }>(
+        `/conversations/${encodeURIComponent(p.conversationId)}/takeover`,
+        p.note ? { note: p.note } : {}
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: AVITO_CONVERSATIONS_KEY });
+    },
+  });
+}
+
+/** Release a conversation back to AI (resume autoreplies). */
+export function useConversationRelease() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (conversationId: string) =>
+      apiClient.post<{ id: string; humanTakeover: null }>(
+        `/conversations/${encodeURIComponent(conversationId)}/release`,
+        {}
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: AVITO_CONVERSATIONS_KEY });
+    },
   });
 }
 
