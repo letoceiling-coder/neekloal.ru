@@ -5,6 +5,7 @@ import {
   Bot,
   Cpu,
   Image,
+  Inbox,
   Key,
   LayoutDashboard,
   MessageSquare,
@@ -23,6 +24,7 @@ export const sidebarNav: {
   Icon: LucideIcon;
 }[] = [
   { to: "/dashboard", label: "Дашборд", Icon: LayoutDashboard },
+  { to: "/inbox", label: "Входящие", Icon: Inbox },
   { to: "/assistants", label: "Ассистенты", Icon: Bot },
   { to: "/agents", label: "Агенты", Icon: Cpu },
   { to: "/conversations", label: "Диалоги", Icon: MessageSquare },

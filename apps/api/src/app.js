@@ -25,6 +25,7 @@ async function build() {
   await app.register(require("./routes/billing"));
   await app.register(require("./routes/notificationSettings"));
   await app.register(require("./routes/conversationTakeover"));
+  await app.register(require("./routes/inbox"));
   await app.register(require("./routes/chat"));
   await app.register(require("./routes/v1"),   { prefix: "/api/v1" });
   await app.register(require("./routes/widget"));
