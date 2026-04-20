@@ -55,6 +55,43 @@ function buildEmbedCode(apiKey: string): string {
   return `<script src="https://site-al.ru/widget.js" data-key="${apiKey}"><\/script>`;
 }
 
+// ─── Presets ─────────────────────────────────────────────────────────────────
+// Общие правила (только русский, лимит длины, стоп-слова, FSM-хинт) уже жёстко
+// прибиты на сервере в apps/api/src/modules/avito/avito.prompt.js. Здесь —
+// только «персона и тон голоса», чтобы можно было переопределить под каждую
+// студию/продавца без дублирования серверных ограничений.
+const AVITO_SALES_RU_PRESET =
+  [
+    "Ты — менеджер digital-студии neeklo.studio в чате Avito.",
+    "",
+    "Говоришь только на русском языке. Если клиент пишет на другом — всё равно отвечаешь по-русски.",
+    "",
+    "Тон:",
+    "— как живой человек, а не бот",
+    "— по-деловому, но без канцелярита",
+    "— коротко: 1–4 предложения, один вопрос за раз",
+    "— можно лёгкий комплимент («хороший вопрос», «понял вас»)",
+    "— можно лёгкую шутку, но без фанатизма",
+    "",
+    "Что делаешь:",
+    "— выясняешь задачу клиента: что нужно сделать, для кого, когда",
+    "— отвечаешь по услугам и ценам ТОЛЬКО из базы знаний",
+    "— если точной цены нет в базе — называешь диапазон и предлагаешь уточнить у менеджера",
+    "— если не знаешь ответа — честно говоришь «не знаю точно» и предлагаешь передать менеджеру",
+    "— при получении номера телефона или запроса позвонить — передаёшь менеджеру",
+    "",
+    "Чего НЕ делаешь:",
+    "— не выдумываешь факты, цены, сроки",
+    "— не обещаешь конкретные сроки без данных из базы",
+    "— не представляешься ботом/AI, если напрямую не спросили",
+    "— не используешь нумерованные списки и буллиты",
+    "— не пишешь «безусловно», «конечно же», «я как AI…», «рад вам помочь»",
+    "",
+    "Фразы при переключении на менеджера:",
+    "— «Понял, передаю менеджеру — он напишет в ближайшее время.»",
+    "— «Хороший вопрос, тут лучше менеджер ответит точнее. Передаю, он скоро напишет.»",
+  ].join("\n");
+
 // ─── Tab bar ─────────────────────────────────────────────────────────────────
 
 type TabId = "basic" | "agent" | "knowledge" | "widget" | "chat" | "usage";
@@ -739,25 +776,40 @@ function BasicSection({ assistant }: { assistant: Assistant }) {
                 onClose={() => setShowPromptGuide(false)}
               />
             )}
-            <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
               <label
                 htmlFor="basic-prompt"
                 className="text-xs font-medium text-neutral-600"
               >
                 Системный промпт
               </label>
-              <button
-                type="button"
-                onClick={() => setShowPromptGuide(true)}
-                className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-xs font-medium text-neutral-600 hover:border-neutral-400 hover:text-neutral-900 transition-colors"
-              >
-                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" className="text-neutral-400">
-                  <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.3"/>
-                  <path d="M7 6.5v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                  <circle cx="7" cy="4.5" r="0.75" fill="currentColor"/>
-                </svg>
-                Как составить
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (systemPrompt.trim().length > 0 && !window.confirm(
+                      "Заменить текущий системный промпт шаблоном «Avito-продажник (RU)»?"
+                    )) return;
+                    setSystemPrompt(AVITO_SALES_RU_PRESET);
+                  }}
+                  className="flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors"
+                  title="Живой менеджер, только русский язык, короткие ответы — готовый шаблон из ТЗ"
+                >
+                  🇷🇺 Шаблон: Avito-продажник
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPromptGuide(true)}
+                  className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-xs font-medium text-neutral-600 hover:border-neutral-400 hover:text-neutral-900 transition-colors"
+                >
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" className="text-neutral-400">
+                    <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.3"/>
+                    <path d="M7 6.5v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                    <circle cx="7" cy="4.5" r="0.75" fill="currentColor"/>
+                  </svg>
+                  Как составить
+                </button>
+              </div>
             </div>
             <textarea
               id="basic-prompt"

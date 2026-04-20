@@ -33,8 +33,10 @@ const { classifyMessage }                 = require("./avito.classifier");
 const { routeMessage }                    = require("./avito.router");
 const { saveAudit }                       = require("./avito.audit");
 const { maybeCreateLead, syncLeadStatus } = require("./avito.crm");
-const { resolveNextState, extractPhone, buildSalesPrompt } = require("./avito.fsm");
+const { resolveNextState, extractPhone }  = require("./avito.fsm");
 const { scheduleFollowUps, cancelFollowUps } = require("./avito.followup.queue");
+const { buildAvitoSystemPrompt }          = require("./avito.prompt");
+const { loadAvitoKnowledgeBlock }         = require("./avito.knowledge");
 
 // ── Retry helper ──────────────────────────────────────────────────────────────
 
@@ -87,13 +89,19 @@ async function processAvitoJob(job) {
       throw new Error(`Invalid job data: missing agentId/chatId/authorId`);
     }
 
-    // ── 2. Load agent ────────────────────────────────────────────────────────
+    // ── 2. Load agent (+ assistant for voice & knowledge) ────────────────────
     const agent = await prisma.agent.findFirst({
       where:   { id: agentId, deletedAt: null },
-      include: { avitoAccount: true },
+      include: { avitoAccount: true, assistant: true },
     });
     if (!agent) throw new Error(`Agent not found: ${agentId}`);
     audit.organizationId = agent.organizationId;
+
+    if (!agent.assistantId) {
+      process.stdout.write(
+        `[avito:processor] WARN agent=${agentId} has no assistantId — using generic sales prompt only\n`
+      );
+    }
 
     // ── 3. Resolve Avito credentials ──────────────────────────────────────────
     let avitoClient = null;
@@ -251,12 +259,23 @@ async function processAvitoJob(job) {
       return;
     }
 
-    // ── 14. Build system prompt — sales FSM + agent rules ─────────────────────
-    const salesPrompt  = buildSalesPrompt(lead);
-    const agentRules   = agent.rules?.trim() || "";
-    const systemPrompt = agentRules
-      ? `${salesPrompt}\n\n---\nДополнительные правила:\n${agentRules}`
-      : salesPrompt;
+    // ── 14. Build system prompt — russian lock + voice + FSM + assistant + knowledge + rules
+    const { knowledgeBlock, source: knowledgeSource } = await loadAvitoKnowledgeBlock({
+      assistantId:    agent.assistantId,
+      organizationId: agent.organizationId,
+      message:        text,
+    });
+
+    process.stdout.write(
+      `[avito:processor] knowledge source=${knowledgeSource} chars=${knowledgeBlock.length} assistantId=${agent.assistantId ?? "-"}\n`
+    );
+
+    const systemPrompt = buildAvitoSystemPrompt({
+      lead,
+      agent,
+      assistant: agent.assistant || null,
+      knowledgeBlock,
+    });
 
     // ── 15. AI response (autoreply OR copilot) ────────────────────────────────
     let aiResult;

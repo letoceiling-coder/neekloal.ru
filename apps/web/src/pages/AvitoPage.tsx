@@ -35,7 +35,9 @@ import {
   type AvitoDialogsResult,
   type AvitoTestSendResult,
 } from "../api/avito";
-import type { Agent } from "../api/types";
+import type { Agent, Assistant } from "../api/types";
+import { useAssistants } from "../api/assistants";
+import { Link as RouterLink } from "react-router-dom";
 
 const WEBHOOK_BASE = "https://site-al.ru/api/incoming";
 
@@ -361,13 +363,15 @@ function AccountCard({
 function AgentRow({
   agent,
   accounts,
+  assistants,
   copiedId,
   onCopy,
 }: {
-  agent:    Agent;
-  accounts: AvitoAccount[];
-  copiedId: string | null;
-  onCopy:   (id: string) => void;
+  agent:      Agent;
+  accounts:   AvitoAccount[];
+  assistants: Assistant[];
+  copiedId:   string | null;
+  onCopy:     (id: string) => void;
 }) {
   const patchAgent = usePatchAvitoAgent();
   const registerWh = useRegisterAvitoMessengerWebhook();
@@ -376,6 +380,7 @@ function AgentRow({
 
   const mode            = agent.avitoMode ?? "autoreply";
   const linkedAccount   = accounts.find((a) => a.id === agent.avitoAccountId) ?? null;
+  const linkedAssistant = assistants.find((a) => a.id === agent.assistantId) ?? null;
   const webhookUrl      = `${WEBHOOK_BASE}/${agent.id}`;
 
   function setMode(m: string) {
@@ -502,6 +507,29 @@ function AgentRow({
       {registerWh.isSuccess && registerWh.data?.ok && registerWh.variables?.agentId === agent.id && (
         <p className="mt-2 text-[10px] text-emerald-600">URL зарегистрирован в Avito (см. ответ API в Network).</p>
       )}
+
+      {/* Assistant binding — controls voice & knowledge used by AI */}
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+        {linkedAssistant ? (
+          <RouterLink
+            to={`/assistants/${linkedAssistant.id}`}
+            className="inline-flex items-center gap-1.5 rounded-md border border-violet-200 bg-violet-50 px-2 py-0.5 text-violet-700 hover:bg-violet-100"
+            title="Голос, system prompt и база знаний приходят отсюда"
+          >
+            <ShieldCheck className="h-3 w-3" />
+            Ассистент: <span className="font-medium">{linkedAssistant.name}</span>
+          </RouterLink>
+        ) : (
+          <RouterLink
+            to={`/agents/${agent.id}`}
+            className="inline-flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-amber-800 hover:bg-amber-100"
+            title="Без ассистента AI отвечает по generic sales-промпту (без базы знаний)"
+          >
+            <AlertTriangle className="h-3 w-3" />
+            Ассистент не привязан — AI без базы знаний
+          </RouterLink>
+        )}
+      </div>
     </div>
   );
 }
@@ -556,6 +584,7 @@ export function AvitoPage() {
     queryFn:  () => apiClient.get<Agent[]>("/agents"),
     enabled:  Boolean(accessToken),
   });
+  const { data: assistantsList } = useAssistants();
   const { data: conversations } = useAvitoConversations();
   const { data: auditLogs,     isLoading: auditLoading  } = useAvitoAudit();
   const { data: webhookStatus } = useAvitoWebhookStatus();
@@ -1085,6 +1114,7 @@ export function AvitoPage() {
                   key={agent.id}
                   agent={agent}
                   accounts={accounts ?? []}
+                  assistants={assistantsList ?? []}
                   copiedId={copiedId}
                   onCopy={copyWebhook}
                 />
