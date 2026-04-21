@@ -46,10 +46,14 @@ async function recordAgentChatUsage(organizationId, conv, modelUsed, pTok, cTok)
 
   const fin = await finalizeChatUsage({
     organizationId,
-    userId:         conv.userId,
+    // AgentConversation.userId is not guaranteed to reference users.id
+    // (e.g. external channels may store agentId as placeholder), so keep null.
+    userId:         null,
     apiKeyId:       null,
     assistantId,
-    conversationId: conv.id,
+    // Usage.conversationId references Conversation (web chat), not AgentConversation.
+    // For agent runtime we still meter tokens, but do not bind FK to Conversation.
+    conversationId: null,
     model:          modelUsed,
     inputTokens:    pTok,
     outputTokens:   cTok,
