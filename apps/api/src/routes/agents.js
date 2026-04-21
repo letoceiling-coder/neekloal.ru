@@ -13,6 +13,11 @@ const {
   agentChatV2,
   streamAgentChat,
 } = require("../services/agentRuntimeV2");
+const {
+  parseModelRef,
+  loadOrgApiKey,
+  runCloudCompletion,
+} = require("../services/cloudLlm");
 
 // ─── LLM helper (same approach as chat.js) ────────────────────────────────────
 function getGenerateUrl() {
@@ -33,6 +38,42 @@ async function ollamaGenerate(model, prompt) {
   }
   const data = await res.json();
   return data.response != null ? String(data.response).trim() : "";
+}
+
+/**
+ * Auto-generate helper that supports both Ollama and cloud-prefixed models
+ * (openai/*, anthropic/*, google/*, xai/*).
+ *
+ * @param {string} organizationId
+ * @param {string} model
+ * @param {string} prompt
+ */
+async function generateRulesWithModel(organizationId, model, prompt) {
+  const parsed = parseModelRef(model);
+  if (parsed.kind === "unsupported") {
+    throw new Error(
+      `Модель «${parsed.raw}» не поддерживается для генерации правил. ` +
+      "Используйте openai/…, anthropic/…, google/…, xai/… или локальную Ollama модель."
+    );
+  }
+  if (parsed.kind === "cloud") {
+    const apiKey = await loadOrgApiKey(organizationId, parsed.provider);
+    if (!apiKey) {
+      throw new Error(
+        `Провайдер ${parsed.provider}: API ключ не задан или интеграция выключена в разделе «Интеграции AI».`
+      );
+    }
+    const r = await runCloudCompletion(
+      organizationId,
+      parsed.provider,
+      parsed.modelId,
+      apiKey,
+      { system: "", chat: [{ role: "user", content: prompt }] },
+      { temperature: 0.3, maxTokens: 900 }
+    );
+    return (r.content || "").trim();
+  }
+  return ollamaGenerate(model, prompt);
 }
 
 /**
@@ -224,7 +265,7 @@ module.exports = async function agentsRoutes(fastify) {
     const prompt = `${systemPrompt}\n\nЗАДАЧА ПОЛЬЗОВАТЕЛЯ:\n${input}\n\nОтвет:`;
 
     try {
-      const rules = await ollamaGenerate(model, prompt);
+      const rules = await generateRulesWithModel(request.organizationId, model, prompt);
       if (!rules) {
         return reply.code(500).send({ error: "LLM returned empty response" });
       }
