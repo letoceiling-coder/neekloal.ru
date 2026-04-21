@@ -14,6 +14,7 @@ import { ConversationsPage } from "./pages/ConversationsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { KnowledgePage } from "./pages/KnowledgePage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { IntegrationsPage } from "./pages/IntegrationsPage";
 import { ForgotPasswordPage } from "./pages/auth/ForgotPasswordPage";
 import { LoginPage } from "./pages/auth/LoginPage";
 import { RegisterPage } from "./pages/auth/RegisterPage";
@@ -62,6 +63,7 @@ export default function App() {
           <Route path="api-keys" element={<ApiKeysPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          <Route path="integrations" element={<IntegrationsPage />} />
           <Route path="image-studio" element={<ImageStudioPage />} />
           <Route path="video-al" element={<VideoStudioPage />} />
           <Route path="image-studio/settings" element={<ImageSettingsPage />} />

@@ -201,9 +201,13 @@ export function useAgentChatV2() {
 // ── Available models ──────────────────────────────────────────────────────────
 
 export interface ModelInfo {
-  name:        string;
-  size?:       number;
+  name:         string;
+  size?:        number;
   modified_at?: string;
+  /** ollama | openai | anthropic | … — when from cloud integrations */
+  provider?: string;
+  /** chat | tts | image_or_llm */
+  kind?: string;
 }
 
 export function useModels() {

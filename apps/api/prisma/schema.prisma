@@ -137,9 +137,30 @@ model Organization {
   usages                Usage[]
   notificationSettings  OrganizationNotificationSettings?
   followupTemplates     OrganizationFollowUpTemplate[]
+  aiIntegrations        OrganizationAiIntegration[]
 
   @@index([planId])
   @@map("organizations")
+}
+
+/// Per-organization API keys for external AI providers (OpenAI, Anthropic, …).
+/// Keys are stored server-side only; API never returns the full secret (masked).
+model OrganizationAiIntegration {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// Lowercase slug: openai | anthropic | google | xai | replicate | elevenlabs
+  provider  String
+  isEnabled Boolean @default(false) @map("is_enabled")
+  apiKey    String? @map("api_key") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([organizationId, provider])
+  @@index([organizationId, isEnabled])
+  @@map("organization_ai_integrations")
 }
 
 /// Per-organization notification settings (Telegram manager alerts + email).

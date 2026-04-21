@@ -12,8 +12,54 @@
 
 const prisma        = require("../lib/prisma");
 const { selectModel } = require("./modelRouter");
+const { finalizeChatUsage, preCheckChatBeforeLlm } = require("./planAccess");
+const {
+  parseModelRef,
+  loadOrgApiKey,
+  runCloudCompletion,
+  splitSystemAndChat,
+} = require("./cloudLlm");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+function roughTokenEstimate(text) {
+  const s = text == null ? "" : String(text);
+  return Math.max(1, Math.round(s.length / 4));
+}
+
+/**
+ * @param {string} organizationId
+ * @param {{ id: string, agentId: string, userId: string }} conv
+ * @param {string} modelUsed
+ * @param {number} pTok
+ * @param {number} cTok
+ */
+async function recordAgentChatUsage(organizationId, conv, modelUsed, pTok, cTok) {
+  let assistantId = null;
+  try {
+    const ag = await prisma.agent.findFirst({
+      where: { id: conv.agentId },
+      select: { assistantId: true },
+    });
+    assistantId = ag?.assistantId ?? null;
+  } catch { /* non-fatal */ }
+
+  const fin = await finalizeChatUsage({
+    organizationId,
+    userId:         conv.userId,
+    apiKeyId:       null,
+    assistantId,
+    conversationId: conv.id,
+    model:          modelUsed,
+    inputTokens:    pTok,
+    outputTokens:   cTok,
+  });
+  if (!fin.ok) {
+    process.stderr.write(
+      `[agent:v2] finalizeChatUsage failed org=${organizationId} model=${modelUsed}: ${fin.error}\n`
+    );
+  }
+}
 
 function getOllamaChatUrl() {
   const base = process.env.OLLAMA_URL;
@@ -125,32 +171,82 @@ async function agentChatV2({ conversationId, message, organizationId, systemProm
 
   const history = Array.isArray(conv.messages) ? conv.messages : [];
 
-  // Build messages for Ollama
+  // Build messages for LLM (Ollama or cloud)
   const fullMessages = [];
   if (systemPrompt && systemPrompt.trim()) {
     fullMessages.push({ role: "system", content: systemPrompt.trim() });
   }
   fullMessages.push(...history, { role: "user", content: message });
 
-  process.stdout.write(
-    `[agent:v2] chat conv=${conversationId} model=${selectedModel} ctx=${history.length}\n`
-  );
+  const parsed = parseModelRef(selectedModel);
+  if (parsed.kind === "unsupported") {
+    throw new Error(
+      `Модель «${parsed.raw}» не используется в текстовом чате агентов. ` +
+        "Выберите openai/…, anthropic/…, google/…, xai/… или локальную модель Ollama."
+    );
+  }
+  const billingModel =
+    parsed.kind === "cloud" ? `${parsed.provider}/${parsed.modelId}` : selectedModel;
 
-  const ollamaRes = await fetch(getOllamaChatUrl(), {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify(buildOllamaBody(selectedModel, fullMessages, { temperature, maxTokens, stream: false })),
+  const estIn  = roughTokenEstimate(JSON.stringify(fullMessages));
+  const estOut = 512;
+  const pre = await preCheckChatBeforeLlm({
+    organizationId,
+    modelName:               billingModel,
+    estimatedInputTokens:    estIn,
+    estimatedOutputTokens:   estOut,
   });
-
-  if (!ollamaRes.ok) {
-    const err = await ollamaRes.text();
-    throw new Error(`Ollama /api/chat failed: ${ollamaRes.status} — ${err.slice(0, 300)}`);
+  if (!pre.ok) {
+    throw new Error(pre.error || "Usage pre-check failed");
   }
 
-  const data    = await ollamaRes.json();
-  const content = data.message?.content ?? "";
-  const pTok    = Number(data.prompt_eval_count) || 0;
-  const cTok    = Number(data.eval_count)         || 0;
+  process.stdout.write(
+    `[agent:v2] chat conv=${conversationId} model=${selectedModel} ctx=${history.length} route=${parsed.kind}\n`
+  );
+
+  let content;
+  let pTok;
+  let cTok;
+  let modelUsed;
+
+  if (parsed.kind === "cloud") {
+    const apiKey = await loadOrgApiKey(organizationId, parsed.provider);
+    if (!apiKey) {
+      throw new Error(
+        `Провайдер ${parsed.provider}: API ключ не задан или интеграция выключена. Настройте в разделе «Интеграции AI».`
+      );
+    }
+    const msgs = splitSystemAndChat(fullMessages, systemPrompt);
+    const r = await runCloudCompletion(
+      organizationId,
+      parsed.provider,
+      parsed.modelId,
+      apiKey,
+      msgs,
+      { temperature, maxTokens }
+    );
+    content   = r.content;
+    pTok      = r.promptTokens;
+    cTok      = r.completionTokens;
+    modelUsed = r.modelUsed;
+  } else {
+    const ollamaRes = await fetch(getOllamaChatUrl(), {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify(buildOllamaBody(selectedModel, fullMessages, { temperature, maxTokens, stream: false })),
+    });
+
+    if (!ollamaRes.ok) {
+      const err = await ollamaRes.text();
+      throw new Error(`Ollama /api/chat failed: ${ollamaRes.status} — ${err.slice(0, 300)}`);
+    }
+
+    const data = await ollamaRes.json();
+    content   = data.message?.content ?? "";
+    pTok      = Number(data.prompt_eval_count) || 0;
+    cTok      = Number(data.eval_count)         || 0;
+    modelUsed = selectedModel;
+  }
 
   // Persist both turns
   const updatedMessages = [...history, { role: "user", content: message }, { role: "assistant", content }];
@@ -159,13 +255,15 @@ async function agentChatV2({ conversationId, message, organizationId, systemProm
     data:  { messages: updatedMessages },
   });
 
+  await recordAgentChatUsage(organizationId, conv, modelUsed, pTok, cTok);
+
   process.stdout.write(
     `[agent:v2] tokens=${pTok}+${cTok} ctxLen=${updatedMessages.length}\n`
   );
 
   return {
     reply:         content,
-    modelUsed:     selectedModel,
+    modelUsed,
     tokens:        { prompt: pTok, completion: cTok, total: pTok + cTok },
     contextLength: updatedMessages.length,
     conversationId,
@@ -207,9 +305,85 @@ async function* streamAgentChat({ conversationId, message, organizationId, syste
   }
   fullMessages.push(...history, { role: "user", content: message });
 
+  const parsed = parseModelRef(selectedModel);
+  if (parsed.kind === "unsupported") {
+    throw new Error(
+      `Модель «${parsed.raw}» не используется в текстовом чате агентов. ` +
+        "Выберите openai/…, anthropic/…, google/…, xai/… или локальную модель Ollama."
+    );
+  }
+  const billingModel =
+    parsed.kind === "cloud" ? `${parsed.provider}/${parsed.modelId}` : selectedModel;
+
+  const estIn  = roughTokenEstimate(JSON.stringify(fullMessages));
+  const estOut = 512;
+  const pre = await preCheckChatBeforeLlm({
+    organizationId,
+    modelName:               billingModel,
+    estimatedInputTokens:    estIn,
+    estimatedOutputTokens:   estOut,
+  });
+  if (!pre.ok) {
+    throw new Error(pre.error || "Usage pre-check failed");
+  }
+
   process.stdout.write(
-    `[agent:v2:stream] conv=${conversationId} model=${selectedModel} ctx=${history.length}\n`
+    `[agent:v2:stream] conv=${conversationId} model=${selectedModel} ctx=${history.length} route=${parsed.kind}\n`
   );
+
+  // ── Cloud: non-streaming upstream, chunked SSE to client ───────────────────
+  if (parsed.kind === "cloud") {
+    const apiKey = await loadOrgApiKey(organizationId, parsed.provider);
+    if (!apiKey) {
+      throw new Error(
+        `Провайдер ${parsed.provider}: API ключ не задан или интеграция выключена. Настройте в разделе «Интеграции AI».`
+      );
+    }
+    const msgs = splitSystemAndChat(fullMessages, systemPrompt);
+    const r = await runCloudCompletion(
+      organizationId,
+      parsed.provider,
+      parsed.modelId,
+      apiKey,
+      msgs,
+      { temperature, maxTokens }
+    );
+    const fullContent = r.content || "";
+    const chunkSize  = 64;
+    for (let i = 0; i < fullContent.length; i += chunkSize) {
+      if (signal?.aborted) throw new Error("aborted");
+      yield { token: fullContent.slice(i, i + chunkSize) };
+    }
+
+    const updatedMessages = [
+      ...history,
+      { role: "user",      content: message    },
+      { role: "assistant", content: fullContent },
+    ];
+    await prisma.agentConversation.update({
+      where: { id: conversationId },
+      data:  { messages: updatedMessages },
+    });
+
+    await recordAgentChatUsage(organizationId, conv, r.modelUsed, r.promptTokens, r.completionTokens);
+
+    process.stdout.write(
+      `[agent:v2:stream] cloud done tokens=${r.promptTokens}+${r.completionTokens} ctxLen=${updatedMessages.length}\n`
+    );
+
+    yield {
+      done:          true,
+      modelUsed:     r.modelUsed,
+      tokens:        {
+        prompt:     r.promptTokens,
+        completion: r.completionTokens,
+        total:      r.promptTokens + r.completionTokens,
+      },
+      contextLength: updatedMessages.length,
+      conversationId,
+    };
+    return;
+  }
 
   const ollamaRes = await fetch(getOllamaChatUrl(), {
     method:  "POST",
@@ -269,6 +443,8 @@ async function* streamAgentChat({ conversationId, message, organizationId, syste
     where: { id: conversationId },
     data:  { messages: updatedMessages },
   });
+
+  await recordAgentChatUsage(organizationId, conv, selectedModel, promptTokens, completionTokens);
 
   process.stdout.write(
     `[agent:v2:stream] done tokens=${promptTokens}+${completionTokens} ctxLen=${updatedMessages.length}\n`

@@ -30,6 +30,9 @@ export const queryKeys = {
   notificationSettings: {
     all: ["notification-settings"] as const,
   },
+  integrations: {
+    all: ["integrations", "ai"] as const,
+  },
   models: {
     /** Raw API response { models: ModelInfo[] } — used by agents.ts useModels */
     all: ["models", "catalog"] as const,

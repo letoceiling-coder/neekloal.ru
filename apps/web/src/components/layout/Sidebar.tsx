@@ -13,6 +13,7 @@ import {
   Settings,
   Store,
   Film,
+  Plug,
 } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useUiStore } from "../../stores/uiStore";
@@ -30,6 +31,7 @@ export const sidebarNav: {
   { to: "/conversations", label: "Диалоги", Icon: MessageSquare },
   { to: "/knowledge", label: "База знаний", Icon: BookOpen },
   { to: "/api-keys", label: "API ключи", Icon: Key },
+  { to: "/integrations", label: "Интеграции AI", Icon: Plug },
   { to: "/image-studio", label: "Image Studio", Icon: Image },
   { to: "/video-al", label: "Видео", Icon: Film },
   { to: "/avito",        label: "Avito",        Icon: Store },

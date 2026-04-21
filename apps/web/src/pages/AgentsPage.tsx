@@ -1,6 +1,6 @@
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useAgents, useCreateAgent, useModels } from "../api/agents";
+import { useAgents, useCreateAgent, useModels, type ModelInfo } from "../api/agents";
 import type { Agent } from "../api/types";
 import { useAssistants } from "../api/assistants";
 import {
@@ -25,13 +25,24 @@ export function AgentsPage() {
   const { data: modelsData }  = useModels();
   const createAgent = useCreateAgent();
 
-  const availableModels = modelsData?.models?.map((m) => m.name) ?? FALLBACK_MODELS;
-
+  const modelCatalog: ModelInfo[] = modelsData?.models?.length
+    ? modelsData.models
+    : FALLBACK_MODELS.map((name) => ({ name, provider: "ollama", kind: "chat" }));
   const [name,        setName]        = useState("");
   const [type,        setType]        = useState("default");
   const [model,       setModel]       = useState(FALLBACK_MODELS[0]);
   const [assistantId, setAssistantId] = useState("");
   const [formError,   setFormError]   = useState<string | null>(null);
+
+  useEffect(() => {
+    const names = modelsData?.models?.length
+      ? modelsData.models.map((m) => m.name)
+      : FALLBACK_MODELS;
+    if (!names.length) return;
+    if (!names.includes(model)) {
+      setModel(names[0]!);
+    }
+  }, [modelsData?.models, model]);
 
   const columns = useMemo<DataTableColumn<Agent>[]>(
     () => [
@@ -93,7 +104,7 @@ export function AgentsPage() {
       });
       setName("");
       setType("default");
-      setModel(FALLBACK_MODELS[0]);
+      setModel(modelCatalog[0]?.name ?? FALLBACK_MODELS[0]!);
       setAssistantId("");
     } catch (err) {
       setFormError(
@@ -144,8 +155,11 @@ export function AgentsPage() {
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
               >
-                {availableModels.map((m) => (
-                  <option key={m} value={m}>{m}</option>
+                {modelCatalog.map((m) => (
+                  <option key={m.name} value={m.name}>
+                    {(m.provider && m.provider !== "ollama" ? `[${m.provider}] ` : "") + m.name}
+                    {m.kind && m.kind !== "chat" ? ` · ${m.kind}` : ""}
+                  </option>
                 ))}
               </select>
               <p className="mt-0.5 text-[11px] text-neutral-400">
