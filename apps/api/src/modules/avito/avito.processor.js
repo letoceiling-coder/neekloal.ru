@@ -37,7 +37,7 @@ const { resolveNextState, extractPhone }  = require("./avito.fsm");
 const { scheduleFollowUps, cancelFollowUps } = require("./avito.followup.queue");
 const { buildAvitoSystemPrompt }          = require("./avito.prompt");
 const { loadAvitoKnowledgeBlock }         = require("./avito.knowledge");
-const { sendHandoffAlert }                = require("../../services/notifyManager");
+const { sendHandoffAlert, sendNewLeadAlert } = require("../../services/notifyManager");
 
 // ── Retry helper ──────────────────────────────────────────────────────────────
 
@@ -261,6 +261,32 @@ async function processAvitoJob(job) {
 
     // ── 10. CRM sync ─────────────────────────────────────────────────────────
     if (isFirstMessage) {
+      // New lead alert for Avito first contact (separate from handoff/hot alerts).
+      // Uses per-org Telegram settings notifyOnNewLead.
+      void sendNewLeadAlert({
+        organizationId: agent.organizationId,
+        leadId:         lead.id,
+        source:         "avito",
+        name:           String(authorId),
+        phone:          detectedPhone || lead.phone || undefined,
+        firstMessage:   text,
+        chatUrl:        `https://site-al.ru/avito?chatId=${encodeURIComponent(chatId)}`,
+      }).then((r) => {
+        if (r.ok) {
+          process.stdout.write(
+            `[notifyManager] new-lead sent org=${agent.organizationId} lead=${lead.id}\n`
+          );
+        } else if (r.skipped) {
+          process.stdout.write(
+            `[notifyManager] new-lead skipped org=${agent.organizationId} lead=${lead.id} reason=${r.skipped}\n`
+          );
+        }
+      }).catch((err) => {
+        process.stderr.write(
+          `[notifyManager] new-lead error org=${agent.organizationId}: ${err && err.message ? err.message : String(err)}\n`
+        );
+      });
+
       await maybeCreateLead({
         organizationId: agent.organizationId,
         chatId,
